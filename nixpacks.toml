@@ -1,4 +1,4 @@
-[phases.setup]
+[phase.setup]
 aptPkgs = ["ffmpeg", "libsndfile1", "flac"]
 
 [start]
