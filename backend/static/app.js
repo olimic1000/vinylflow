@@ -78,8 +78,15 @@ function vinylApp() {
             };
 
             this.ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                this.handleWebSocketMessage(data);
+                // Skip non-JSON messages (like "pong")
+                if (event.data === 'pong') return;
+
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleWebSocketMessage(data);
+                } catch (error) {
+                    console.warn('Non-JSON WebSocket message:', event.data);
+                }
             };
 
             this.ws.onerror = (error) => {
