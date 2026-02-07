@@ -1,2 +1,5 @@
 [phases.setup]
-aptPkgs = ["ffmpeg", "libsndfile1"]
+aptPkgs = ["ffmpeg", "libsndfile1", "flac"]
+
+[start]
+cmd = "python -m uvicorn backend.api:app --host 0.0.0.0 --port $PORT"
