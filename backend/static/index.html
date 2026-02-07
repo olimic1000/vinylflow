@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎵 Vinyl Digitizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/wavesurfer.js@7.8.10/dist/wavesurfer.min.js"></script>
+    <script src="https://unpkg.com/wavesurfer.js@7.8.10/dist/plugins/regions.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+
+        .file-upload-zone {
+            border: 2px dashed #cbd5e0;
+            transition: all 0.3s;
+        }
+
+        .file-upload-zone.dragging {
+            border-color: #4299e1;
+            background-color: #ebf8ff;
+        }
+
+        .waveform-container {
+            background: #f7fafc;
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .track-marker {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #f56565;
+            opacity: 0.7;
+        }
+
+        .album-card {
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .album-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+        }
+
+        .album-card.selected {
+            border: 3px solid #4299e1;
+        }
+
+        .progress-bar {
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div x-data="vinylApp()" x-init="init()" class="min-h-screen">
+        <!-- Header -->
+        <header class="bg-white shadow-sm border-b border-gray-200">
+            <div class="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center">
+                    <h1 class="text-3xl font-bold text-gray-900">
+                        🎵 Vinyl Digitizer
+                    </h1>
+                    <button @click="showSettings = !showSettings" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition">
+                        ⚙️ Settings
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Settings Modal -->
+        <div x-show="showSettings" x-cloak class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div @click.away="showSettings = false" class="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+                <h2 class="text-2xl font-bold mb-4">Settings</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Silence Threshold (dB)</label>
+                        <input type="number" x-model="config.silence_threshold" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Min Silence Duration (sec)</label>
+                        <input type="number" step="0.1" x-model="config.min_silence_duration" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Output Directory</label>
+                        <input type="text" x-model="config.output_dir" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+                    </div>
+                    <div class="flex gap-2">
+                        <button @click="saveConfig()" class="flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">Save</button>
+                        <button @click="showSettings = false" class="flex-1 px-4 py-2 bg-gray-300 rounded-lg hover:bg-gray-400">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Container -->
+        <div class="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- Left Column: Upload & Queue -->
+                <div class="lg:col-span-1 space-y-6">
+                    <!-- Upload Zone -->
+                    <div class="bg-white rounded-lg shadow p-6">
+                        <h2 class="text-xl font-semibold mb-4">Upload Files</h2>
+                        <div
+                            @drop.prevent="handleDrop($event)"
+                            @dragover.prevent="dragging = true"
+                            @dragleave.prevent="dragging = false"
+                            @click="$refs.fileInput.click()"
+                            :class="{'dragging': dragging}"
+                            class="file-upload-zone rounded-lg p-8 text-center cursor-pointer"
+                        >
+                            <p class="text-gray-600 text-lg">📤 Drag & Drop WAV files here</p>
+                            <p class="text-gray-400 text-sm mt-2">or click to browse</p>
+                            <input type="file" x-ref="fileInput" @change="handleFileSelect($event)" accept=".wav" multiple class="hidden">
+                        </div>
+                    </div>
+
+                    <!-- Queue -->
+                    <div class="bg-white rounded-lg shadow p-6">
+                        <h2 class="text-xl font-semibold mb-4">Queue (<span x-text="uploadedFiles.length"></span>)</h2>
+                        <div class="space-y-2 max-h-96 overflow-y-auto">
+                            <template x-for="file in uploadedFiles" :key="file.id">
+                                <div class="p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition">
+                                    <div class="flex justify-between items-start">
+                                        <div class="flex-1 min-w-0">
+                                            <p class="font-medium text-sm truncate" x-text="file.filename"></p>
+                                            <p class="text-xs text-gray-500" x-text="formatSize(file.size) + ' • ' + formatDuration(file.duration)"></p>
+                                            <p class="text-xs mt-1" :class="statusClass(file.status)" x-text="file.status"></p>
+                                        </div>
+                                        <button @click="removeFile(file.id)" class="ml-2 text-red-500 hover:text-red-700">✕</button>
+                                    </div>
+                                    <template x-if="file.id === currentFileId && processingProgress > 0">
+                                        <div class="mt-2">
+                                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                                <div class="progress-bar bg-blue-500 h-2 rounded-full" :style="`width: ${processingProgress * 100}%`"></div>
+                                            </div>
+                                            <p class="text-xs text-gray-600 mt-1" x-text="processingMessage"></p>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                            <template x-if="uploadedFiles.length === 0">
+                                <p class="text-gray-400 text-center py-8">No files uploaded</p>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Column: Main Content -->
+                <div class="lg:col-span-2 space-y-6">
+                    <!-- Current File Info -->
+                    <div x-show="currentFile" x-cloak class="bg-white rounded-lg shadow p-6">
+                        <h2 class="text-2xl font-bold mb-2" x-text="currentFile?.filename"></h2>
+                        <p class="text-gray-600" x-text="formatSize(currentFile?.size) + ' • ' + formatDuration(currentFile?.duration)"></p>
+
+                        <!-- Analyze Button -->
+                        <template x-if="!detectedTracks.length && currentFile">
+                            <button @click="analyzeFile()" class="mt-4 px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-semibold">
+                                🔍 Analyze & Detect Tracks
+                            </button>
+                        </template>
+
+                        <!-- Re-Analyze Button (shows after tracks detected, before release selected) -->
+                        <template x-if="detectedTracks.length > 0 && !selectedRelease">
+                            <button @click="reanalyzeFile()" class="mt-4 px-6 py-3 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 font-semibold">
+                                🔄 Re-Analyze Tracks
+                            </button>
+                        </template>
+                    </div>
+
+                    <!-- Waveform Visualization -->
+                    <div x-show="detectedTracks.length > 0" x-cloak class="bg-white rounded-lg shadow p-6 mb-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-lg font-semibold">Waveform Editor</h3>
+                            <div class="flex gap-2">
+                                <button @click="playWaveform()"
+                                        :disabled="!waveform"
+                                        class="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                                    ▶️ Play
+                                </button>
+                                <button @click="stopWaveform()"
+                                        :disabled="!waveform"
+                                        class="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                                    ⏹️ Stop
+                                </button>
+                                <button @click="zoomIn()"
+                                        :disabled="!waveform"
+                                        class="px-3 py-1 bg-gray-500 text-white rounded hover:bg-gray-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                                    🔍 +
+                                </button>
+                                <button @click="zoomOut()"
+                                        :disabled="!waveform"
+                                        class="px-3 py-1 bg-gray-500 text-white rounded hover:bg-gray-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                                    🔍 -
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Waveform Container -->
+                        <div id="waveform" class="w-full mb-4" style="min-height: 128px;"></div>
+
+                        <div x-show="waveformLoading" class="text-center text-gray-600 py-4">
+                            Loading waveform...
+                        </div>
+
+                        <div x-show="!waveform && !waveformLoading" class="text-center text-gray-500 py-4 text-sm">
+                            Waveform will appear after analysis completes
+                        </div>
+
+                        <p class="text-xs text-gray-500 mt-2">
+                            💡 Tip: Drag the colored regions to adjust track boundaries
+                        </p>
+                    </div>
+
+                    <!-- Detected Tracks with Preview -->
+                    <div x-show="detectedTracks.length > 0" x-cloak class="bg-white rounded-lg shadow p-6">
+                        <h3 class="text-lg font-semibold mb-4">
+                            Detected Tracks (<span x-text="activeTrackCount"></span> of <span x-text="detectedTracks.length"></span> active)
+                        </h3>
+
+                        <!-- Audio Player Controls -->
+                        <div x-show="currentPlayingTrack" class="mb-4 p-4 bg-blue-50 rounded-lg">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="font-medium text-blue-900">Playing Track <span x-text="currentPlayingTrack"></span></span>
+                                <button @click="stopPreview()" class="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm">
+                                    ⏹️ Stop
+                                </button>
+                            </div>
+                            <audio x-ref="audioPlayer" controls class="w-full"></audio>
+                        </div>
+
+                        <div class="space-y-3">
+                            <template x-for="(track, idx) in detectedTracks" :key="idx">
+                                <div class="p-3 bg-gray-50 rounded" :class="{ 'opacity-50': track.ignored }">
+                                    <!-- Track Header -->
+                                    <div class="flex justify-between items-center mb-2">
+                                        <div class="flex items-center gap-3">
+                                            <!-- Ignore Checkbox -->
+                                            <input
+                                                type="checkbox"
+                                                :checked="track.ignored"
+                                                @change="toggleTrackIgnored(track)"
+                                                class="w-4 h-4 text-red-600 bg-gray-100 border-gray-300 rounded focus:ring-red-500"
+                                                title="Ignore this track (skip during processing)"
+                                            >
+                                            <button
+                                                @click="playPreview(track.number)"
+                                                :disabled="track.ignored"
+                                                class="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm disabled:bg-gray-400 disabled:cursor-not-allowed"
+                                                :class="{ 'bg-blue-700': currentPlayingTrack === track.number }"
+                                                title="Play 30-second preview"
+                                            >
+                                                ▶️ Play
+                                            </button>
+                                            <span class="font-medium" :class="{ 'line-through text-gray-400': track.ignored }">
+                                                Track <span x-text="track.number"></span>
+                                            </span>
+                                        </div>
+                                        <button
+                                            @click="track.editing = !track.editing"
+                                            :disabled="track.ignored"
+                                            class="px-3 py-1 bg-gray-300 rounded hover:bg-gray-400 text-sm disabled:bg-gray-200 disabled:cursor-not-allowed"
+                                        >
+                                            <span x-show="!track.editing">✏️ Adjust</span>
+                                            <span x-show="track.editing">✓ Done</span>
+                                        </button>
+                                    </div>
+
+                                    <!-- Time Display / Edit -->
+                                    <div x-show="!track.editing" class="text-gray-600 text-sm">
+                                        <span x-text="formatTime(track.start)"></span> - <span x-text="formatTime(track.end)"></span> (<span x-text="formatDuration(track.duration)"></span>)
+                                    </div>
+
+                                    <!-- Manual Adjustment Inputs -->
+                                    <div x-show="track.editing" class="grid grid-cols-2 gap-4 mt-2">
+                                        <div>
+                                            <label class="block text-xs font-medium text-gray-700 mb-1">Start Time (seconds)</label>
+                                            <input
+                                                type="number"
+                                                step="0.1"
+                                                :value="track.start"
+                                                @input="updateTrackStart(idx, $event.target.value)"
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                                            >
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-medium text-gray-700 mb-1">End Time (seconds)</label>
+                                            <input
+                                                type="number"
+                                                step="0.1"
+                                                :value="track.end"
+                                                @input="updateTrackEnd(idx, $event.target.value)"
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                                            >
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Discogs Search -->
+                    <div x-show="detectedTracks.length > 0 && !selectedRelease" x-cloak class="bg-white rounded-lg shadow p-6">
+                        <h3 class="text-lg font-semibold mb-4">🔍 Search Discogs</h3>
+                        <div class="flex gap-2 mb-4">
+                            <input
+                                type="text"
+                                x-model="searchQuery"
+                                @keyup.enter="searchDiscogs()"
+                                placeholder="Enter artist or album name..."
+                                class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            >
+                            <button @click="searchDiscogs()" class="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-semibold">
+                                Search
+                            </button>
+                        </div>
+
+                        <!-- Search Results -->
+                        <div x-show="searchResults.length > 0" class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+                            <template x-for="result in searchResults" :key="result.id">
+                                <div @click="selectRelease(result)" class="album-card bg-white border-2 border-gray-200 rounded-lg p-3 hover:shadow-lg">
+                                    <img
+                                        :src="result.cover_url || '/static/placeholder.png'"
+                                        :alt="result.title"
+                                        class="w-full aspect-square object-cover rounded mb-2"
+                                        onerror="this.src='/static/placeholder.png'"
+                                    >
+                                    <p class="font-semibold text-sm truncate" x-text="result.artist"></p>
+                                    <p class="text-xs text-gray-600 truncate" x-text="result.title"></p>
+                                    <p class="text-xs text-gray-400" x-text="result.year"></p>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Track Mapping -->
+                    <div x-show="selectedRelease" x-cloak class="bg-white rounded-lg shadow p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-lg font-semibold">🎚️ Track Mapping</h3>
+                            <div class="flex gap-2">
+                                <button @click="reverseMapping()" class="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">
+                                    ↕️ Reverse
+                                </button>
+                                <button @click="selectedRelease = null; searchResults = []" class="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">
+                                    ← Back
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Selected Release Info -->
+                        <div class="mb-4 p-4 bg-blue-50 rounded-lg">
+                            <p class="font-bold" x-text="`${selectedRelease.artist} - ${selectedRelease.title}`"></p>
+                            <p class="text-sm text-gray-600" x-text="`${selectedRelease.year} • ${selectedRelease.label}`"></p>
+                        </div>
+
+                        <!-- Mapping Table -->
+                        <div class="space-y-2 mb-4">
+                            <div class="grid grid-cols-2 gap-4 text-sm font-semibold text-gray-700 pb-2 border-b">
+                                <div>Detected Track</div>
+                                <div>Maps to Discogs Track</div>
+                            </div>
+                            <template x-for="(track, idx) in detectedTracks" :key="idx">
+                                <div class="grid grid-cols-2 gap-4 p-2 bg-gray-50 rounded items-center">
+                                    <div>
+                                        <span class="font-medium">Track <span x-text="track.number"></span></span>
+                                        <span class="text-gray-600 text-sm ml-2">(<span x-text="formatDuration(track.duration)"></span>)</span>
+                                    </div>
+                                    <div>
+                                        <select
+                                            x-model="customMapping[idx]"
+                                            @change="updateCustomMapping()"
+                                            class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        >
+                                            <template x-for="(dt, dtIdx) in selectedRelease.tracks" :key="dtIdx">
+                                                <option :value="dtIdx" x-text="`${dt.position} - ${dt.title}`"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Process Button -->
+                        <button @click="processFile()" class="w-full px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 font-bold text-lg">
+                            ✓ Process & Save
+                        </button>
+                    </div>
+
+                    <!-- Success Message -->
+                    <div x-show="successMessage" x-cloak class="bg-green-50 border border-green-200 rounded-lg p-6">
+                        <h3 class="text-lg font-bold text-green-800 mb-2">✓ Processing Complete!</h3>
+                        <p class="text-green-700" x-text="successMessage"></p>
+                        <button @click="resetForNextFile()" class="mt-4 px-6 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600">
+                            Process Next File
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

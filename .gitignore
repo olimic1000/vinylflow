@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+temp_uploads/
+*.wav
+*.mp3
+*.flac
+.env
+*.log
+.DS_Store
+venv/
+output/
