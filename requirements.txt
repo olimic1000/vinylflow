@@ -1,5 +1,5 @@
 mutagen>=1.47.0
-python-discogs-client>=2.3.0
+discogs-client>=2.3.0
 python-dotenv>=1.0.0
 requests>=2.31.0
 pillow>=10.0.0
