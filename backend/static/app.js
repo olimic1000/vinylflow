@@ -295,6 +295,11 @@ function vinylApp() {
                 });
                 const data = await response.json();
 
+                // Check for error response
+                if (!response.ok || !data.tracks) {
+                    throw new Error(data.detail || 'Analysis failed');
+                }
+
                 // Add editing and ignored flags to each track
                 this.detectedTracks = data.tracks.map(track => ({
                     ...track,
