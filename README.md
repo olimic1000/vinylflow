@@ -1,6 +1,6 @@
 # VinylFlow
 
-Automated vinyl record digitization tool for house/techno 12-inch EPs. Converts WAV recordings to FLAC with intelligent silence detection, Discogs metadata tagging, and vinyl-style track numbering.
+Automated vinyl record digitization tool. Converts WAV recordings to FLAC with intelligent silence detection, Discogs metadata tagging, and vinyl-style track numbering.
 
 ## Features
 
