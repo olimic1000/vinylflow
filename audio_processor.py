@@ -1,6 +1,8 @@
 """
-Audio processing module for Vinyl Digitizer.
+VinylFlow - Audio Processing Module
+
 Handles silence detection, track splitting, and FLAC conversion.
+Uses FFmpeg for audio analysis and format conversion.
 """
 
 import re
@@ -45,8 +47,13 @@ class Track:
 class AudioProcessor:
     """Handles audio processing operations."""
 
-    def __init__(self, silence_threshold=-40, min_silence_duration=1.5,
-                 min_track_length=30, flac_compression=8):
+    def __init__(
+        self,
+        silence_threshold=-40,
+        min_silence_duration=1.5,
+        min_track_length=30,
+        flac_compression=8,
+    ):
         """
         Initialize audio processor.
 
@@ -72,19 +79,11 @@ class AudioProcessor:
             Duration in seconds, or None if error
         """
         try:
-            cmd = [
-                'ffmpeg', '-i', str(file_path),
-                '-f', 'null', '-'
-            ]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+            cmd = ["ffmpeg", "-i", str(file_path), "-f", "null", "-"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
             # Parse duration from ffmpeg output
-            match = re.search(r'Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})', result.stderr)
+            match = re.search(r"Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})", result.stderr)
             if match:
                 hours, minutes, seconds = match.groups()
                 return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
@@ -107,34 +106,36 @@ class AudioProcessor:
         """
         if verbose:
             print(f"Detecting silence in: {file_path.name}")
-            print(f"Threshold: {self.silence_threshold}dB, Min duration: {self.min_silence_duration}s")
+            print(
+                f"Threshold: {self.silence_threshold}dB, Min duration: {self.min_silence_duration}s"
+            )
 
         # Run ffmpeg silence detection
         cmd = [
-            'ffmpeg', '-i', str(file_path),
-            '-af', f'silencedetect=noise={self.silence_threshold}dB:duration={self.min_silence_duration}',
-            '-f', 'null', '-'
+            "ffmpeg",
+            "-i",
+            str(file_path),
+            "-af",
+            f"silencedetect=noise={self.silence_threshold}dB:duration={self.min_silence_duration}",
+            "-f",
+            "null",
+            "-",
         ]
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
             # Parse silence periods from stderr
             silence_starts = []
             silence_ends = []
 
-            for line in result.stderr.split('\n'):
-                if 'silence_start' in line:
-                    match = re.search(r'silence_start: ([\d.]+)', line)
+            for line in result.stderr.split("\n"):
+                if "silence_start" in line:
+                    match = re.search(r"silence_start: ([\d.]+)", line)
                     if match:
                         silence_starts.append(float(match.group(1)))
-                elif 'silence_end' in line:
-                    match = re.search(r'silence_end: ([\d.]+)', line)
+                elif "silence_end" in line:
+                    match = re.search(r"silence_end: ([\d.]+)", line)
                     if match:
                         silence_ends.append(float(match.group(1)))
 
@@ -158,8 +159,9 @@ class AudioProcessor:
         except Exception as e:
             raise RuntimeError(f"Silence detection failed: {e}")
 
-    def _calculate_tracks(self, silence_starts: List[float], silence_ends: List[float],
-                          total_duration: float) -> List[Track]:
+    def _calculate_tracks(
+        self, silence_starts: List[float], silence_ends: List[float], total_duration: float
+    ) -> List[Track]:
         """
         Calculate track boundaries from silence periods.
 
@@ -206,8 +208,9 @@ class AudioProcessor:
 
         return tracks
 
-    def split_tracks_duration_based(self, file_path: Path, durations: List[float],
-                                    verbose=False) -> List[Track]:
+    def split_tracks_duration_based(
+        self, file_path: Path, durations: List[float], verbose=False
+    ) -> List[Track]:
         """
         Create track splits based on provided durations (for when silence detection fails).
 
@@ -237,8 +240,9 @@ class AudioProcessor:
 
         return tracks
 
-    def extract_track(self, input_file: Path, track: Track, output_file: Path,
-                      verbose=False) -> bool:
+    def extract_track(
+        self, input_file: Path, track: Track, output_file: Path, verbose=False
+    ) -> bool:
         """
         Extract a single track and convert to FLAC.
 
@@ -255,23 +259,23 @@ class AudioProcessor:
             print(f"Extracting {track.vinyl_number or f'Track {track.number}'}: {output_file.name}")
 
         cmd = [
-            'ffmpeg',
-            '-i', str(input_file),
-            '-ss', str(track.start),
-            '-t', str(track.duration),
-            '-c:a', 'flac',
-            '-compression_level', str(self.flac_compression),
-            '-y',  # Overwrite output file
-            str(output_file)
+            "ffmpeg",
+            "-i",
+            str(input_file),
+            "-ss",
+            str(track.start),
+            "-t",
+            str(track.duration),
+            "-c:a",
+            "flac",
+            "-compression_level",
+            str(self.flac_compression),
+            "-y",  # Overwrite output file
+            str(output_file),
         ]
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=600
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
             if result.returncode != 0:
                 print(f"Error: ffmpeg failed: {result.stderr}")
@@ -291,8 +295,10 @@ class AudioProcessor:
             if actual_duration is None:
                 print(f"Warning: Could not verify duration of {output_file}")
             elif abs(actual_duration - track.duration) > 2.0:
-                print(f"Warning: Duration mismatch for {output_file}: "
-                      f"expected {track.duration:.1f}s, got {actual_duration:.1f}s")
+                print(
+                    f"Warning: Duration mismatch for {output_file}: "
+                    f"expected {track.duration:.1f}s, got {actual_duration:.1f}s"
+                )
 
             return True
 
@@ -303,8 +309,9 @@ class AudioProcessor:
             print(f"Error extracting track: {e}")
             return False
 
-    def extract_all_tracks(self, input_file: Path, tracks: List[Track],
-                          output_dir: Path, verbose=False) -> List[Path]:
+    def extract_all_tracks(
+        self, input_file: Path, tracks: List[Track], output_dir: Path, verbose=False
+    ) -> List[Path]:
         """
         Extract all tracks from input file.
 

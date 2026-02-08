@@ -1,6 +1,8 @@
 """
-Configuration management for Vinyl Digitizer.
-Loads settings from .env file and provides defaults.
+VinylFlow - Configuration Management
+
+Loads settings from .env file and provides configuration defaults.
+Handles Discogs API credentials, audio processing parameters, and output settings.
 """
 
 import os
@@ -9,7 +11,7 @@ from dotenv import load_dotenv
 
 
 class Config:
-    """Configuration manager for Vinyl Digitizer."""
+    """Configuration manager for VinylFlow."""
 
     def __init__(self, env_path=None):
         """
@@ -19,7 +21,7 @@ class Config:
             env_path: Optional path to .env file. If None, looks in current directory.
         """
         if env_path is None:
-            env_path = Path(__file__).parent / '.env'
+            env_path = Path(__file__).parent / ".env"
         else:
             env_path = Path(env_path)
 
@@ -28,20 +30,19 @@ class Config:
             load_dotenv(env_path)
 
         # Discogs API settings
-        self.discogs_token = os.getenv('DISCOGS_USER_TOKEN', '')
-        self.discogs_user_agent = os.getenv('DISCOGS_USER_AGENT', 'VinylDigitizer/1.0')
+        self.discogs_token = os.getenv("DISCOGS_USER_TOKEN", "")
+        self.discogs_user_agent = os.getenv("DISCOGS_USER_AGENT", "VinylFlow/1.0")
 
         # Output settings
         self.default_output_dir = os.getenv(
-            'DEFAULT_OUTPUT_DIR',
-            str(Path.home() / 'Music' / 'new 12-inches')
+            "DEFAULT_OUTPUT_DIR", str(Path.home() / "Music" / "new 12-inches")
         )
 
         # Audio processing settings
-        self.default_silence_threshold = float(os.getenv('DEFAULT_SILENCE_THRESHOLD', '-40'))
-        self.default_min_silence_duration = float(os.getenv('DEFAULT_MIN_SILENCE_DURATION', '1.5'))
-        self.default_min_track_length = float(os.getenv('DEFAULT_MIN_TRACK_LENGTH', '30'))
-        self.default_flac_compression = int(os.getenv('DEFAULT_FLAC_COMPRESSION', '8'))
+        self.default_silence_threshold = float(os.getenv("DEFAULT_SILENCE_THRESHOLD", "-40"))
+        self.default_min_silence_duration = float(os.getenv("DEFAULT_MIN_SILENCE_DURATION", "1.5"))
+        self.default_min_track_length = float(os.getenv("DEFAULT_MIN_TRACK_LENGTH", "30"))
+        self.default_flac_compression = int(os.getenv("DEFAULT_FLAC_COMPRESSION", "8"))
 
     def validate(self):
         """
@@ -76,6 +77,7 @@ class Config:
         """
         try:
             import discogs_client
+
             client = discogs_client.Client(self.discogs_user_agent, user_token=self.discogs_token)
             identity = client.identity()
             return True, f"Connected as: {identity.username}"
@@ -104,19 +106,19 @@ def create_default_env_file(path=None):
         path: Path where to create the .env file. Defaults to current directory.
     """
     if path is None:
-        path = Path.cwd() / '.env'
+        path = Path.cwd() / ".env"
     else:
         path = Path(path)
 
-    template = """# Vinyl Digitizer Configuration
+    template = """# VinylFlow Configuration
 
 # Discogs API Settings
 # Get your token from: https://www.discogs.com/settings/developers
 DISCOGS_USER_TOKEN=your_token_here
-DISCOGS_USER_AGENT=VinylDigitizer/1.0
+DISCOGS_USER_AGENT=VinylFlow/1.0
 
 # Output Settings
-DEFAULT_OUTPUT_DIR=/Users/oliviermichelet/Music/new 12-inches
+DEFAULT_OUTPUT_DIR=/app/output
 
 # Audio Processing Settings
 # Silence threshold in dB (negative value)

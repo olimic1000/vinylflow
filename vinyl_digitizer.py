@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Vinyl Digitizer - Automated vinyl record digitization tool.
-Converts WAV recordings to FLAC with silence detection and Discogs metadata.
+VinylFlow - Automated Vinyl Record Digitization
+
+Command-line interface for converting vinyl recordings to tagged FLAC files.
+Features intelligent silence detection, Discogs metadata integration, and batch processing.
 """
 
 import argparse
@@ -37,12 +39,11 @@ class VinylDigitizer:
             silence_threshold=config.default_silence_threshold,
             min_silence_duration=config.default_min_silence_duration,
             min_track_length=config.default_min_track_length,
-            flac_compression=config.default_flac_compression
+            flac_compression=config.default_flac_compression,
         )
 
         self.metadata_handler = MetadataHandler(
-            discogs_token=config.discogs_token,
-            user_agent=config.discogs_user_agent
+            discogs_token=config.discogs_token, user_agent=config.discogs_user_agent
         )
 
     def process_file(self, input_file: Path, output_dir: Optional[Path] = None) -> bool:
@@ -91,7 +92,7 @@ class VinylDigitizer:
         # Step 3: Search Discogs
         print("\nStep 3: Searching Discogs...")
         query = self.metadata_handler.clean_filename(input_file.name)
-        print(f"Search query: \"{query}\"")
+        print(f'Search query: "{query}"')
 
         release = self._interactive_discogs_search(query)
         if release is None:
@@ -102,11 +103,13 @@ class VinylDigitizer:
         print("\nStep 4: Mapping tracks to Discogs...")
         while True:
             result = self._map_tracks(detected_tracks, release, input_file)
-            if result == 'retry':
+            if result == "retry":
                 # Re-detect with new parameters
                 print("\nRe-detecting tracks with new parameters...")
                 try:
-                    detected_tracks = self.audio_processor.detect_silence(input_file, verbose=self.verbose)
+                    detected_tracks = self.audio_processor.detect_silence(
+                        input_file, verbose=self.verbose
+                    )
                     if not detected_tracks:
                         print("❌ No tracks detected with new parameters")
                         return False
@@ -144,7 +147,7 @@ class VinylDigitizer:
             print("\nStep 6: Downloading cover art...")
             cover_data = None
             if release.cover_url:
-                cover_temp = temp_path / 'cover.jpg'
+                cover_temp = temp_path / "cover.jpg"
                 if self.metadata_handler.download_cover_art(release.cover_url, cover_temp):
                     print(f"✓ Downloaded cover art")
                     cover_data = self.metadata_handler.prepare_cover_for_embedding(cover_temp)
@@ -156,9 +159,7 @@ class VinylDigitizer:
             # Step 7: Tag files
             print("\nStep 7: Writing metadata tags...")
             for track, temp_file in zip(detected_tracks, output_files):
-                success = self.metadata_handler.tag_flac_file(
-                    temp_file, track, release, cover_data
-                )
+                success = self.metadata_handler.tag_flac_file(temp_file, track, release, cover_data)
                 if not success:
                     print(f"⚠️  Failed to tag {track.vinyl_number}")
 
@@ -179,8 +180,8 @@ class VinylDigitizer:
 
             # Save cover art as folder.jpg
             if cover_data:
-                folder_jpg = album_dir / 'folder.jpg'
-                with open(folder_jpg, 'wb') as f:
+                folder_jpg = album_dir / "folder.jpg"
+                with open(folder_jpg, "wb") as f:
                     f.write(cover_data)
 
             print(f"✓ Saved to: {album_dir}")
@@ -190,7 +191,9 @@ class VinylDigitizer:
         print("✓ SUCCESS")
         print(f"{'='*70}")
         print(f"Album: {release.artist} - {release.title} ({release.year})")
-        print(f"Tracks: {len(detected_tracks)} ({', '.join([t.vinyl_number for t in detected_tracks])})")
+        print(
+            f"Tracks: {len(detected_tracks)} ({', '.join([t.vinyl_number for t in detected_tracks])})"
+        )
         print(f"Output: {album_dir}")
         print()
 
@@ -212,19 +215,19 @@ class VinylDigitizer:
             if not results:
                 print(f"No results found for: {query}")
                 action = input("Enter new search query, or [s]kip: ").strip()
-                if action.lower() == 's':
+                if action.lower() == "s":
                     return None
                 query = action
                 continue
 
-            print(f"\nSearch: \"{query}\"\n")
+            print(f'\nSearch: "{query}"\n')
             for idx, release in results:
                 print(f"{idx}. {release.display_summary()}")
 
             print()
             choice = input("Select [1-5], enter custom search, or [s]kip: ").strip()
 
-            if choice.lower() == 's':
+            if choice.lower() == "s":
                 return None
 
             if choice.isdigit():
@@ -253,9 +256,9 @@ class VinylDigitizer:
         print(f"\nDetected: {len(detected_tracks)} tracks")
         print(f"Discogs:  {len(release.tracks)} tracks")
 
-        # Debug: Show release info
+        # Show release info when no tracks found
         if len(release.tracks) == 0:
-            print(f"\nDEBUG: Release info:")
+            print(f"\nRelease info:")
             print(f"  ID: {release.id}")
             print(f"  Title: {release.title}")
             print(f"  Artist: {release.artist}")
@@ -266,14 +269,16 @@ class VinylDigitizer:
         # Check for count mismatch
         if len(detected_tracks) != len(release.tracks):
             print(f"\n⚠️  Track count mismatch!")
-            print(f"Detected {len(detected_tracks)} tracks, but Discogs lists {len(release.tracks)}")
+            print(
+                f"Detected {len(detected_tracks)} tracks, but Discogs lists {len(release.tracks)}"
+            )
 
             # Run duration comparison
             comparison = compare_track_durations(detected_tracks, release.tracks)
 
-            if comparison['warnings']:
+            if comparison["warnings"]:
                 print()
-                for warning in comparison['warnings']:
+                for warning in comparison["warnings"]:
                     print(warning)
 
             print("\nOptions:")
@@ -284,9 +289,9 @@ class VinylDigitizer:
 
             choice = input("\nChoice: ").strip().lower()
 
-            if choice == 's':
+            if choice == "s":
                 return False
-            elif choice == 'a':
+            elif choice == "a":
                 # Adjust silence parameters
                 print("\nCurrent parameters:")
                 print(f"  Silence threshold: {self.audio_processor.silence_threshold} dB")
@@ -294,12 +299,16 @@ class VinylDigitizer:
                 print()
 
                 try:
-                    threshold_input = input(f"New threshold (press Enter to keep {self.audio_processor.silence_threshold}): ").strip()
+                    threshold_input = input(
+                        f"New threshold (press Enter to keep {self.audio_processor.silence_threshold}): "
+                    ).strip()
                     if threshold_input:
                         new_threshold = float(threshold_input)
                         self.audio_processor.silence_threshold = new_threshold
 
-                    duration_input = input(f"New min silence duration (press Enter to keep {self.audio_processor.min_silence_duration}): ").strip()
+                    duration_input = input(
+                        f"New min silence duration (press Enter to keep {self.audio_processor.min_silence_duration}): "
+                    ).strip()
                     if duration_input:
                         new_duration = float(duration_input)
                         self.audio_processor.min_silence_duration = new_duration
@@ -308,11 +317,11 @@ class VinylDigitizer:
                     print(f"  Silence threshold: {self.audio_processor.silence_threshold} dB")
                     print(f"  Min silence duration: {self.audio_processor.min_silence_duration}s")
 
-                    return 'retry'  # Signal to re-detect tracks
+                    return "retry"  # Signal to re-detect tracks
                 except ValueError:
                     print("Invalid input. Please enter numeric values.")
                     return False
-            elif choice == 'd':
+            elif choice == "d":
                 # Use duration-based splitting
                 if all(t.duration_seconds for t in release.tracks):
                     durations = [t.duration_seconds for t in release.tracks]
@@ -321,13 +330,13 @@ class VinylDigitizer:
                         self.audio_processor.split_tracks_duration_based(
                             Path("dummy"),  # File path not needed for creating track list
                             durations,
-                            verbose=self.verbose
+                            verbose=self.verbose,
                         )
                     )
                 else:
                     print("Cannot use duration-based split: Discogs missing duration data")
                     return False
-            elif choice != 'c':
+            elif choice != "c":
                 return False
 
         # Simple 1:1 mapping
@@ -356,7 +365,9 @@ class VinylDigitizer:
                     det_track.vinyl_number = discogs_track.position
                     det_track.title = discogs_track.title
 
-                    det_str = f"Track {det_track.number} ({det_track.format_time(det_track.duration)})"
+                    det_str = (
+                        f"Track {det_track.number} ({det_track.format_time(det_track.duration)})"
+                    )
                     disc_str = f"{discogs_track.position}. {discogs_track.title}"
                     if discogs_track.duration_str:
                         disc_str += f" ({discogs_track.duration_str})"
@@ -371,11 +382,11 @@ class VinylDigitizer:
 
                 confirm = input("Mapping looks good? [Y/n/r=reverse/m=manual]: ").strip().lower()
 
-                if confirm == 'r':
+                if confirm == "r":
                     inverted = not inverted
                     custom_mapping = None  # Clear custom mapping
                     continue
-                elif confirm == 'm':
+                elif confirm == "m":
                     # Manual reordering
                     print("\nManual track reordering")
                     print("Available Discogs tracks:")
@@ -383,14 +394,16 @@ class VinylDigitizer:
                         print(f"  {i}. {dt.position} - {dt.title}")
                     print()
                     print("Enter the order for your detected tracks.")
-                    print(f"Example: For {len(detected_tracks)} tracks, enter: 1,2,3,4 or 3,4,1,2 etc.")
+                    print(
+                        f"Example: For {len(detected_tracks)} tracks, enter: 1,2,3,4 or 3,4,1,2 etc."
+                    )
                     print("(Use track numbers from the list above)")
 
                     order_input = input("\nEnter order (comma-separated): ").strip()
 
                     try:
                         # Parse the input
-                        indices = [int(x.strip()) - 1 for x in order_input.split(',')]
+                        indices = [int(x.strip()) - 1 for x in order_input.split(",")]
 
                         # Validate
                         if len(indices) != len(release.tracks):
@@ -398,7 +411,9 @@ class VinylDigitizer:
                             continue
 
                         if any(i < 0 or i >= len(release.tracks) for i in indices):
-                            print(f"❌ Error: Track numbers must be between 1 and {len(release.tracks)}")
+                            print(
+                                f"❌ Error: Track numbers must be between 1 and {len(release.tracks)}"
+                            )
                             continue
 
                         # Create custom mapping
@@ -409,7 +424,7 @@ class VinylDigitizer:
                     except (ValueError, IndexError) as e:
                         print(f"❌ Invalid input: {e}")
                         continue
-                elif not confirm or confirm == 'y':
+                elif not confirm or confirm == "y":
                     return True
                 else:
                     return False
@@ -429,31 +444,31 @@ class VinylDigitizer:
         Returns:
             Dict with statistics
         """
-        wav_files = sorted(input_dir.glob('*.wav'))
+        wav_files = sorted(input_dir.glob("*.wav"))
 
         if not wav_files:
             print(f"No WAV files found in: {input_dir}")
-            return {'success': 0, 'failed': 0, 'skipped': 0}
+            return {"success": 0, "failed": 0, "skipped": 0}
 
         print(f"\nFound {len(wav_files)} WAV files")
         print(f"{'='*70}\n")
 
-        stats = {'success': 0, 'failed': 0, 'skipped': 0}
+        stats = {"success": 0, "failed": 0, "skipped": 0}
 
         for i, wav_file in enumerate(wav_files, 1):
             print(f"\n[{i}/{len(wav_files)}]")
 
             try:
                 if self.process_file(wav_file, output_dir):
-                    stats['success'] += 1
+                    stats["success"] += 1
                 else:
-                    stats['skipped'] += 1
+                    stats["skipped"] += 1
             except KeyboardInterrupt:
                 print("\n\nBatch processing interrupted by user")
                 break
             except Exception as e:
                 print(f"\n❌ Unexpected error: {e}")
-                stats['failed'] += 1
+                stats["failed"] += 1
 
         # Print summary
         print(f"\n{'='*70}")
@@ -476,9 +491,9 @@ def check_dependencies():
 
     # Check ffmpeg
     try:
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=5)
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
         if result.returncode == 0:
-            version = result.stdout.decode().split('\n')[0]
+            version = result.stdout.decode().split("\n")[0]
             print(f"✓ {version}")
         else:
             print("❌ ffmpeg not working")
@@ -489,7 +504,7 @@ def check_dependencies():
 
     # Check flac
     try:
-        result = subprocess.run(['flac', '--version'], capture_output=True, timeout=5)
+        result = subprocess.run(["flac", "--version"], capture_output=True, timeout=5)
         if result.returncode == 0:
             version = result.stdout.decode().strip()
             print(f"✓ {version}")
@@ -507,6 +522,7 @@ def check_dependencies():
         import dotenv
         import requests
         import PIL
+
         print("✓ All Python packages installed")
     except ImportError as e:
         print(f"❌ Missing Python package: {e.name}")
@@ -519,38 +535,44 @@ def check_dependencies():
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Vinyl Digitizer - Automated vinyl record digitization',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description="VinylFlow - Automated vinyl record digitization",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # Check command
-    subparsers.add_parser('check', help='Check dependencies and configuration')
+    subparsers.add_parser("check", help="Check dependencies and configuration")
 
     # Init command
-    subparsers.add_parser('init', help='Create default .env configuration file')
+    subparsers.add_parser("init", help="Create default .env configuration file")
 
     # Process command
-    process_parser = subparsers.add_parser('process', help='Process a single WAV file')
-    process_parser.add_argument('file', type=Path, help='WAV file to process')
-    process_parser.add_argument('-o', '--output-dir', type=Path, help='Output directory')
-    process_parser.add_argument('--silence-threshold', type=float, help='Silence threshold (dB)')
-    process_parser.add_argument('--min-silence-duration', type=float, help='Min silence duration (seconds)')
-    process_parser.add_argument('--dry-run', action='store_true', help='Show what would be done without processing')
-    process_parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
+    process_parser = subparsers.add_parser("process", help="Process a single WAV file")
+    process_parser.add_argument("file", type=Path, help="WAV file to process")
+    process_parser.add_argument("-o", "--output-dir", type=Path, help="Output directory")
+    process_parser.add_argument("--silence-threshold", type=float, help="Silence threshold (dB)")
+    process_parser.add_argument(
+        "--min-silence-duration", type=float, help="Min silence duration (seconds)"
+    )
+    process_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be done without processing"
+    )
+    process_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     # Batch command
-    batch_parser = subparsers.add_parser('batch', help='Batch process directory of WAV files')
-    batch_parser.add_argument('directory', type=Path, help='Directory containing WAV files')
-    batch_parser.add_argument('-o', '--output-dir', type=Path, help='Output directory')
-    batch_parser.add_argument('--dry-run', action='store_true', help='Show what would be done without processing')
-    batch_parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
+    batch_parser = subparsers.add_parser("batch", help="Batch process directory of WAV files")
+    batch_parser.add_argument("directory", type=Path, help="Directory containing WAV files")
+    batch_parser.add_argument("-o", "--output-dir", type=Path, help="Output directory")
+    batch_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be done without processing"
+    )
+    batch_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
 
     # Handle commands
-    if args.command == 'check':
+    if args.command == "check":
         if check_dependencies():
             print("Checking configuration...")
             config = Config()
@@ -571,7 +593,7 @@ def main():
         else:
             sys.exit(1)
 
-    elif args.command == 'init':
+    elif args.command == "init":
         try:
             env_path = create_default_env_file()
             print(f"✓ Created {env_path}")
@@ -582,7 +604,7 @@ def main():
             print(f"❌ {e}")
             sys.exit(1)
 
-    elif args.command == 'process':
+    elif args.command == "process":
         config = Config()
         is_valid, error = config.validate()
         if not is_valid:
@@ -600,7 +622,7 @@ def main():
         success = digitizer.process_file(args.file, args.output_dir)
         sys.exit(0 if success else 1)
 
-    elif args.command == 'batch':
+    elif args.command == "batch":
         config = Config()
         is_valid, error = config.validate()
         if not is_valid:
@@ -609,12 +631,12 @@ def main():
 
         digitizer = VinylDigitizer(config, dry_run=args.dry_run, verbose=args.verbose)
         stats = digitizer.batch_process(args.directory, args.output_dir)
-        sys.exit(0 if stats['failed'] == 0 else 1)
+        sys.exit(0 if stats["failed"] == 0 else 1)
 
     else:
         parser.print_help()
         sys.exit(0)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

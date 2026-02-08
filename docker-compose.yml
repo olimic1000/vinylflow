@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  vinylflow:
+    build: .
+    container_name: vinylflow
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      # Discogs API Configuration
+      - DISCOGS_USER_TOKEN=${DISCOGS_USER_TOKEN}
+      - DISCOGS_USER_AGENT=${DISCOGS_USER_AGENT:-VinylFlow/1.0}
+
+      # Audio Processing Settings
+      - DEFAULT_SILENCE_THRESHOLD=${DEFAULT_SILENCE_THRESHOLD:--40}
+      - DEFAULT_MIN_SILENCE_DURATION=${DEFAULT_MIN_SILENCE_DURATION:-1.0}
+      - DEFAULT_MIN_TRACK_LENGTH=${DEFAULT_MIN_TRACK_LENGTH:-30}
+      - DEFAULT_FLAC_COMPRESSION=${DEFAULT_FLAC_COMPRESSION:-8}
+
+      # Output Configuration
+      - DEFAULT_OUTPUT_DIR=/app/output
+
+      # Server Configuration
+      - PORT=8000
+    volumes:
+      # Persistent storage for processed files
+      - ./output:/app/output
+      # Temporary uploads (can be ephemeral)
+      - ./temp_uploads:/app/temp_uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/queue', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - vinylflow-network
+
+networks:
+  vinylflow-network:
+    driver: bridge

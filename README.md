@@ -1,4 +1,4 @@
-# Vinyl Digitizer
+# VinylFlow
 
 Automated vinyl record digitization tool for house/techno 12-inch EPs. Converts WAV recordings to FLAC with intelligent silence detection, Discogs metadata tagging, and vinyl-style track numbering.
 
@@ -15,13 +15,68 @@ Automated vinyl record digitization tool for house/techno 12-inch EPs. Converts 
 - **Interactive workflow** - Manual confirmation for accurate metadata
 - **Remote access** - Control from any device on your network
 
+## Requirements
+
+### Docker Installation (Easiest)
+- Docker Desktop (Mac/Windows) or Docker Engine (Linux)
+- Docker Compose
+- 2GB free disk space
+- Discogs API token (free)
+
+### Manual Installation
+- Python 3.9 or higher
+- FFmpeg
+- FLAC encoder
+- 2GB free disk space
+- Discogs API token (free)
+
 ## Time Savings
 
 - **Manual workflow:** 20-30 min per album (Audacity + manual tagging)
 - **Automated workflow:** 3-5 min per album (mostly Discogs confirmation)
 - **Time savings:** ~85% reduction
 
-## Installation
+## Quick Start with Docker (Recommended)
+
+Get VinylFlow running in one command:
+
+```bash
+# 1. Clone the repository
+git clone <repository-url>
+cd vinylflow
+
+# 2. Copy and configure environment file
+cp .env.example .env
+nano .env  # Add your Discogs token
+
+# 3. Start VinylFlow
+docker compose up -d
+```
+
+That's it! Open http://localhost:8000 in your browser.
+
+**What you get:**
+- ✅ All dependencies pre-installed (FFmpeg, FLAC, Python packages)
+- ✅ Automatic restarts if the container crashes
+- ✅ Persistent storage for your processed files in `./output`
+- ✅ No system-wide installation required
+
+**Managing the service:**
+```bash
+# View logs
+docker compose logs -f
+
+# Stop the service
+docker compose stop
+
+# Restart the service
+docker compose restart
+
+# Remove everything (keeps your files in ./output)
+docker compose down
+```
+
+## Installation (Manual Setup)
 
 ### 1. Install System Dependencies
 
@@ -55,14 +110,14 @@ nano .env
 
 ```bash
 # Check that all dependencies are installed
-./vinyl_digitizer.py check
+python3 vinyl_digitizer.py check
 ```
 
 ## Usage
 
 ### Web Interface (Recommended)
 
-The easiest way to use Vinyl Digitizer is through the web interface:
+The easiest way to use VinylFlow is through the modern web interface:
 
 ```bash
 # Start the web server
@@ -122,7 +177,7 @@ For automation or scripting, use the CLI:
 
 ```bash
 # Process all WAV files in directory
-./vinyl_digitizer.py batch "/Users/oliviermichelet/Music/to convert/"
+./vinyl_digitizer.py batch "/path/to/albums/"
 
 # Dry run for entire batch
 ./vinyl_digitizer.py batch "/path/to/albums/" --dry-run -v
@@ -165,7 +220,7 @@ Edit `.env` to customize settings:
 DISCOGS_USER_TOKEN=your_token_here
 
 # Output location
-DEFAULT_OUTPUT_DIR=/Users/oliviermichelet/Music/new 12-inches
+DEFAULT_OUTPUT_DIR=/path/to/music/output
 
 # Silence detection (adjust if tracks not splitting correctly)
 DEFAULT_SILENCE_THRESHOLD=-40          # dB level (more negative = quieter)
@@ -185,6 +240,56 @@ If tracks aren't splitting correctly:
 - **Splitting on brief silence:** Increase min silence duration (e.g., `2.0` instead of `1.5`)
 
 ## Troubleshooting
+
+### Docker Issues
+
+**Container won't start:**
+```bash
+# Check if port 8000 is already in use
+lsof -i :8000
+
+# Change port in .env file
+PORT=8080
+
+# Restart with new port
+docker compose down && docker compose up -d
+```
+
+**Can't access web interface:**
+- Make sure container is running: `docker compose ps`
+- Check logs for errors: `docker compose logs -f`
+- Try accessing from host machine: http://localhost:8000
+- If using VPN or firewall, temporarily disable it
+
+**Files not saving to output directory:**
+```bash
+# Check volume mount
+docker compose exec vinylflow ls -la /app/output
+
+# Check permissions
+chmod -R 755 ./output
+
+# Restart container
+docker compose restart
+```
+
+**Missing Discogs token error:**
+```bash
+# Verify .env file exists and has your token
+cat .env | grep DISCOGS_USER_TOKEN
+
+# Restart container to pick up changes
+docker compose restart
+```
+
+**Out of disk space:**
+```bash
+# Clean up Docker images and containers
+docker system prune -a
+
+# Remove old temporary uploads
+docker compose exec vinylflow rm -rf /app/temp_uploads/*
+```
 
 ### Tracks Not Splitting Correctly
 

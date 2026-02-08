@@ -1,6 +1,8 @@
 """
-Metadata handling module for Vinyl Digitizer.
-Handles Discogs API integration, metadata tagging, and cover art.
+VinylFlow - Metadata Handling Module
+
+Handles Discogs API integration, metadata tagging, and cover art embedding.
+Manages release searches, track mapping, and FLAC file tagging.
 """
 
 import re
@@ -39,7 +41,7 @@ class DiscogsTrack:
 
         try:
             # Handle formats like "5:24" or "1:05:24"
-            parts = duration_str.split(':')
+            parts = duration_str.split(":")
             if len(parts) == 2:
                 minutes, seconds = parts
                 return int(minutes) * 60 + int(seconds)
@@ -68,64 +70,58 @@ class DiscogsRelease:
         """
         self.id = release.id
         self.title = release.title
-        self.year = getattr(release, 'year', '')
+        self.year = getattr(release, "year", "")
 
         # Get artists
-        artists = getattr(release, 'artists', [])
-        self.artist = artists[0].name if artists else 'Unknown Artist'
+        artists = getattr(release, "artists", [])
+        self.artist = artists[0].name if artists else "Unknown Artist"
 
         # Handle various artists
-        if self.artist.lower() in ['various', 'various artists']:
+        if self.artist.lower() in ["various", "various artists"]:
             self.various_artists = True
         else:
             self.various_artists = False
 
         # Get label
-        labels = getattr(release, 'labels', [])
-        self.label = labels[0].name if labels else ''
+        labels = getattr(release, "labels", [])
+        self.label = labels[0].name if labels else ""
 
         # Get format
-        formats = getattr(release, 'formats', [])
-        self.format = formats[0]['name'] if formats else ''
+        formats = getattr(release, "formats", [])
+        self.format = formats[0]["name"] if formats else ""
 
         # Get images
-        self.images = getattr(release, 'images', [])
-        self.cover_url = self.images[0]['uri'] if self.images else None
+        self.images = getattr(release, "images", [])
+        self.cover_url = self.images[0]["uri"] if self.images else None
 
         # Parse tracklist
-        self.tracks = self._parse_tracklist(getattr(release, 'tracklist', []), debug=False)
+        self.tracks = self._parse_tracklist(getattr(release, "tracklist", []), debug=False)
 
     def _parse_tracklist(self, tracklist, debug=False) -> List[DiscogsTrack]:
         """Parse Discogs tracklist to DiscogsTrack objects."""
         tracks = []
         sequential_tracks = []
 
-        if debug and tracklist:
-            print(f"\nDEBUG: Parsing {len(tracklist)} tracks from Discogs:")
-
         for track in tracklist:
-            position = getattr(track, 'position', '')
-            title = getattr(track, 'title', 'Unknown')
-            duration = getattr(track, 'duration', '')
-
-            if debug:
-                print(f"  Position: '{position}' | Title: '{title}' | Duration: '{duration}'")
+            position = getattr(track, "position", "")
+            title = getattr(track, "title", "Unknown")
+            duration = getattr(track, "duration", "")
 
             # Handle vinyl positions (A1, B2, etc.)
-            if position and re.match(r'^[A-Z]\d+', position):
+            if position and re.match(r"^[A-Z]\d+", position):
                 tracks.append(DiscogsTrack(position, title, duration))
             # Handle repeated letters (A, AA, AAA → A1, A2, A3 / B, BB, BBB → B1, B2, B3)
-            elif position and re.match(r'^([A-Z])\1*$', position):
+            elif position and re.match(r"^([A-Z])\1*$", position):
                 # Count how many times the letter repeats
                 letter = position[0]
                 count = len(position)
                 vinyl_pos = f"{letter}{count}"
                 tracks.append(DiscogsTrack(vinyl_pos, title, duration))
             # Handle sequential numbers (1, 2, 3, 4) - we'll convert these to vinyl positions
-            elif position and re.match(r'^\d+$', position):
+            elif position and re.match(r"^\d+$", position):
                 sequential_tracks.append((int(position), title, duration))
             # Handle empty position - assume sequential
-            elif not position and title and title.lower() not in ['tracklist', 'notes']:
+            elif not position and title and title.lower() not in ["tracklist", "notes"]:
                 # No position, but has a title - treat as sequential
                 sequential_tracks.append((len(sequential_tracks) + 1, title, duration))
 
@@ -146,10 +142,12 @@ class DiscogsRelease:
 
         # Sort all tracks by position for proper display
         if tracks:
-            tracks.sort(key=lambda t: (t.position[0], int(t.position[1:]) if t.position[1:].isdigit() else 0))
-
-        if debug:
-            print(f"\nDEBUG: Parsed {len(tracks)} valid tracks\n")
+            tracks.sort(
+                key=lambda t: (
+                    t.position[0],
+                    int(t.position[1:]) if t.position[1:].isdigit() else 0,
+                )
+            )
 
         return tracks
 
@@ -202,10 +200,10 @@ class MetadataHandler:
         name = Path(filename).stem
 
         # Replace common separators with spaces
-        name = re.sub(r'[-_]+', ' ', name)
+        name = re.sub(r"[-_]+", " ", name)
 
         # Remove extra spaces
-        name = re.sub(r'\s+', ' ', name).strip()
+        name = re.sub(r"\s+", " ", name).strip()
 
         return name
 
@@ -223,7 +221,7 @@ class MetadataHandler:
         self._rate_limit()
 
         try:
-            results = self.client.search(query, type='release')
+            results = self.client.search(query, type="release")
             releases = []
 
             # Iterate through results with manual counter (Discogs results don't support slicing)
@@ -278,9 +276,7 @@ class MetadataHandler:
         """
         try:
             # Include User-Agent header to avoid 403 errors from Discogs image server
-            headers = {
-                'User-Agent': self.client.user_agent
-            }
+            headers = {"User-Agent": self.client.user_agent}
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
 
@@ -288,11 +284,11 @@ class MetadataHandler:
             img = Image.open(BytesIO(response.content))
 
             # Convert to RGB if needed (for JPEG compatibility)
-            if img.mode not in ('RGB', 'RGBA'):
-                img = img.convert('RGB')
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGB")
 
             # Save original size as folder.jpg
-            img.save(output_path, 'JPEG', quality=95)
+            img.save(output_path, "JPEG", quality=95)
 
             return True
 
@@ -315,8 +311,8 @@ class MetadataHandler:
             img = Image.open(image_path)
 
             # Convert to RGB
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
+            if img.mode != "RGB":
+                img = img.convert("RGB")
 
             # Resize if too large
             if max(img.size) > max_size:
@@ -324,15 +320,20 @@ class MetadataHandler:
 
             # Save to bytes
             buffer = BytesIO()
-            img.save(buffer, 'JPEG', quality=90)
+            img.save(buffer, "JPEG", quality=90)
             return buffer.getvalue()
 
         except Exception as e:
             print(f"Failed to prepare cover art: {e}")
             return None
 
-    def tag_flac_file(self, file_path: Path, track: 'Track', release: DiscogsRelease,
-                     cover_data: Optional[bytes] = None) -> bool:
+    def tag_flac_file(
+        self,
+        file_path: Path,
+        track: "Track",
+        release: DiscogsRelease,
+        cover_data: Optional[bytes] = None,
+    ) -> bool:
         """
         Write metadata tags to FLAC file.
 
@@ -364,26 +365,26 @@ class MetadataHandler:
                 return False
 
             # Write Vorbis comments
-            audio['ARTIST'] = release.artist
-            audio['ALBUM'] = release.title
-            audio['TITLE'] = discogs_track.title
-            audio['TRACKNUMBER'] = track.vinyl_number
-            audio['DATE'] = str(release.year) if release.year else ''
+            audio["ARTIST"] = release.artist
+            audio["ALBUM"] = release.title
+            audio["TITLE"] = discogs_track.title
+            audio["TRACKNUMBER"] = track.vinyl_number
+            audio["DATE"] = str(release.year) if release.year else ""
 
             # Optional fields
             if release.label:
-                audio['LABEL'] = release.label
+                audio["LABEL"] = release.label
 
             # Add Discogs reference
-            audio['DISCOGS_RELEASE_ID'] = str(release.id)
-            audio['COMMENT'] = 'Digitized from vinyl'
+            audio["DISCOGS_RELEASE_ID"] = str(release.id)
+            audio["COMMENT"] = "Digitized from vinyl"
 
             # Embed cover art if provided
             if cover_data:
                 picture = Picture()
                 picture.type = 3  # Front cover
-                picture.mime = 'image/jpeg'
-                picture.desc = 'Cover'
+                picture.mime = "image/jpeg"
+                picture.desc = "Cover"
                 picture.data = cover_data
                 audio.add_picture(picture)
 
@@ -405,13 +406,13 @@ class MetadataHandler:
             Safe filename string
         """
         # Replace problematic characters
-        name = re.sub(r'[/\\:*?"<>|]', '-', name)
+        name = re.sub(r'[/\\:*?"<>|]', "-", name)
 
         # Remove leading/trailing spaces and dots
-        name = name.strip(' .')
+        name = name.strip(" .")
 
         # Replace multiple spaces with single space
-        name = re.sub(r'\s+', ' ', name)
+        name = re.sub(r"\s+", " ", name)
 
         return name
 
@@ -429,7 +430,7 @@ class MetadataHandler:
         title = self.sanitize_filename(release.title)
         return f"{artist} - {title}"
 
-    def create_track_filename(self, track: 'Track', release: DiscogsRelease) -> str:
+    def create_track_filename(self, track: "Track", release: DiscogsRelease) -> str:
         """
         Create filename for track.
 
@@ -454,9 +455,9 @@ class MetadataHandler:
         return f"{track.vinyl_number}-{title}.flac"
 
 
-def compare_track_durations(detected_tracks: List['Track'],
-                           discogs_tracks: List[DiscogsTrack],
-                           tolerance=5.0) -> Dict:
+def compare_track_durations(
+    detected_tracks: List["Track"], discogs_tracks: List[DiscogsTrack], tolerance=5.0
+) -> Dict:
     """
     Compare detected tracks with Discogs tracks to validate matching.
 
@@ -469,16 +470,16 @@ def compare_track_durations(detected_tracks: List['Track'],
         Dict with 'matches', 'warnings', and 'errors' keys
     """
     result = {
-        'matches': [],
-        'warnings': [],
-        'errors': [],
-        'total_detected': len(detected_tracks),
-        'total_discogs': len(discogs_tracks)
+        "matches": [],
+        "warnings": [],
+        "errors": [],
+        "total_detected": len(detected_tracks),
+        "total_discogs": len(discogs_tracks),
     }
 
     # Check count mismatch
     if len(detected_tracks) != len(discogs_tracks):
-        result['errors'].append(
+        result["errors"].append(
             f"Track count mismatch: detected {len(detected_tracks)}, "
             f"Discogs has {len(discogs_tracks)}"
         )
@@ -493,7 +494,9 @@ def compare_track_durations(detected_tracks: List['Track'],
                 diff = abs(det_track.duration - discogs_duration)
 
                 if diff < tolerance:
-                    result['matches'].append(f"Track {i+1}: Duration match ({det_track.duration:.0f}s)")
+                    result["matches"].append(
+                        f"Track {i+1}: Duration match ({det_track.duration:.0f}s)"
+                    )
                 elif diff > tolerance * 2:
                     # Check if it matches sum of this and next track
                     if i + 1 < len(discogs_tracks):
@@ -501,7 +504,7 @@ def compare_track_durations(detected_tracks: List['Track'],
                         if next_duration:
                             combined = discogs_duration + next_duration
                             if abs(det_track.duration - combined) < tolerance:
-                                result['warnings'].append(
+                                result["warnings"].append(
                                     f"⚠️ Track {i+1} ({det_track.duration:.0f}s) appears to contain "
                                     f"2 tracks: {discogs_tracks[i].position} + {discogs_tracks[i+1].position} "
                                     f"(combined: {combined:.0f}s)"
