@@ -23,4 +23,4 @@ COPY . .
 RUN mkdir -p /app/output /app/temp_uploads
 
 # Use Railway's PORT environment variable
-CMD python -m uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD sh -c "python -m uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000}"
