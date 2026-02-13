@@ -13,23 +13,39 @@
 
         /* Typography */
         @font-face {
-            font-family: 'Mango Grotesque';
-            src: url('/static/fonts/MangoGrotesque-Regular.woff2') format('woff2');
+            font-family: 'Mirano Extended';
+            src: url('/static/fonts/MiranoExtendedFreebie-Light.ttf') format('truetype');
+            font-weight: 300;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        @font-face {
+            font-family: 'Mirano Extended';
+            src: url('/static/fonts/MiranoExtendedFreebie-LightItalic.ttf') format('truetype');
+            font-weight: 300;
+            font-style: italic;
+            font-display: swap;
+        }
+
+        @font-face {
+            font-family: 'Mirano Extended';
+            src: url('/static/fonts/MiranoExtendedFreebie-Light.ttf') format('truetype');
             font-weight: 400;
             font-style: normal;
             font-display: swap;
         }
 
         @font-face {
-            font-family: 'Mango Grotesque';
-            src: url('/static/fonts/MangoGrotesque-Medium.woff2') format('woff2');
+            font-family: 'Mirano Extended';
+            src: url('/static/fonts/MiranoExtendedFreebie-Light.ttf') format('truetype');
             font-weight: 600;
             font-style: normal;
             font-display: swap;
         }
 
         body {
-            font-family: 'Mango Grotesque', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-family: 'Mirano Extended', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         }
 
         /* Custom Color Palette */
@@ -182,7 +198,7 @@
             <div class="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
                 <div class="flex justify-between items-center">
                     <h1 class="text-3xl font-bold text-white">
-                        🎵 VinylFlow
+                    VinylFlow
                     </h1>
                     <button @click="showSettings = !showSettings" class="px-4 py-2 bg-white bg-opacity-10 hover:bg-opacity-20 text-white rounded-lg transition">
                         ⚙️ Settings
@@ -195,7 +211,7 @@
         <div class="bg-card border-b" style="border-color: #3D3D3D;">
             <div class="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8 text-center">
                 <p class="text-secondary text-lg">
-                    Transform your vinyl recordings into perfectly tagged FLAC files. Upload, analyze, and match with Discogs in minutes.
+                    Record. Split. Tag. Turn your vinyl into perfectly catalogued digital files in minutes.
                 </p>
             </div>
         </div>
@@ -523,7 +539,7 @@
                 <p class="text-sm">
                     <a href="https://vinylflow.app/" target="_blank" class="font-semibold hover:underline" style="color: #E5A100;">vinylflow.app</a>
                     <span class="text-muted mx-2">•</span>
-                    <span class="text-muted">© 2025 VinylFlow</span>
+                    <span class="text-muted">© 2026 VinylFlow</span>
                 </p>
             </div>
         </footer>
