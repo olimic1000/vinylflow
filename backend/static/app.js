@@ -11,6 +11,11 @@ function vinylApp() {
         // UI State
         dragging: false,
         showSettings: false,
+        uploadProgress: 0,
+        searchLoading: false,
+        trackCountMismatch: false,
+        autoRetryAttempts: 0,
+        maxAutoRetries: 3,
 
         // Files and Queue
         uploadedFiles: [],
@@ -26,6 +31,14 @@ function vinylApp() {
         waveformLoading: false,
         waveformRegions: null,
         currentZoom: 50,
+
+        // Context Menu for waveform splits
+        contextMenu: {
+            show: false,
+            x: 0,
+            y: 0,
+            time: 0
+        },
 
         // Discogs Search
         searchQuery: '',
@@ -237,7 +250,7 @@ function vinylApp() {
         },
 
         /**
-         * Upload files to server
+         * Upload files to server with progress tracking
          */
         async uploadFiles(files) {
             if (files.length === 0) return;
@@ -245,29 +258,69 @@ function vinylApp() {
             const formData = new FormData();
             files.forEach(file => formData.append('files', file));
 
-            try {
-                const response = await fetch('/api/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await response.json();
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
 
-                data.files.forEach(file => {
-                    this.uploadedFiles.push({
-                        ...file,
-                        status: 'uploaded'
-                    });
+                // Track upload progress
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        this.uploadProgress = (e.loaded / e.total) * 100;
+                    }
                 });
 
-                if (!this.currentFile && data.files.length > 0) {
-                    this.selectFile(data.files[0].id);
-                }
+                // Handle completion
+                xhr.addEventListener('load', () => {
+                    this.uploadProgress = 100;
 
-                alert(`Uploaded ${data.files.length} file(s)`);
-            } catch (error) {
-                console.error('Upload failed:', error);
-                alert('Upload failed');
-            }
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const data = JSON.parse(xhr.responseText);
+
+                            data.files.forEach(file => {
+                                this.uploadedFiles.push({
+                                    ...file,
+                                    status: 'uploaded'
+                                });
+                            });
+
+                            if (!this.currentFile && data.files.length > 0) {
+                                this.selectFile(data.files[0].id);
+                            }
+
+                            alert(`Uploaded ${data.files.length} file(s)`);
+
+                            // Reset progress after a short delay
+                            setTimeout(() => {
+                                this.uploadProgress = 0;
+                            }, 1000);
+
+                            resolve(data);
+                        } catch (error) {
+                            console.error('Upload failed:', error);
+                            alert('Upload failed: Invalid response');
+                            this.uploadProgress = 0;
+                            reject(error);
+                        }
+                    } else {
+                        console.error('Upload failed:', xhr.statusText);
+                        alert('Upload failed');
+                        this.uploadProgress = 0;
+                        reject(new Error(xhr.statusText));
+                    }
+                });
+
+                // Handle errors
+                xhr.addEventListener('error', () => {
+                    console.error('Upload failed');
+                    alert('Upload failed');
+                    this.uploadProgress = 0;
+                    reject(new Error('Upload failed'));
+                });
+
+                // Send the request
+                xhr.open('POST', '/api/upload');
+                xhr.send(formData);
+            });
         },
 
         /**
@@ -389,18 +442,27 @@ function vinylApp() {
                 return;
             }
 
+            this.searchLoading = true;
+            this.searchResults = [];
+
             try {
                 const response = await fetch('/api/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         query: this.searchQuery,
-                        max_results: 8
+                        max_results: 12
                     })
                 });
                 const data = await response.json();
 
                 this.searchResults = data.results;
+
+                // Debug: Check URI field
+                console.log('Search results:', this.searchResults.map(r => ({
+                    title: r.title,
+                    uri: r.uri
+                })));
 
                 if (this.searchResults.length === 0) {
                     alert('No results found. Try a different search query.');
@@ -408,6 +470,8 @@ function vinylApp() {
             } catch (error) {
                 console.error('Search failed:', error);
                 alert('Search failed: ' + error.message);
+            } finally {
+                this.searchLoading = false;
             }
         },
 
@@ -418,6 +482,109 @@ function vinylApp() {
             this.selectedRelease = release;
             this.trackMappingReversed = false;
             this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
+
+            const activeTrackCount = this.detectedTracks.filter(t => !t.ignored).length;
+            const discogsTrackCount = release.tracks.length;
+
+            // Check for track count mismatch
+            if (activeTrackCount !== discogsTrackCount) {
+                this.trackCountMismatch = true;
+            } else {
+                this.trackCountMismatch = false;
+            }
+        },
+
+        /**
+         * Offer duration-based splitting when silence detection fails
+         */
+        async offerDurationBasedSplitting() {
+            const activeTrackCount = this.detectedTracks.filter(t => !t.ignored).length;
+            const discogsTrackCount = this.selectedRelease.tracks.length;
+
+            // Check if Discogs has duration information
+            const hasDiscogsDurations = this.selectedRelease.tracks.every(t => t.duration);
+
+            if (!hasDiscogsDurations) {
+                alert(`❌ Duration-Based Splitting Unavailable\n\nDiscogs doesn't have duration information for this release.\n\nSuggestions:\n• Manually adjust track boundaries in the waveform\n• Search for a different release with duration data`);
+                return;
+            }
+
+            const message = `🎯 Try Duration-Based Splitting?\n\nSilence detection found ${activeTrackCount} tracks, but this release has ${discogsTrackCount} tracks.\n\nDuration-based splitting uses Discogs track lengths to divide the album instead of detecting silence.\n\nContinue?`;
+
+            if (confirm(message)) {
+                await this.analyzeFileDurationBased();
+            }
+        },
+
+        /**
+         * Analyze file using duration-based splitting from Discogs track lengths
+         */
+        async analyzeFileDurationBased() {
+            if (!this.currentFileId || !this.selectedRelease) return;
+
+            this.processingMessage = 'Creating duration-based splits...';
+
+            try {
+                // Extract durations from Discogs tracks
+                const durations = this.selectedRelease.tracks.map(t => {
+                    // Parse duration string: "5:24" -> 324 seconds
+                    if (!t.duration) return 0;
+
+                    const parts = t.duration.split(':');
+                    if (parts.length === 2) {
+                        return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+                    } else if (parts.length === 3) {
+                        return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
+                    }
+                    return 0;
+                }).filter(d => d > 0);
+
+                if (durations.length !== this.selectedRelease.tracks.length) {
+                    throw new Error('Could not parse all track durations from Discogs');
+                }
+
+                // Call backend API
+                const response = await fetch('/api/analyze-duration-based', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_id: this.currentFileId,
+                        discogs_durations: durations
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Duration-based analysis failed');
+                }
+
+                // Update detected tracks (same format as regular analysis)
+                this.detectedTracks = data.tracks.map(track => ({
+                    ...track,
+                    editing: false,
+                    ignored: false,
+                    durationBased: true  // Flag for UI indication
+                }));
+
+                this.processingMessage = '';
+
+                // Update file status
+                const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
+                if (file) {
+                    file.status = 'analyzed (duration-based)';
+                }
+
+                // Reinitialize waveform
+                await this.initWaveform();
+
+                alert(`✅ Duration-Based Splitting Complete\n\nCreated ${this.detectedTracks.length} tracks based on Discogs durations.\n\nReview boundaries in the waveform and adjust if needed before processing.`);
+
+            } catch (error) {
+                console.error('Duration-based analysis failed:', error);
+                alert('❌ Duration-based analysis failed: ' + error.message);
+                this.processingMessage = '';
+            }
         },
 
         /**
@@ -555,6 +722,46 @@ function vinylApp() {
                     this.currentZoom = Math.max(1, Math.min(calculatedZoom, 200));
                     this.waveform.zoom(this.currentZoom);
 
+                    // Add right-click handler for manual splits
+                    container.addEventListener('contextmenu', (e) => {
+                        e.preventDefault();
+
+                        // Find the waveform wrapper
+                        const waveformWrapper = container.querySelector('[part="wrapper"]') ||
+                                               container.querySelector('div');
+
+                        if (!waveformWrapper) {
+                            console.error('Could not find waveform wrapper');
+                            return;
+                        }
+
+                        // Get the wrapper's bounding rectangle
+                        const rect = waveformWrapper.getBoundingClientRect();
+
+                        // Calculate relative position (0-1) accounting for scroll
+                        // This mimics WaveSurfer's internal getRelativePointerPosition
+                        const x = e.clientX - rect.left + waveformWrapper.scrollLeft;
+                        const totalWidth = waveformWrapper.scrollWidth;
+                        const relativeX = Math.max(0, Math.min(1, x / totalWidth));
+
+                        // Convert to time
+                        const time = relativeX * this.waveform.getDuration();
+
+                        console.log('Split calculation:', {
+                            clickX: e.clientX - rect.left,
+                            scrollLeft: waveformWrapper.scrollLeft,
+                            scrollWidth: totalWidth,
+                            relativeX,
+                            time
+                        });
+
+                        // Show context menu at click position
+                        this.contextMenu.x = e.clientX;
+                        this.contextMenu.y = e.clientY;
+                        this.contextMenu.time = time;
+                        this.contextMenu.show = true;
+                    });
+
                     setTimeout(() => {
                         this.addTrackRegions();
                         this.waveformLoading = false;
@@ -617,6 +824,95 @@ function vinylApp() {
                     console.error(`Failed to create region for Track ${track.number}:`, e);
                 }
             });
+        },
+
+        /**
+         * Split track at context menu position
+         */
+        splitAtContextMenu() {
+            this.contextMenu.show = false;
+
+            const time = this.contextMenu.time;
+
+            // Find which track contains this time position
+            const trackIndex = this.detectedTracks.findIndex(t =>
+                time >= t.start && time <= t.end
+            );
+
+            if (trackIndex === -1) {
+                alert('Cannot split here - position is outside all tracks');
+                return;
+            }
+
+            const trackToSplit = this.detectedTracks[trackIndex];
+
+            // Create two new tracks from the split
+            const newTrack1 = {
+                number: trackToSplit.number,
+                start: trackToSplit.start,
+                end: time,
+                duration: time - trackToSplit.start,
+                editing: false,
+                ignored: false
+            };
+
+            const newTrack2 = {
+                number: trackToSplit.number + 1,
+                start: time,
+                end: trackToSplit.end,
+                duration: trackToSplit.end - time,
+                editing: false,
+                ignored: false
+            };
+
+            // Renumber tracks after the split
+            for (let i = trackIndex + 1; i < this.detectedTracks.length; i++) {
+                this.detectedTracks[i].number++;
+            }
+
+            // Replace the split track with two new tracks
+            this.detectedTracks.splice(trackIndex, 1, newTrack1, newTrack2);
+
+            // Refresh waveform regions
+            this.addTrackRegions();
+
+            // Clear any selected release (track count changed)
+            if (this.selectedRelease) {
+                this.selectedRelease = null;
+                this.trackCountMismatch = false;
+            }
+        },
+
+        /**
+         * Delete a track and renumber remaining tracks
+         */
+        deleteTrack(trackNumber) {
+            const trackIndex = this.detectedTracks.findIndex(t => t.number === trackNumber);
+
+            if (trackIndex === -1) {
+                return;
+            }
+
+            if (!confirm(`Delete Track ${trackNumber}? This cannot be undone.`)) {
+                return;
+            }
+
+            // Remove the track
+            this.detectedTracks.splice(trackIndex, 1);
+
+            // Renumber subsequent tracks
+            for (let i = trackIndex; i < this.detectedTracks.length; i++) {
+                this.detectedTracks[i].number = i + 1;
+            }
+
+            // Refresh waveform regions
+            this.addTrackRegions();
+
+            // Clear any selected release (track count changed)
+            if (this.selectedRelease) {
+                this.selectedRelease = null;
+                this.trackCountMismatch = false;
+            }
         },
 
         /**
@@ -700,7 +996,7 @@ function vinylApp() {
 
         zoomOut() {
             if (this.waveform) {
-                this.currentZoom = Math.max(this.currentZoom / 1.5, 10);
+                this.currentZoom = Math.max(this.currentZoom / 1.5, 1);
                 this.waveform.zoom(this.currentZoom);
             }
         },
