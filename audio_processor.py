@@ -1,14 +1,37 @@
 """
 VinylFlow - Audio Processing Module
 
-Handles silence detection, track splitting, and FLAC conversion.
+Handles silence detection, track splitting, and audio format conversion.
 Uses FFmpeg for audio analysis and format conversion.
+Supports FLAC, MP3, and AIFF output formats.
 """
 
 import re
 import subprocess
 from pathlib import Path
 from typing import List, Tuple, Optional
+
+# Supported input formats
+SUPPORTED_INPUT_EXTENSIONS = {".wav", ".aiff", ".aif"}
+
+# Output format configurations: codec flags for FFmpeg + file extension
+OUTPUT_FORMATS = {
+    "flac": {
+        "extension": ".flac",
+        "codec_args": ["-c:a", "flac"],
+        "label": "FLAC (Lossless)",
+    },
+    "mp3": {
+        "extension": ".mp3",
+        "codec_args": ["-c:a", "libmp3lame", "-b:a", "320k"],
+        "label": "MP3 (320kbps)",
+    },
+    "aiff": {
+        "extension": ".aiff",
+        "codec_args": ["-c:a", "pcm_s16be"],
+        "label": "AIFF (Lossless)",
+    },
+}
 
 
 class Track:
@@ -173,11 +196,6 @@ class AudioProcessor:
         Returns:
             List of Track objects
         """
-        # Create track boundaries
-        # Track 1 starts at 0, ends at first silence start
-        # Track N starts at previous silence end, ends at next silence start
-        # Last track ends at total duration
-
         tracks = []
         track_num = 1
 
@@ -241,15 +259,21 @@ class AudioProcessor:
         return tracks
 
     def extract_track(
-        self, input_file: Path, track: Track, output_file: Path, verbose=False
+        self,
+        input_file: Path,
+        track: Track,
+        output_file: Path,
+        output_format: str = "flac",
+        verbose: bool = False,
     ) -> bool:
         """
-        Extract a single track and convert to FLAC.
+        Extract a single track and convert to the specified format.
 
         Args:
-            input_file: Source WAV file
+            input_file: Source audio file
             track: Track object with start/end times
-            output_file: Output FLAC file path
+            output_file: Output file path
+            output_format: One of 'flac', 'mp3', 'aiff'
             verbose: Print detailed output
 
         Returns:
@@ -257,6 +281,8 @@ class AudioProcessor:
         """
         if verbose:
             print(f"Extracting {track.vinyl_number or f'Track {track.number}'}: {output_file.name}")
+
+        format_config = OUTPUT_FORMATS.get(output_format, OUTPUT_FORMATS["flac"])
 
         cmd = [
             "ffmpeg",
@@ -266,13 +292,19 @@ class AudioProcessor:
             str(track.start),
             "-t",
             str(track.duration),
-            "-c:a",
-            "flac",
-            "-compression_level",
-            str(self.flac_compression),
+        ]
+
+        # Add codec-specific args
+        cmd.extend(format_config["codec_args"])
+
+        # Add FLAC compression level if applicable
+        if output_format == "flac":
+            cmd.extend(["-compression_level", str(self.flac_compression)])
+
+        cmd.extend([
             "-y",  # Overwrite output file
             str(output_file),
-        ]
+        ])
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -310,15 +342,21 @@ class AudioProcessor:
             return False
 
     def extract_all_tracks(
-        self, input_file: Path, tracks: List[Track], output_dir: Path, verbose=False
+        self,
+        input_file: Path,
+        tracks: List[Track],
+        output_dir: Path,
+        output_format: str = "flac",
+        verbose: bool = False,
     ) -> List[Path]:
         """
         Extract all tracks from input file.
 
         Args:
-            input_file: Source WAV file
+            input_file: Source audio file
             tracks: List of Track objects
             output_dir: Directory for output files
+            output_format: One of 'flac', 'mp3', 'aiff'
             verbose: Print detailed output
 
         Returns:
@@ -327,12 +365,15 @@ class AudioProcessor:
         output_dir.mkdir(parents=True, exist_ok=True)
         output_files = []
 
+        format_config = OUTPUT_FORMATS.get(output_format, OUTPUT_FORMATS["flac"])
+        ext = format_config["extension"]
+
         for track in tracks:
             # Use vinyl number if available, otherwise track number
             track_id = track.vinyl_number if track.vinyl_number else f"{track.number:02d}"
-            output_file = output_dir / f"temp_{track_id}.flac"
+            output_file = output_dir / f"temp_{track_id}{ext}"
 
-            if self.extract_track(input_file, track, output_file, verbose):
+            if self.extract_track(input_file, track, output_file, output_format, verbose):
                 output_files.append(output_file)
             else:
                 print(f"Failed to extract track {track.number}")
@@ -360,6 +401,13 @@ class AudioProcessor:
 
         if file_path.stat().st_size == 0:
             return False, f"File is empty: {file_path}"
+
+        # Check extension
+        if file_path.suffix.lower() not in SUPPORTED_INPUT_EXTENSIONS:
+            return False, (
+                f"Unsupported format: {file_path.suffix}. "
+                f"Supported: {', '.join(SUPPORTED_INPUT_EXTENSIONS)}"
+            )
 
         # Try to get duration (validates it's a readable audio file)
         duration = self.get_audio_duration(file_path)

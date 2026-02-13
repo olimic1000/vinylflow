@@ -3,10 +3,12 @@ VinylFlow - FastAPI Backend
 
 Provides REST API and WebSocket endpoints for automated vinyl record digitization.
 Handles file uploads, audio analysis, metadata fetching, and track processing.
+Supports WAV and AIFF input, with FLAC, MP3, and AIFF output.
 """
 
 import os
 import uuid
+import copy
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -26,13 +28,15 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config
-from audio_processor import AudioProcessor
+from audio_processor import AudioProcessor, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS
 from metadata_handler import MetadataHandler
 
 # Initialize FastAPI app
 app = FastAPI(title="VinylFlow API", version="1.0.0")
 
-# Enable CORS for development
+# Enable CORS
+# Note: allow_origins=["*"] is fine for local/self-hosted use.
+# If exposing publicly, restrict this to your specific domain.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -67,21 +71,33 @@ async def cleanup_old_files():
     while True:
         try:
             cutoff = datetime.now() - timedelta(hours=24)
-            for file_path in UPLOAD_DIR.glob("*.wav"):
-                if datetime.fromtimestamp(file_path.stat().st_mtime) < cutoff:
-                    file_path.unlink()
-                    # Also delete associated files (previews, peaks, etc.)
-                    file_id = file_path.stem
-                    for pattern in ["*_preview_*.mp3", "*_peaks.json"]:
-                        for related in UPLOAD_DIR.glob(f"{file_id}{pattern}"):
-                            related.unlink()
+
+            # Clean up audio files of all supported types
+            for ext in ("*.wav", "*.aiff", "*.aif"):
+                for file_path in UPLOAD_DIR.glob(ext):
+                    try:
+                        if datetime.fromtimestamp(file_path.stat().st_mtime) < cutoff:
+                            file_path.unlink()
+                            # Also delete associated files
+                            file_id = file_path.stem
+                            for pattern in ["*_preview_*.mp3", "*_peaks.json", "*_full.mp3"]:
+                                for related in UPLOAD_DIR.glob(f"{file_id}{pattern}"):
+                                    related.unlink(missing_ok=True)
+                    except FileNotFoundError:
+                        continue  # File already deleted
 
             # Clean up from in-memory state
-            expired_ids = [
-                file_id
-                for file_id, info in uploaded_files.items()
-                if datetime.fromtimestamp(Path(info["path"]).stat().st_mtime) < cutoff
-            ]
+            expired_ids = []
+            for file_id, info in uploaded_files.items():
+                try:
+                    file_path = Path(info["path"])
+                    if not file_path.exists():
+                        expired_ids.append(file_id)
+                    elif datetime.fromtimestamp(file_path.stat().st_mtime) < cutoff:
+                        expired_ids.append(file_id)
+                except (FileNotFoundError, OSError):
+                    expired_ids.append(file_id)
+
             for file_id in expired_ids:
                 del uploaded_files[file_id]
 
@@ -126,6 +142,7 @@ class ProcessRequest(BaseModel):
     track_mapping: List[TrackMapping]
     reversed: bool = False
     track_boundaries: Optional[List[TrackBoundary]] = None
+    output_format: str = "flac"  # 'flac', 'mp3', or 'aiff'
 
 
 class ConfigUpdate(BaseModel):
@@ -142,12 +159,13 @@ async def broadcast_message(message: dict):
     for ws in websocket_connections:
         try:
             await ws.send_json(message)
-        except:
+        except Exception:
             disconnected.append(ws)
 
     # Clean up disconnected clients
     for ws in disconnected:
-        websocket_connections.remove(ws)
+        if ws in websocket_connections:
+            websocket_connections.remove(ws)
 
 
 # WebSocket endpoint
@@ -157,18 +175,16 @@ async def websocket_endpoint(websocket: WebSocket):
     websocket_connections.append(websocket)
 
     try:
-        # Send initial connection confirmation
         await websocket.send_json({"type": "connected", "message": "WebSocket connected"})
 
-        # Keep connection alive
         while True:
-            # Wait for ping/pong or messages from client
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text("pong")
 
     except WebSocketDisconnect:
-        websocket_connections.remove(websocket)
+        if websocket in websocket_connections:
+            websocket_connections.remove(websocket)
 
 
 # API Routes
@@ -184,9 +200,20 @@ async def read_root():
     )
 
 
+@app.get("/api/formats")
+async def get_output_formats():
+    """Return available output formats for the UI."""
+    return {
+        "formats": [
+            {"id": fmt_id, "label": fmt["label"], "extension": fmt["extension"]}
+            for fmt_id, fmt in OUTPUT_FORMATS.items()
+        ]
+    }
+
+
 async def preconvert_to_mp3(file_id: str, file_path: Path):
     """
-    Convert WAV to MP3 in background for faster waveform loading.
+    Convert audio to MP3 in background for faster waveform loading.
     Uses lower bitrate (128k) for quick conversion and smaller file size.
     """
     import subprocess
@@ -195,7 +222,6 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
 
     if not mp3_path.exists():
         try:
-            # Convert using lower bitrate for speed (128k instead of 192k)
             await asyncio.to_thread(
                 subprocess.run,
                 [
@@ -206,34 +232,37 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
                     "-acodec",
                     "libmp3lame",
                     "-b:a",
-                    "128k",  # Lower bitrate = faster conversion
+                    "128k",
                     str(mp3_path),
                 ],
                 check=True,
                 capture_output=True,
             )
             print(
-                f"✅ Pre-converted {file_id} to MP3 ({mp3_path.stat().st_size // 1024 // 1024}MB)"
+                f"Pre-converted {file_id} to MP3 ({mp3_path.stat().st_size // 1024 // 1024}MB)"
             )
         except Exception as e:
-            print(f"❌ MP3 conversion failed for {file_id}: {e}")
+            print(f"MP3 conversion failed for {file_id}: {e}")
 
 
 @app.post("/api/upload")
 async def upload_files(files: List[UploadFile] = File(...)):
     """
-    Upload WAV file(s) for processing.
+    Upload audio file(s) for processing.
+    Supports WAV and AIFF formats.
     Returns file IDs and metadata.
     """
     uploaded = []
 
     for file in files:
-        if not file.filename.lower().endswith(".wav"):
+        # Check file extension against supported formats
+        file_ext = Path(file.filename).suffix.lower()
+        if file_ext not in SUPPORTED_INPUT_EXTENSIONS:
             continue
 
-        # Generate unique file ID
+        # Generate unique file ID, preserve original extension
         file_id = str(uuid.uuid4())
-        file_path = UPLOAD_DIR / f"{file_id}.wav"
+        file_path = UPLOAD_DIR / f"{file_id}{file_ext}"
 
         # Save uploaded file
         with open(file_path, "wb") as buffer:
@@ -245,8 +274,10 @@ async def upload_files(files: List[UploadFile] = File(...)):
 
         # Get duration using audio processor
         try:
-            duration = audio_processor._get_duration(file_path)
-        except:
+            duration = audio_processor.get_audio_duration(file_path)
+            if duration is None:
+                duration = 0
+        except Exception:
             duration = 0
 
         # Store file info
@@ -272,7 +303,7 @@ async def upload_files(files: List[UploadFile] = File(...)):
 @app.post("/api/analyze")
 async def analyze_file(request: AnalyzeRequest):
     """
-    Analyze WAV file for silence detection and track boundaries.
+    Analyze audio file for silence detection and track boundaries.
     Returns detected track segments.
     """
     file_info = uploaded_files.get(request.file_id)
@@ -281,7 +312,6 @@ async def analyze_file(request: AnalyzeRequest):
 
     file_path = Path(file_info["path"])
 
-    # Broadcast progress
     await broadcast_message(
         {
             "type": "progress",
@@ -292,17 +322,14 @@ async def analyze_file(request: AnalyzeRequest):
         }
     )
 
-    # Run silence detection
     try:
         tracks = audio_processor.detect_silence(file_path, verbose=False)
 
-        # Convert to JSON-serializable format
         tracks_data = [
             {"number": i + 1, "start": track.start, "end": track.end, "duration": track.duration}
             for i, track in enumerate(tracks)
         ]
 
-        # Update file info
         file_info["detected_tracks"] = tracks
         file_info["status"] = "analyzed"
 
@@ -311,7 +338,7 @@ async def analyze_file(request: AnalyzeRequest):
                 "type": "step_complete",
                 "file_id": request.file_id,
                 "step": "detection",
-                "message": f"✓ Detected {len(tracks)} tracks",
+                "message": f"Detected {len(tracks)} tracks",
             }
         )
 
@@ -336,7 +363,6 @@ async def preview_track(
     """
     Generate and serve a preview of a detected track (first 30 seconds).
     Supports custom start/end times for manual adjustments.
-    Returns audio file for playback.
     """
     from fastapi.responses import FileResponse
     import subprocess
@@ -352,24 +378,20 @@ async def preview_track(
     track = detected_tracks[track_number - 1]
     file_path = Path(file_info["path"])
 
-    # Use custom start/end if provided, otherwise use detected values
     track_start = start if start is not None else track.start
     track_end = end if end is not None else track.end
     track_duration = track_end - track_start
 
-    # Create preview directory
     preview_dir = UPLOAD_DIR / "previews"
     preview_dir.mkdir(exist_ok=True)
 
-    # Generate preview file path with hash of params to handle custom times
     import hashlib
 
     params_hash = hashlib.md5(f"{track_start}_{track_end}".encode()).hexdigest()[:8]
     preview_path = preview_dir / f"{file_id}_track{track_number}_{params_hash}.mp3"
 
-    # Extract first 30 seconds of track as MP3 preview
     try:
-        duration = min(30, track_duration)  # Max 30 seconds preview
+        duration = min(30, track_duration)
 
         subprocess.run(
             [
@@ -403,12 +425,7 @@ async def preview_track(
 
 @app.get("/api/waveform-peaks/{file_id}")
 async def get_waveform_peaks(file_id: str):
-    """
-    Generate waveform peaks for visualization.
-    Extracts ~3000 peaks from audio file using FFmpeg.
-    Caches result for subsequent requests.
-    Returns JSON with peaks array.
-    """
+    """Generate waveform peaks for visualization."""
     import subprocess
     import numpy as np
 
@@ -418,7 +435,6 @@ async def get_waveform_peaks(file_id: str):
 
     file_path = Path(file_info["path"])
 
-    # Check for cached peaks
     peaks_cache_path = UPLOAD_DIR / f"{file_id}_peaks.json"
     if peaks_cache_path.exists():
         with open(peaks_cache_path, "r") as f:
@@ -426,53 +442,44 @@ async def get_waveform_peaks(file_id: str):
             return JSONResponse(content=cached_data)
 
     try:
-        # Extract audio samples using ffmpeg
-        # Convert to mono, 8000 Hz sample rate for faster processing
         cmd = [
             "ffmpeg",
             "-i",
             str(file_path),
             "-f",
-            "s16le",  # 16-bit PCM
+            "s16le",
             "-acodec",
             "pcm_s16le",
             "-ac",
-            "1",  # Mono
+            "1",
             "-ar",
-            "8000",  # 8kHz sample rate
+            "8000",
             "-",
         ]
 
         result = subprocess.run(cmd, capture_output=True, check=True)
         audio_data = np.frombuffer(result.stdout, dtype=np.int16)
 
-        # Calculate number of samples per peak
         target_peaks = 3000
         samples_per_peak = max(1, len(audio_data) // target_peaks)
 
-        # Downsample by taking max absolute value in each chunk
         peaks = []
         for i in range(0, len(audio_data), samples_per_peak):
             chunk = audio_data[i : i + samples_per_peak]
             if len(chunk) > 0:
-                # Get max absolute value (represents amplitude)
                 peak_value = np.max(np.abs(chunk))
-                # Normalize to -1 to 1 range
                 normalized = peak_value / 32768.0
                 peaks.append(normalized)
 
-        # Ensure we have at least some peaks
         if len(peaks) == 0:
             peaks = [0.0]
 
-        # Prepare response
         response_data = {
             "peaks": peaks,
             "length": len(peaks),
             "duration": file_info.get("duration", 0),
         }
 
-        # Cache the result
         with open(peaks_cache_path, "w") as f:
             json.dump(response_data, f)
 
@@ -486,10 +493,7 @@ async def get_waveform_peaks(file_id: str):
 
 @app.get("/api/audio/{file_id}")
 async def get_audio_file(file_id: str):
-    """
-    Serve audio file for waveform playback.
-    Serves original WAV file directly (MP3 conversion was truncating long files).
-    """
+    """Serve audio file for waveform playback."""
     from fastapi.responses import FileResponse
 
     file_info = uploaded_files.get(file_id)
@@ -498,20 +502,25 @@ async def get_audio_file(file_id: str):
 
     file_path = Path(file_info["path"])
 
-    # Serve WAV file directly - works reliably for all file lengths
+    # Determine media type from extension
+    ext = file_path.suffix.lower()
+    media_types = {
+        ".wav": "audio/wav",
+        ".aiff": "audio/aiff",
+        ".aif": "audio/aiff",
+    }
+    media_type = media_types.get(ext, "audio/wav")
+
     return FileResponse(
         file_path,
-        media_type="audio/wav",
+        media_type=media_type,
         headers={"Content-Disposition": f"inline; filename={file_info['filename']}"},
     )
 
 
 @app.post("/api/search")
 async def search_discogs(request: SearchRequest):
-    """
-    Search Discogs for releases.
-    Returns list of matching releases with metadata.
-    """
+    """Search Discogs for releases."""
     try:
         releases = metadata_handler.search_releases(request.query, max_results=request.max_results)
 
@@ -542,18 +551,24 @@ async def search_discogs(request: SearchRequest):
 @app.post("/api/process")
 async def process_file(request: ProcessRequest):
     """
-    Process file: split tracks, tag with metadata, and save as FLAC.
-    This is an async operation - returns job_id immediately and broadcasts progress via WebSocket.
+    Process file: split tracks, tag with metadata, and save.
+    Supports FLAC, MP3, and AIFF output formats.
     """
     file_info = uploaded_files.get(request.file_id)
     if not file_info:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Generate job ID
+    # Validate output format
+    if request.output_format not in OUTPUT_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported output format: {request.output_format}. "
+            f"Choose from: {', '.join(OUTPUT_FORMATS.keys())}",
+        )
+
     job_id = str(uuid.uuid4())
     processing_jobs[job_id] = {"file_id": request.file_id, "status": "processing", "progress": 0}
 
-    # Start background processing task
     asyncio.create_task(process_file_background(request, job_id))
 
     return {"job_id": job_id, "status": "processing"}
@@ -563,9 +578,9 @@ async def process_file_background(request: ProcessRequest, job_id: str):
     """Background task to process the file."""
     file_info = uploaded_files[request.file_id]
     file_path = Path(file_info["path"])
+    output_format = request.output_format
 
     try:
-        # Get release from Discogs
         await broadcast_message(
             {
                 "type": "progress",
@@ -580,8 +595,8 @@ async def process_file_background(request: ProcessRequest, job_id: str):
         if not release:
             raise Exception("Failed to fetch Discogs release")
 
-        # Build track mapping
-        detected_tracks = file_info.get("detected_tracks", [])
+        # Deep copy detected tracks to avoid mutating shared state
+        detected_tracks = copy.deepcopy(file_info.get("detected_tracks", []))
 
         # Apply custom track boundaries if provided
         if request.track_boundaries:
@@ -591,8 +606,6 @@ async def process_file_background(request: ProcessRequest, job_id: str):
                     detected_tracks[track_idx].start = boundary.start
                     detected_tracks[track_idx].end = boundary.end
                     detected_tracks[track_idx].duration = boundary.duration
-
-        discogs_tracks = list(reversed(release.tracks)) if request.reversed else release.tracks
 
         for mapping in request.track_mapping:
             track_idx = mapping.detected - 1
@@ -622,7 +635,10 @@ async def process_file_background(request: ProcessRequest, job_id: str):
                 cover_data = metadata_handler.prepare_cover_for_embedding(cover_path)
 
         # Split and tag tracks
+        format_config = OUTPUT_FORMATS[output_format]
+        ext = format_config["extension"]
         output_files = []
+
         for i, track in enumerate(detected_tracks):
             progress = 0.4 + (i / len(detected_tracks)) * 0.5
 
@@ -636,23 +652,21 @@ async def process_file_background(request: ProcessRequest, job_id: str):
                 }
             )
 
-            # Create temp FLAC file
-            temp_output = album_folder / f"temp_{track.vinyl_number}.flac"
+            temp_output = album_folder / f"temp_{track.vinyl_number}{ext}"
 
-            # Split and convert to FLAC
-            audio_processor.extract_track(file_path, track, temp_output)
+            # Split and convert to chosen format
+            audio_processor.extract_track(file_path, track, temp_output, output_format)
 
             # Tag with metadata
-            metadata_handler.tag_flac_file(temp_output, track, release, cover_data)
+            metadata_handler.tag_file(temp_output, track, release, cover_data, output_format)
 
             # Rename to final filename
-            final_filename = metadata_handler.create_track_filename(track, release)
+            final_filename = metadata_handler.create_track_filename(track, release, output_format)
             final_path = album_folder / final_filename
             temp_output.rename(final_path)
 
             output_files.append(final_filename)
 
-        # Complete
         await broadcast_message(
             {
                 "type": "complete",
@@ -689,7 +703,6 @@ async def get_queue():
 async def remove_from_queue(file_id: str):
     """Remove file from queue."""
     if file_id in uploaded_files:
-        # Delete file
         file_path = Path(uploaded_files[file_id]["path"])
         if file_path.exists():
             file_path.unlink()
@@ -732,6 +745,5 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")
 if __name__ == "__main__":
     import uvicorn
 
-    # Use PORT from environment (Railway sets this) or default to 8000
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

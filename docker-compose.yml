@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   vinylflow:
     build: .
@@ -21,6 +19,7 @@ services:
       - DEFAULT_OUTPUT_DIR=/app/output
 
       # Server Configuration
+      # Internal port is always 8000. Change PORT in .env to map a different external port.
       - PORT=8000
     volumes:
       # Persistent storage for processed files
