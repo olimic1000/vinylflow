@@ -2,7 +2,7 @@
 VinylFlow - Metadata Handling Module
 
 Handles Discogs API integration, metadata tagging, and cover art embedding.
-Manages release searches, track mapping, and FLAC file tagging.
+Manages release searches, track mapping, and file tagging for FLAC, MP3, and AIFF.
 """
 
 import re
@@ -14,6 +14,9 @@ from io import BytesIO
 import requests
 import discogs_client
 from mutagen.flac import FLAC, Picture
+from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TPUB, COMM, APIC, TXXX
+from mutagen.aiff import AIFF
 from PIL import Image
 
 
@@ -110,28 +113,25 @@ class DiscogsRelease:
             # Handle vinyl positions (A1, B2, etc.)
             if position and re.match(r"^[A-Z]\d+", position):
                 tracks.append(DiscogsTrack(position, title, duration))
-            # Handle repeated letters (A, AA, AAA → A1, A2, A3 / B, BB, BBB → B1, B2, B3)
+            # Handle repeated letters (A, AA, AAA -> A1, A2, A3 / B, BB, BBB -> B1, B2, B3)
             elif position and re.match(r"^([A-Z])\1*$", position):
-                # Count how many times the letter repeats
                 letter = position[0]
                 count = len(position)
                 vinyl_pos = f"{letter}{count}"
                 tracks.append(DiscogsTrack(vinyl_pos, title, duration))
-            # Handle sequential numbers (1, 2, 3, 4) - we'll convert these to vinyl positions
+            # Handle sequential numbers (1, 2, 3, 4)
             elif position and re.match(r"^\d+$", position):
                 sequential_tracks.append((int(position), title, duration))
             # Handle empty position - assume sequential
             elif not position and title and title.lower() not in ["tracklist", "notes"]:
-                # No position, but has a title - treat as sequential
                 sequential_tracks.append((len(sequential_tracks) + 1, title, duration))
 
         # Handle sequential tracks (convert numeric positions to vinyl format)
         if sequential_tracks:
-            sequential_tracks.sort(key=lambda x: x[0])  # Sort by track number
+            sequential_tracks.sort(key=lambda x: x[0])
 
-            # No vinyl positions found, convert all sequential to vinyl format
             total = len(sequential_tracks)
-            half = (total + 1) // 2  # Round up for odd numbers
+            half = (total + 1) // 2
 
             for idx, (num, title, duration) in enumerate(sequential_tracks, 1):
                 if idx <= half:
@@ -224,13 +224,11 @@ class MetadataHandler:
             results = self.client.search(query, type="release")
             releases = []
 
-            # Iterate through results with manual counter (Discogs results don't support slicing)
             for i, result in enumerate(results, 1):
                 if i > max_results:
                     break
 
                 try:
-                    # Fetch full release data
                     self._rate_limit()
                     release = self.client.release(result.id)
                     releases.append((i, DiscogsRelease(release)))
@@ -275,21 +273,16 @@ class MetadataHandler:
             True if successful
         """
         try:
-            # Include User-Agent header to avoid 403 errors from Discogs image server
             headers = {"User-Agent": self.client.user_agent}
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
 
-            # Open image
             img = Image.open(BytesIO(response.content))
 
-            # Convert to RGB if needed (for JPEG compatibility)
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
 
-            # Save original size as folder.jpg
             img.save(output_path, "JPEG", quality=95)
-
             return True
 
         except Exception as e:
@@ -298,7 +291,7 @@ class MetadataHandler:
 
     def prepare_cover_for_embedding(self, image_path: Path, max_size=1400) -> Optional[bytes]:
         """
-        Prepare cover art for embedding in FLAC.
+        Prepare cover art for embedding in audio files.
 
         Args:
             image_path: Path to image file
@@ -310,15 +303,12 @@ class MetadataHandler:
         try:
             img = Image.open(image_path)
 
-            # Convert to RGB
             if img.mode != "RGB":
                 img = img.convert("RGB")
 
-            # Resize if too large
             if max(img.size) > max_size:
                 img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
 
-            # Save to bytes
             buffer = BytesIO()
             img.save(buffer, "JPEG", quality=90)
             return buffer.getvalue()
@@ -327,59 +317,80 @@ class MetadataHandler:
             print(f"Failed to prepare cover art: {e}")
             return None
 
-    def tag_flac_file(
+    def tag_file(
+        self,
+        file_path: Path,
+        track: "Track",
+        release: DiscogsRelease,
+        cover_data: Optional[bytes] = None,
+        output_format: str = "flac",
+    ) -> bool:
+        """
+        Write metadata tags to an audio file.
+        Dispatches to the correct tagger based on output format.
+
+        Args:
+            file_path: Path to audio file
+            track: Track object with vinyl_number set
+            release: DiscogsRelease object
+            cover_data: Optional cover art bytes to embed
+            output_format: One of 'flac', 'mp3', 'aiff'
+
+        Returns:
+            True if successful
+        """
+        if output_format == "flac":
+            return self._tag_flac(file_path, track, release, cover_data)
+        elif output_format == "mp3":
+            return self._tag_mp3(file_path, track, release, cover_data)
+        elif output_format == "aiff":
+            return self._tag_aiff(file_path, track, release, cover_data)
+        else:
+            print(f"Unsupported output format for tagging: {output_format}")
+            return False
+
+    # Keep the old name as an alias for backwards compatibility (used by CLI)
+    def tag_flac_file(self, file_path, track, release, cover_data=None):
+        """Backwards-compatible alias for tag_file with FLAC format."""
+        return self._tag_flac(file_path, track, release, cover_data)
+
+    def _find_discogs_track(self, track, release):
+        """Find the Discogs track matching a vinyl_number."""
+        for dt in release.tracks:
+            if dt.position == track.vinyl_number:
+                return dt
+        print(f"Warning: No Discogs track found for {track.vinyl_number}")
+        return None
+
+    def _tag_flac(
         self,
         file_path: Path,
         track: "Track",
         release: DiscogsRelease,
         cover_data: Optional[bytes] = None,
     ) -> bool:
-        """
-        Write metadata tags to FLAC file.
-
-        Args:
-            file_path: Path to FLAC file
-            track: Track object with vinyl_number set
-            release: DiscogsRelease object
-            cover_data: Optional cover art bytes to embed
-
-        Returns:
-            True if successful
-        """
+        """Write Vorbis comment tags to FLAC file."""
         try:
             audio = FLAC(file_path)
-
-            # Clear existing tags
             audio.clear_pictures()
             audio.delete()
 
-            # Find the Discogs track that matches this track
-            discogs_track = None
-            for dt in release.tracks:
-                if dt.position == track.vinyl_number:
-                    discogs_track = dt
-                    break
-
+            discogs_track = self._find_discogs_track(track, release)
             if not discogs_track:
-                print(f"Warning: No Discogs track found for {track.vinyl_number}")
                 return False
 
-            # Write Vorbis comments
             audio["ARTIST"] = release.artist
             audio["ALBUM"] = release.title
             audio["TITLE"] = discogs_track.title
             audio["TRACKNUMBER"] = track.vinyl_number
             audio["DATE"] = str(release.year) if release.year else ""
 
-            # Optional fields
             if release.label:
                 audio["LABEL"] = release.label
 
-            # Add Discogs reference
             audio["DISCOGS_RELEASE_ID"] = str(release.id)
             audio["COMMENT"] = "Digitized from vinyl"
 
-            # Embed cover art if provided
             if cover_data:
                 picture = Picture()
                 picture.type = 3  # Front cover
@@ -395,64 +406,144 @@ class MetadataHandler:
             print(f"Failed to tag {file_path}: {e}")
             return False
 
+    def _tag_mp3(
+        self,
+        file_path: Path,
+        track: "Track",
+        release: DiscogsRelease,
+        cover_data: Optional[bytes] = None,
+    ) -> bool:
+        """Write ID3v2 tags to MP3 file."""
+        try:
+            audio = MP3(file_path, ID3=ID3)
+
+            try:
+                audio.add_tags()
+            except Exception:
+                pass  # Tags already exist
+
+            discogs_track = self._find_discogs_track(track, release)
+            if not discogs_track:
+                return False
+
+            audio.tags["TIT2"] = TIT2(encoding=3, text=discogs_track.title)
+            audio.tags["TPE1"] = TPE1(encoding=3, text=release.artist)
+            audio.tags["TALB"] = TALB(encoding=3, text=release.title)
+            audio.tags["TRCK"] = TRCK(encoding=3, text=track.vinyl_number)
+
+            if release.year:
+                audio.tags["TDRC"] = TDRC(encoding=3, text=str(release.year))
+
+            if release.label:
+                audio.tags["TPUB"] = TPUB(encoding=3, text=release.label)
+
+            audio.tags["TXXX:DISCOGS_RELEASE_ID"] = TXXX(
+                encoding=3, desc="DISCOGS_RELEASE_ID", text=str(release.id)
+            )
+            audio.tags["COMM"] = COMM(
+                encoding=3, lang="eng", desc="", text="Digitized from vinyl"
+            )
+
+            if cover_data:
+                audio.tags["APIC"] = APIC(
+                    encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_data,
+                )
+
+            audio.save()
+            return True
+
+        except Exception as e:
+            print(f"Failed to tag {file_path}: {e}")
+            return False
+
+    def _tag_aiff(
+        self,
+        file_path: Path,
+        track: "Track",
+        release: DiscogsRelease,
+        cover_data: Optional[bytes] = None,
+    ) -> bool:
+        """Write ID3v2 tags to AIFF file (AIFF uses ID3 tags like MP3)."""
+        try:
+            audio = AIFF(file_path)
+
+            try:
+                audio.add_tags()
+            except Exception:
+                pass  # Tags already exist
+
+            discogs_track = self._find_discogs_track(track, release)
+            if not discogs_track:
+                return False
+
+            audio.tags["TIT2"] = TIT2(encoding=3, text=discogs_track.title)
+            audio.tags["TPE1"] = TPE1(encoding=3, text=release.artist)
+            audio.tags["TALB"] = TALB(encoding=3, text=release.title)
+            audio.tags["TRCK"] = TRCK(encoding=3, text=track.vinyl_number)
+
+            if release.year:
+                audio.tags["TDRC"] = TDRC(encoding=3, text=str(release.year))
+
+            if release.label:
+                audio.tags["TPUB"] = TPUB(encoding=3, text=release.label)
+
+            audio.tags["TXXX:DISCOGS_RELEASE_ID"] = TXXX(
+                encoding=3, desc="DISCOGS_RELEASE_ID", text=str(release.id)
+            )
+            audio.tags["COMM"] = COMM(
+                encoding=3, lang="eng", desc="", text="Digitized from vinyl"
+            )
+
+            if cover_data:
+                audio.tags["APIC"] = APIC(
+                    encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_data,
+                )
+
+            audio.save()
+            return True
+
+        except Exception as e:
+            print(f"Failed to tag {file_path}: {e}")
+            return False
+
     def sanitize_filename(self, name: str) -> str:
-        """
-        Sanitize string for use in filename.
-
-        Args:
-            name: Input string
-
-        Returns:
-            Safe filename string
-        """
-        # Replace problematic characters
+        """Sanitize string for use in filename."""
         name = re.sub(r'[/\\:*?"<>|]', "-", name)
-
-        # Remove leading/trailing spaces and dots
         name = name.strip(" .")
-
-        # Replace multiple spaces with single space
         name = re.sub(r"\s+", " ", name)
-
         return name
 
     def create_album_folder_name(self, release: DiscogsRelease) -> str:
-        """
-        Create folder name for album.
-
-        Args:
-            release: DiscogsRelease object
-
-        Returns:
-            Folder name (e.g., "Aril Brikha - Departure")
-        """
+        """Create folder name for album."""
         artist = self.sanitize_filename(release.artist)
         title = self.sanitize_filename(release.title)
         return f"{artist} - {title}"
 
-    def create_track_filename(self, track: "Track", release: DiscogsRelease) -> str:
+    def create_track_filename(
+        self, track: "Track", release: DiscogsRelease, output_format: str = "flac"
+    ) -> str:
         """
         Create filename for track.
 
         Args:
             track: Track object with vinyl_number set
             release: DiscogsRelease object
+            output_format: One of 'flac', 'mp3', 'aiff'
 
         Returns:
             Filename (e.g., "A1-Groove La Chord.flac")
         """
-        # Find Discogs track
-        discogs_track = None
-        for dt in release.tracks:
-            if dt.position == track.vinyl_number:
-                discogs_track = dt
-                break
+        from audio_processor import OUTPUT_FORMATS
 
+        format_config = OUTPUT_FORMATS.get(output_format, OUTPUT_FORMATS["flac"])
+        ext = format_config["extension"]
+
+        discogs_track = self._find_discogs_track(track, release)
         if not discogs_track:
-            return f"{track.vinyl_number}-Unknown.flac"
+            return f"{track.vinyl_number}-Unknown{ext}"
 
         title = self.sanitize_filename(discogs_track.title)
-        return f"{track.vinyl_number}-{title}.flac"
+        return f"{track.vinyl_number}-{title}{ext}"
 
 
 def compare_track_durations(
@@ -477,16 +568,13 @@ def compare_track_durations(
         "total_discogs": len(discogs_tracks),
     }
 
-    # Check count mismatch
     if len(detected_tracks) != len(discogs_tracks):
         result["errors"].append(
             f"Track count mismatch: detected {len(detected_tracks)}, "
             f"Discogs has {len(discogs_tracks)}"
         )
 
-    # Check for duration-based issues (merged tracks)
     for i, det_track in enumerate(detected_tracks):
-        # Check if this track's duration matches sum of multiple Discogs tracks
         if i < len(discogs_tracks):
             discogs_duration = discogs_tracks[i].duration_seconds
 
@@ -498,14 +586,13 @@ def compare_track_durations(
                         f"Track {i+1}: Duration match ({det_track.duration:.0f}s)"
                     )
                 elif diff > tolerance * 2:
-                    # Check if it matches sum of this and next track
                     if i + 1 < len(discogs_tracks):
                         next_duration = discogs_tracks[i + 1].duration_seconds
                         if next_duration:
                             combined = discogs_duration + next_duration
                             if abs(det_track.duration - combined) < tolerance:
                                 result["warnings"].append(
-                                    f"⚠️ Track {i+1} ({det_track.duration:.0f}s) appears to contain "
+                                    f"Track {i+1} ({det_track.duration:.0f}s) appears to contain "
                                     f"2 tracks: {discogs_tracks[i].position} + {discogs_tracks[i+1].position} "
                                     f"(combined: {combined:.0f}s)"
                                 )

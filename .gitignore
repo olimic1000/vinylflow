@@ -4,8 +4,11 @@ temp_uploads/
 *.wav
 *.mp3
 *.flac
+*.aiff
+*.aif
 .env
 *.log
 .DS_Store
 venv/
+.venv/
 output/

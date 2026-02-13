@@ -1,5 +1,5 @@
 /**
- * Vinyl Digitizer Frontend Application
+ * VinylFlow Frontend Application
  * Alpine.js application for managing vinyl digitization workflow
  */
 
@@ -25,19 +25,23 @@ function vinylApp() {
         waveform: null,
         waveformLoading: false,
         waveformRegions: null,
-        currentZoom: 50,  // Track current zoom level (pixels per second)
+        currentZoom: 50,
 
         // Discogs Search
         searchQuery: '',
         searchResults: [],
         selectedRelease: null,
         trackMappingReversed: false,
-        customMapping: [],  // Stores custom track order indices
+        customMapping: [],
 
         // Processing
         processingProgress: 0,
         processingMessage: '',
         successMessage: '',
+
+        // Output format
+        outputFormat: 'flac',
+        availableFormats: [],
 
         // Config
         config: {
@@ -48,20 +52,40 @@ function vinylApp() {
             flac_compression: 8
         },
 
+        // Supported input file extensions
+        supportedExtensions: ['.wav', '.aiff', '.aif'],
+
         /**
          * Initialize the application
          */
         async init() {
             await this.loadConfig();
+            await this.loadFormats();
             this.connectWebSocket();
 
-            // Auto-set search query from filename when file is selected
             this.$watch('currentFile', (file) => {
                 if (file && !this.searchQuery) {
-                    // Clean filename for search
                     this.searchQuery = this.cleanFilename(file.filename);
                 }
             });
+        },
+
+        /**
+         * Load available output formats from API
+         */
+        async loadFormats() {
+            try {
+                const response = await fetch('/api/formats');
+                const data = await response.json();
+                this.availableFormats = data.formats;
+            } catch (error) {
+                console.error('Failed to load formats:', error);
+                this.availableFormats = [
+                    { id: 'flac', label: 'FLAC (Lossless)', extension: '.flac' },
+                    { id: 'mp3', label: 'MP3 (320kbps)', extension: '.mp3' },
+                    { id: 'aiff', label: 'AIFF (Lossless)', extension: '.aiff' },
+                ];
+            }
         },
 
         /**
@@ -78,7 +102,6 @@ function vinylApp() {
             };
 
             this.ws.onmessage = (event) => {
-                // Skip non-JSON messages (like "pong")
                 if (event.data === 'pong') return;
 
                 try {
@@ -98,7 +121,6 @@ function vinylApp() {
                 setTimeout(() => this.connectWebSocket(), 3000);
             };
 
-            // Send ping every 30 seconds to keep connection alive
             setInterval(() => {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.ws.send('ping');
@@ -130,9 +152,8 @@ function vinylApp() {
                     if (data.file_id === this.currentFileId) {
                         this.processingProgress = 1.0;
                         this.processingMessage = 'Complete!';
-                        this.successMessage = `✓ Album saved to: ${data.output_path}\nTracks: ${data.tracks.join(', ')}`;
+                        this.successMessage = `Album saved to: ${data.output_path}\nTracks: ${data.tracks.join(', ')}`;
 
-                        // Update file status
                         const file = this.uploadedFiles.find(f => f.id === data.file_id);
                         if (file) {
                             file.status = 'completed';
@@ -145,7 +166,6 @@ function vinylApp() {
                         this.processingMessage = `Error: ${data.message}`;
                         alert(`Processing error: ${data.message}`);
 
-                        // Update file status
                         const file = this.uploadedFiles.find(f => f.id === data.file_id);
                         if (file) {
                             file.status = 'error';
@@ -189,12 +209,20 @@ function vinylApp() {
         },
 
         /**
+         * Check if a file has a supported extension
+         */
+        isSupportedFile(filename) {
+            const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
+            return this.supportedExtensions.includes(ext);
+        },
+
+        /**
          * Handle file drop
          */
         async handleDrop(event) {
             this.dragging = false;
             const files = Array.from(event.dataTransfer.files).filter(f =>
-                f.name.toLowerCase().endsWith('.wav')
+                this.isSupportedFile(f.name)
             );
             await this.uploadFiles(files);
         },
@@ -205,7 +233,7 @@ function vinylApp() {
         async handleFileSelect(event) {
             const files = Array.from(event.target.files);
             await this.uploadFiles(files);
-            event.target.value = ''; // Reset input
+            event.target.value = '';
         },
 
         /**
@@ -224,7 +252,6 @@ function vinylApp() {
                 });
                 const data = await response.json();
 
-                // Add uploaded files to queue
                 data.files.forEach(file => {
                     this.uploadedFiles.push({
                         ...file,
@@ -232,7 +259,6 @@ function vinylApp() {
                     });
                 });
 
-                // Auto-select first file if none selected
                 if (!this.currentFile && data.files.length > 0) {
                     this.selectFile(data.files[0].id);
                 }
@@ -257,10 +283,8 @@ function vinylApp() {
             this.processingProgress = 0;
             this.processingMessage = '';
 
-            // Destroy existing waveform
             this.destroyWaveform();
 
-            // Set search query from filename
             if (this.currentFile) {
                 this.searchQuery = this.cleanFilename(this.currentFile.filename);
             }
@@ -302,12 +326,10 @@ function vinylApp() {
                 });
                 const data = await response.json();
 
-                // Check for error response
                 if (!response.ok || !data.tracks) {
                     throw new Error(data.detail || 'Analysis failed');
                 }
 
-                // Add editing and ignored flags to each track
                 this.detectedTracks = data.tracks.map(track => ({
                     ...track,
                     editing: false,
@@ -315,16 +337,13 @@ function vinylApp() {
                 }));
                 this.processingMessage = '';
 
-                // Update file status
                 const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
                 if (file) {
                     file.status = 'analyzed';
                 }
 
-                // Initialize waveform visualization
                 await this.initWaveform();
 
-                // Auto-search Discogs if we have a query
                 if (this.searchQuery) {
                     await this.searchDiscogs();
                 }
@@ -341,12 +360,10 @@ function vinylApp() {
         async reanalyzeFile() {
             if (!this.currentFileId) return;
 
-            // Confirm with user
             if (!confirm('Re-analyze this file? Current track boundaries and search results will be reset.')) {
                 return;
             }
 
-            // Reset UI state
             this.detectedTracks = [];
             this.selectedRelease = null;
             this.searchResults = [];
@@ -354,16 +371,12 @@ function vinylApp() {
             this.trackMappingReversed = false;
             this.customMapping = [];
 
-            // Stop any playing audio
             if (this.$refs.audioPlayer) {
                 this.$refs.audioPlayer.pause();
                 this.$refs.audioPlayer.currentTime = 0;
             }
 
-            // Destroy waveform
             this.destroyWaveform();
-
-            // Re-run analysis
             await this.analyzeFile();
         },
 
@@ -404,8 +417,6 @@ function vinylApp() {
         selectRelease(release) {
             this.selectedRelease = release;
             this.trackMappingReversed = false;
-
-            // Initialize custom mapping with default 1:1 order
             this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
         },
 
@@ -415,13 +426,10 @@ function vinylApp() {
         reverseMapping() {
             this.trackMappingReversed = !this.trackMappingReversed;
 
-            // Reset custom mapping when reversing
             if (this.trackMappingReversed) {
-                // Reverse order
                 const numTracks = this.detectedTracks.length;
                 this.customMapping = Array.from({ length: numTracks }, (_, i) => numTracks - 1 - i);
             } else {
-                // Normal order
                 this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
             }
         },
@@ -430,7 +438,6 @@ function vinylApp() {
          * Update custom mapping when user changes dropdown
          */
         updateCustomMapping() {
-            // Custom mapping changed, clear reversed flag
             this.trackMappingReversed = false;
         },
 
@@ -443,13 +450,11 @@ function vinylApp() {
             const audioPlayer = this.$refs.audioPlayer;
             const track = this.detectedTracks.find(t => t.number === trackNumber);
 
-            // Build preview URL with custom start/end if adjusted
             let previewUrl = `/api/preview/${this.currentFileId}/${trackNumber}`;
             if (track && track.editing) {
                 previewUrl += `?start=${track.start}&end=${track.end}`;
             }
 
-            // Set source and play
             audioPlayer.src = previewUrl;
             audioPlayer.load();
             audioPlayer.play().catch(err => {
@@ -478,8 +483,6 @@ function vinylApp() {
             if (isNaN(newStart) || newStart < 0) return;
 
             this.detectedTracks[idx].start = newStart;
-
-            // Update duration
             const end = this.detectedTracks[idx].end;
             this.detectedTracks[idx].duration = end - newStart;
         },
@@ -492,12 +495,9 @@ function vinylApp() {
             if (isNaN(newEnd) || newEnd < 0) return;
 
             this.detectedTracks[idx].end = newEnd;
-
-            // Update duration
             const start = this.detectedTracks[idx].start;
             this.detectedTracks[idx].duration = newEnd - start;
 
-            // Update next track's start if it exists
             if (idx + 1 < this.detectedTracks.length) {
                 this.detectedTracks[idx + 1].start = newEnd;
             }
@@ -512,12 +512,10 @@ function vinylApp() {
             this.waveformLoading = true;
 
             try {
-                // Destroy existing waveform if any
                 if (this.waveform) {
                     this.waveform.destroy();
                 }
 
-                // Create WaveSurfer instance
                 this.waveform = WaveSurfer.create({
                     container: '#waveform',
                     waveColor: '#93c5fd',
@@ -530,63 +528,43 @@ function vinylApp() {
                     barGap: 1
                 });
 
-                // Register regions plugin
-                console.log('📊 Checking WaveSurfer plugins...');
-                console.log('WaveSurfer:', typeof WaveSurfer);
-                console.log('WaveSurfer.Regions:', typeof WaveSurfer.Regions);
-
                 if (typeof WaveSurfer === 'undefined') {
                     throw new Error('WaveSurfer library not loaded. Please refresh the page.');
                 }
 
                 if (typeof WaveSurfer.Regions === 'undefined') {
-                    console.error('Available WaveSurfer keys:', Object.keys(WaveSurfer));
-                    throw new Error('WaveSurfer Regions plugin not loaded. Please refresh the page and check browser console for errors.');
+                    throw new Error('WaveSurfer Regions plugin not loaded. Please refresh the page.');
                 }
 
-                console.log('✅ Creating Regions plugin instance...');
                 this.waveformRegions = this.waveform.registerPlugin(WaveSurfer.Regions.create());
 
-                // Fetch peaks from backend
                 const peaksResponse = await fetch(`/api/waveform-peaks/${this.currentFileId}`);
                 if (!peaksResponse.ok) {
                     throw new Error('Failed to load waveform peaks');
                 }
                 const peaksData = await peaksResponse.json();
 
-                // CRITICAL: Register 'ready' listener BEFORE load to ensure it fires
                 this.waveform.on('ready', () => {
-                    console.log('🎵 Waveform ready!');
+                    console.log('Waveform ready');
 
-                    // Set initial zoom to show full waveform
                     const duration = this.waveform.getDuration();
                     const container = document.getElementById('waveform');
                     const containerWidth = container ? container.offsetWidth : 1000;
 
-                    console.log(`📊 Duration: ${duration.toFixed(1)}s, Container width: ${containerWidth}px`);
-
-                    // Calculate pixels per second to fit entire waveform in the container
-                    // Remove minimum constraint - let it zoom out as much as needed
                     const calculatedZoom = containerWidth / duration;
-                    this.currentZoom = Math.max(1, Math.min(calculatedZoom, 200));  // Allow 1-200 px/sec range
-
-                    console.log(`🔍 Setting initial zoom to ${this.currentZoom.toFixed(2)} px/sec (total width: ${(this.currentZoom * duration).toFixed(0)}px)`);
+                    this.currentZoom = Math.max(1, Math.min(calculatedZoom, 200));
                     this.waveform.zoom(this.currentZoom);
 
-                    // Add regions after zoom is set
                     setTimeout(() => {
                         this.addTrackRegions();
                         this.waveformLoading = false;
                     }, 100);
                 });
 
-                // Handle region updates
                 this.waveformRegions.on('region-updated', (region) => {
-                    console.log('🔧 Region updated:', region.id);
                     this.updateTrackFromRegion(region);
                 });
 
-                // Load with peaks data (triggers 'ready' event)
                 await this.waveform.load(`/api/audio/${this.currentFileId}`, [peaksData.peaks]);
 
             } catch (error) {
@@ -600,60 +578,31 @@ function vinylApp() {
          * Add draggable region markers for each track
          */
         addTrackRegions() {
-            console.log(`📍 Starting to add ${this.detectedTracks.length} track regions...`);
-            console.log('📍 Detected tracks:', JSON.stringify(this.detectedTracks, null, 2));
-
-            if (!this.waveformRegions) {
-                console.error('❌ waveformRegions is null!');
-                return;
-            }
-
-            if (!this.waveform) {
-                console.error('❌ waveform is null!');
-                return;
-            }
+            if (!this.waveformRegions || !this.waveform) return;
 
             const totalDuration = this.waveform.getDuration();
-            console.log(`📍 Total audio duration: ${totalDuration.toFixed(1)}s`);
 
-            // Check if tracks fit within audio duration
-            const lastTrack = this.detectedTracks[this.detectedTracks.length - 1];
-            if (lastTrack && lastTrack.end > totalDuration) {
-                console.warn(`⚠️ Last track ends at ${lastTrack.end.toFixed(1)}s but audio is only ${totalDuration.toFixed(1)}s!`);
-                console.warn('⚠️ This means the MP3 file is shorter than the original WAV. Audio might be truncated.');
-            }
-
-            // Clear existing regions
             try {
                 this.waveformRegions.clearRegions();
-                console.log('✅ Cleared existing regions');
             } catch (e) {
-                console.error('❌ Error clearing regions:', e);
+                console.error('Error clearing regions:', e);
             }
 
-            // Create a region for each track
             const colors = [
-                'rgba(59, 130, 246, 0.3)',   // Blue
-                'rgba(16, 185, 129, 0.3)',   // Green
-                'rgba(245, 158, 11, 0.3)',   // Amber
-                'rgba(139, 92, 246, 0.3)',   // Purple
-                'rgba(236, 72, 153, 0.3)',   // Pink
-                'rgba(239, 68, 68, 0.3)',    // Red
+                'rgba(59, 130, 246, 0.3)',
+                'rgba(16, 185, 129, 0.3)',
+                'rgba(245, 158, 11, 0.3)',
+                'rgba(139, 92, 246, 0.3)',
+                'rgba(236, 72, 153, 0.3)',
+                'rgba(239, 68, 68, 0.3)',
             ];
 
-            let successCount = 0;
             this.detectedTracks.forEach((track, idx) => {
                 try {
-                    console.log(`📍 Creating region ${idx + 1}/${this.detectedTracks.length} for Track ${track.number}...`);
-
-                    // Clamp track times to audio duration to prevent errors
                     const clampedStart = Math.min(track.start, totalDuration);
                     const clampedEnd = Math.min(track.end, totalDuration);
 
-                    if (clampedEnd <= clampedStart) {
-                        console.warn(`⚠️ Skipping Track ${track.number} - beyond audio duration`);
-                        return;
-                    }
+                    if (clampedEnd <= clampedStart) return;
 
                     this.waveformRegions.addRegion({
                         start: clampedStart,
@@ -664,19 +613,10 @@ function vinylApp() {
                         id: `track-${track.number}`,
                         content: `Track ${track.number}`
                     });
-
-                    successCount++;
-                    console.log(`✅ Region ${idx + 1} created: Track ${track.number} (${clampedStart.toFixed(1)}s - ${clampedEnd.toFixed(1)}s, duration: ${(clampedEnd - clampedStart).toFixed(1)}s)`);
                 } catch (e) {
-                    console.error(`❌ Failed to create region for Track ${track.number}:`, e);
+                    console.error(`Failed to create region for Track ${track.number}:`, e);
                 }
             });
-
-            console.log(`🎉 Successfully created ${successCount}/${this.detectedTracks.length} regions`);
-
-            // Verify regions exist
-            const createdRegions = this.waveformRegions.getRegions();
-            console.log(`📊 Actual regions count: ${createdRegions.length}`);
         },
 
         /**
@@ -692,13 +632,12 @@ function vinylApp() {
         toggleTrackIgnored(track) {
             track.ignored = !track.ignored;
 
-            // Update region color
             if (this.waveformRegions) {
                 const region = this.waveformRegions.getRegions().find(r => r.id === `track-${track.number}`);
                 if (region) {
                     const newColor = track.ignored
-                        ? 'rgba(239, 68, 68, 0.2)'  // Red for ignored
-                        : this.getTrackColor(track.number - 1);  // Original color
+                        ? 'rgba(239, 68, 68, 0.2)'
+                        : this.getTrackColor(track.number - 1);
                     region.setOptions({ color: newColor });
                 }
             }
@@ -709,12 +648,12 @@ function vinylApp() {
          */
         getTrackColor(idx) {
             const colors = [
-                'rgba(59, 130, 246, 0.3)',   // Blue
-                'rgba(16, 185, 129, 0.3)',   // Green
-                'rgba(245, 158, 11, 0.3)',   // Amber
-                'rgba(139, 92, 246, 0.3)',   // Purple
-                'rgba(236, 72, 153, 0.3)',   // Pink
-                'rgba(239, 68, 68, 0.3)',    // Red
+                'rgba(59, 130, 246, 0.3)',
+                'rgba(16, 185, 129, 0.3)',
+                'rgba(245, 158, 11, 0.3)',
+                'rgba(139, 92, 246, 0.3)',
+                'rgba(236, 72, 153, 0.3)',
+                'rgba(239, 68, 68, 0.3)',
             ];
             return colors[idx % colors.length];
         },
@@ -730,16 +669,12 @@ function vinylApp() {
                 track.start = region.start;
                 track.end = region.end;
                 track.duration = region.end - region.start;
-
-                // Mark as editing to show we've manually adjusted
                 track.editing = true;
 
-                // Update next track's start if it exists
                 const idx = this.detectedTracks.findIndex(t => t.number === trackNumber);
                 if (idx >= 0 && idx + 1 < this.detectedTracks.length) {
                     this.detectedTracks[idx + 1].start = region.end;
 
-                    // Also update the next region
                     const nextRegion = this.waveformRegions.getRegions().find(r => r.id === `track-${trackNumber + 1}`);
                     if (nextRegion) {
                         nextRegion.setOptions({ start: region.end });
@@ -748,51 +683,28 @@ function vinylApp() {
             }
         },
 
-        /**
-         * Play waveform audio
-         */
         playWaveform() {
-            if (this.waveform) {
-                this.waveform.play();
-            }
+            if (this.waveform) this.waveform.play();
         },
 
-        /**
-         * Stop waveform audio
-         */
         stopWaveform() {
-            if (this.waveform) {
-                this.waveform.pause();
-            }
+            if (this.waveform) this.waveform.pause();
         },
 
-        /**
-         * Zoom in on waveform
-         */
         zoomIn() {
             if (this.waveform) {
-                // Increase zoom (more pixels per second = more detail)
                 this.currentZoom = Math.min(this.currentZoom * 1.5, 500);
                 this.waveform.zoom(this.currentZoom);
-                console.log(`🔍 Zoomed in to ${this.currentZoom.toFixed(1)} px/sec`);
             }
         },
 
-        /**
-         * Zoom out on waveform
-         */
         zoomOut() {
             if (this.waveform) {
-                // Decrease zoom (fewer pixels per second = wider view)
                 this.currentZoom = Math.max(this.currentZoom / 1.5, 10);
                 this.waveform.zoom(this.currentZoom);
-                console.log(`🔍 Zoomed out to ${this.currentZoom.toFixed(1)} px/sec`);
             }
         },
 
-        /**
-         * Destroy waveform instance
-         */
         destroyWaveform() {
             if (this.waveform) {
                 this.waveform.destroy();
@@ -807,7 +719,6 @@ function vinylApp() {
         async processFile() {
             if (!this.currentFileId || !this.selectedRelease) return;
 
-            // Filter out ignored tracks
             const activeTracks = this.detectedTracks.filter(t => !t.ignored);
 
             if (activeTracks.length === 0) {
@@ -815,7 +726,6 @@ function vinylApp() {
                 return;
             }
 
-            // Build track mapping using custom mapping indices (only for active tracks)
             const trackMapping = activeTracks.map((track, idx) => {
                 const originalIdx = this.detectedTracks.indexOf(track);
                 const discogsIdx = this.customMapping[originalIdx];
@@ -826,7 +736,6 @@ function vinylApp() {
                 };
             });
 
-            // Include track boundaries (only for active tracks)
             const trackBoundaries = activeTracks.map(track => ({
                 number: track.number,
                 start: track.start,
@@ -846,14 +755,14 @@ function vinylApp() {
                         release_id: this.selectedRelease.id,
                         track_mapping: trackMapping,
                         reversed: this.trackMappingReversed,
-                        track_boundaries: trackBoundaries
+                        track_boundaries: trackBoundaries,
+                        output_format: this.outputFormat
                     })
                 });
 
                 const data = await response.json();
                 console.log('Processing started:', data);
 
-                // Update file status
                 const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
                 if (file) {
                     file.status = 'processing';
@@ -876,7 +785,6 @@ function vinylApp() {
             this.processingProgress = 0;
             this.processingMessage = '';
 
-            // Find next uploaded file
             const nextFile = this.uploadedFiles.find(f => f.status === 'uploaded');
             if (nextFile) {
                 this.selectFile(nextFile.id);
@@ -886,26 +794,17 @@ function vinylApp() {
             }
         },
 
-
         /**
          * Clean filename for Discogs search
          */
         cleanFilename(filename) {
-            // Remove extension
-            let name = filename.replace(/\.wav$/i, '');
-
-            // Replace separators with spaces
+            // Remove all supported extensions
+            let name = filename.replace(/\.(wav|aiff|aif)$/i, '');
             name = name.replace(/[-_]+/g, ' ');
-
-            // Remove extra spaces
             name = name.replace(/\s+/g, ' ').trim();
-
             return name;
         },
 
-        /**
-         * Format file size for display
-         */
         formatSize(bytes) {
             if (!bytes) return '0 B';
             const k = 1024;
@@ -914,9 +813,6 @@ function vinylApp() {
             return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
         },
 
-        /**
-         * Format duration in seconds to MM:SS
-         */
         formatDuration(seconds) {
             if (!seconds) return '0:00';
             const mins = Math.floor(seconds / 60);
@@ -924,16 +820,10 @@ function vinylApp() {
             return `${mins}:${secs.toString().padStart(2, '0')}`;
         },
 
-        /**
-         * Format timestamp for display
-         */
         formatTime(seconds) {
             return this.formatDuration(seconds);
         },
 
-        /**
-         * Get CSS class for status badge
-         */
         statusClass(status) {
             switch (status) {
                 case 'uploaded': return 'text-blue-600 font-medium';
