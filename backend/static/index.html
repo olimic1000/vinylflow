@@ -229,10 +229,6 @@
                         <label class="block text-sm font-medium text-secondary mb-1">Min Silence Duration (sec)</label>
                         <input type="number" step="0.1" x-model="config.min_silence_duration" class="w-full px-3 py-2 border focus-primary rounded-md" style="border-color: #8A8A86;">
                     </div>
-                    <div>
-                        <label class="block text-sm font-medium text-secondary mb-1">Output Directory</label>
-                        <input type="text" x-model="config.output_dir" class="w-full px-3 py-2 border focus-primary rounded-md" style="border-color: #8A8A86;">
-                    </div>
                     <div class="flex gap-2">
                         <button @click="saveConfig()" class="flex-1 px-4 py-2 btn-primary rounded-lg">Save</button>
                         <button @click="showSettings = false" class="flex-1 px-4 py-2 text-primary rounded-lg hover:bg-page" style="background-color: #F0EFEB;">Cancel</button>

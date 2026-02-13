@@ -61,7 +61,6 @@ function vinylApp() {
             silence_threshold: -40,
             min_silence_duration: 1.5,
             min_track_length: 30,
-            output_dir: '',
             flac_compression: 8
         },
 
@@ -165,7 +164,7 @@ function vinylApp() {
                     if (data.file_id === this.currentFileId) {
                         this.processingProgress = 1.0;
                         this.processingMessage = 'Complete!';
-                        this.successMessage = `Album saved to: ${data.output_path}\nTracks: ${data.tracks.join(', ')}`;
+                        this.successMessage = `✅ ${data.tracks.length} tracks saved to your VinylFlow/output folder\n\nTracks: ${data.tracks.join(', ')}`;
 
                         const file = this.uploadedFiles.find(f => f.id === data.file_id);
                         if (file) {
@@ -206,10 +205,12 @@ function vinylApp() {
          */
         async saveConfig() {
             try {
+                // Don't send output_dir to API
+                const { output_dir, ...configToSave } = this.config;
                 const response = await fetch('/api/config', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.config)
+                    body: JSON.stringify(configToSave)
                 });
                 const data = await response.json();
                 this.config = data;

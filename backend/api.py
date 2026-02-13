@@ -154,7 +154,6 @@ class ConfigUpdate(BaseModel):
     silence_threshold: Optional[float] = None
     min_silence_duration: Optional[float] = None
     min_track_length: Optional[float] = None
-    output_dir: Optional[str] = None
 
 
 # WebSocket broadcast helper
@@ -789,7 +788,6 @@ async def get_config():
         "silence_threshold": audio_processor.silence_threshold,
         "min_silence_duration": audio_processor.min_silence_duration,
         "min_track_length": audio_processor.min_track_length,
-        "output_dir": config.default_output_dir,
         "flac_compression": audio_processor.flac_compression,
     }
 
@@ -803,8 +801,6 @@ async def update_config(updates: ConfigUpdate):
         audio_processor.min_silence_duration = updates.min_silence_duration
     if updates.min_track_length is not None:
         audio_processor.min_track_length = updates.min_track_length
-    if updates.output_dir is not None:
-        config.default_output_dir = updates.output_dir
 
     return await get_config()
 
