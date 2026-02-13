@@ -75,6 +75,9 @@ class DiscogsRelease:
         self.title = release.title
         self.year = getattr(release, "year", "")
 
+        # Get URI for Discogs link - construct from release ID
+        self.uri = f"/release/{release.id}"
+
         # Get artists
         artists = getattr(release, "artists", [])
         self.artist = artists[0].name if artists else "Unknown Artist"

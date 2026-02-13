@@ -28,7 +28,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config
-from audio_processor import AudioProcessor, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS
+from audio_processor import AudioProcessor, Track, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS
 from metadata_handler import MetadataHandler
 
 # Initialize FastAPI app
@@ -117,6 +117,11 @@ async def startup_event():
 # Pydantic models for API requests/responses
 class AnalyzeRequest(BaseModel):
     file_id: str
+
+
+class DurationBasedAnalyzeRequest(BaseModel):
+    file_id: str
+    discogs_durations: List[float]
 
 
 class SearchRequest(BaseModel):
@@ -356,6 +361,64 @@ async def analyze_file(request: AnalyzeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/analyze-duration-based")
+async def analyze_duration_based(request: DurationBasedAnalyzeRequest):
+    """
+    Create track boundaries based on Discogs track durations.
+    Fallback method when silence detection fails.
+    """
+    file_info = uploaded_files.get(request.file_id)
+    if not file_info:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_path = Path(file_info["path"])
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    try:
+        # Use existing duration-based splitting method
+        processor = AudioProcessor(
+            silence_threshold=config.DEFAULT_SILENCE_THRESHOLD,
+            min_silence_duration=config.DEFAULT_MIN_SILENCE_DURATION,
+            min_track_length=config.DEFAULT_MIN_TRACK_LENGTH,
+        )
+
+        tracks = processor.split_tracks_duration_based(
+            file_path,
+            request.discogs_durations,
+            verbose=True
+        )
+
+        # Store tracks for this file
+        file_info["detected_tracks"] = tracks
+        file_info["detection_method"] = "duration_based"
+        file_info["status"] = "analyzed"
+
+        # Broadcast via WebSocket
+        await broadcast_message({
+            "type": "analysis_complete",
+            "file_id": request.file_id,
+            "track_count": len(tracks),
+            "method": "duration_based"
+        })
+
+        return {
+            "tracks": [
+                {
+                    "number": track.number,
+                    "start": track.start,
+                    "end": track.end,
+                    "duration": track.duration,
+                }
+                for track in tracks
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Duration-based analysis failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/preview/{file_id}/{track_number}")
 async def preview_track(
     file_id: str, track_number: int, start: Optional[float] = None, end: Optional[float] = None
@@ -535,6 +598,7 @@ async def search_discogs(request: SearchRequest):
                     "label": release.label,
                     "format": release.format,
                     "cover_url": release.cover_url,
+                    "uri": release.uri,
                     "tracks": [
                         {"position": t.position, "title": t.title, "duration": t.duration_str}
                         for t in release.tracks
@@ -595,22 +659,29 @@ async def process_file_background(request: ProcessRequest, job_id: str):
         if not release:
             raise Exception("Failed to fetch Discogs release")
 
-        # Deep copy detected tracks to avoid mutating shared state
-        detected_tracks = copy.deepcopy(file_info.get("detected_tracks", []))
-
-        # Apply custom track boundaries if provided
+        # Build detected tracks from boundaries sent by frontend
+        # This handles manually split tracks correctly
         if request.track_boundaries:
+            # Create fresh Track objects from boundaries
+            detected_tracks = []
             for boundary in request.track_boundaries:
-                track_idx = boundary.number - 1
-                if track_idx < len(detected_tracks):
-                    detected_tracks[track_idx].start = boundary.start
-                    detected_tracks[track_idx].end = boundary.end
-                    detected_tracks[track_idx].duration = boundary.duration
+                detected_tracks.append(
+                    Track(
+                        number=boundary.number,
+                        start=boundary.start,
+                        end=boundary.end,
+                    )
+                )
+        else:
+            # Fall back to original detected tracks if no boundaries provided
+            detected_tracks = copy.deepcopy(file_info.get("detected_tracks", []))
 
+        # Apply vinyl numbers from track mapping
         for mapping in request.track_mapping:
-            track_idx = mapping.detected - 1
-            if track_idx < len(detected_tracks):
-                detected_tracks[track_idx].vinyl_number = mapping.discogs
+            # Find track by number (not by index, since numbers may not be sequential)
+            track = next((t for t in detected_tracks if t.number == mapping.detected), None)
+            if track:
+                track.vinyl_number = mapping.discogs
 
         # Create output directory
         output_base = Path(config.default_output_dir)
