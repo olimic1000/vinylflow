@@ -67,12 +67,16 @@ function vinylApp() {
         // Supported input file extensions
         supportedExtensions: ['.wav', '.aiff', '.aif'],
 
+        // Status
+        discogsConfigured: true,
+
         /**
          * Initialize the application
          */
         async init() {
             await this.loadConfig();
             await this.loadFormats();
+            await this.checkStatus();
             this.connectWebSocket();
 
             this.$watch('currentFile', (file) => {
@@ -197,6 +201,19 @@ function vinylApp() {
                 this.config = data;
             } catch (error) {
                 console.error('Failed to load config:', error);
+            }
+        },
+
+        /**
+         * Check app configuration status
+         */
+        async checkStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                this.discogsConfigured = data.discogs_configured;
+            } catch (error) {
+                console.error('Failed to check status:', error);
             }
         },
 
