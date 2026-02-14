@@ -805,6 +805,14 @@ async def update_config(updates: ConfigUpdate):
     return await get_config()
 
 
+@app.get("/api/status")
+async def get_status():
+    """Check app configuration status."""
+    return {
+        "discogs_configured": bool(config.discogs_token and config.discogs_token != "your_token_here")
+    }
+
+
 # Mount static files (must be last)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 

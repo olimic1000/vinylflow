@@ -1,427 +1,214 @@
-# VinylFlow
+# 🎵 VinylFlow
 
-Automated vinyl record digitization tool. Converts WAV recordings to FLAC with intelligent silence detection, Discogs metadata tagging, and vinyl-style track numbering.
+**Digitize vinyl 10x faster. Open source.**
+
+Turn your vinyl recordings into perfectly tagged, organized digital files in minutes — not hours. VinylFlow automates track splitting, Discogs metadata tagging, cover art embedding, and vinyl-style numbering (A1, A2, B1, B2).
+
+![VinylFlow Demo](docs/demo.gif)
+
+---
+
+## The Problem
+
+Digitizing a vinyl record manually takes **20–30 minutes per album**: record in Audacity, manually find track boundaries, split, export, look up metadata, type it all in, find cover art, embed it. Multiply that by a collection of hundreds of records and it's a weekend project that never ends.
+
+## The Solution
+
+VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tracks, pick the album from Discogs, and hit process. Done.
+
+---
 
 ## Features
 
-- **Web Interface** - Modern browser-based UI with drag-and-drop uploads
-- **Automatic silence detection** - Intelligently splits albums into tracks
-- **Duration-based splitting** - Fallback for seamlessly mixed tracks
-- **Discogs integration** - Visual search with album artwork
-- **Vinyl-style numbering** - Proper A1, A2, B1, B2 track notation
-- **Cover art** - Downloads and embeds album artwork
-- **High-quality FLAC** - Lossless compression (configurable level)
-- **Batch queue management** - Process multiple files with real-time progress
-- **Interactive workflow** - Manual confirmation for accurate metadata
-- **Remote access** - Control from any device on your network
+- **Automatic silence detection** — intelligently finds track boundaries in your recording
+- **Duration-based splitting** — fallback for seamlessly mixed tracks with no gaps
+- **Discogs integration** — visual search with album artwork, metadata, and track listings
+- **Multiple output formats** — FLAC (lossless), MP3 (320kbps), or AIFF (lossless)
+- **Multiple input formats** — WAV and AIFF recordings supported
+- **Vinyl-style numbering** — proper A1, A2, B1, B2 track notation
+- **Cover art** — downloads and embeds album artwork automatically
+- **Interactive waveform editor** — drag regions to fine-tune track boundaries
+- **Batch queue** — process multiple records with real-time progress
+- **Remote access** — control from any device on your network (phone, tablet, laptop)
 
-## Requirements
+---
 
-### Docker Installation (Easiest)
-- Docker Desktop (Mac/Windows) or Docker Engine (Linux)
-- Docker Compose
-- 2GB free disk space
-- Discogs API token (free)
+## Quick Start (2 minutes)
 
-### Manual Installation
-- Python 3.9 or higher
-- FFmpeg
-- FLAC encoder
-- 2GB free disk space
-- Discogs API token (free)
-
-## Time Savings
-
-- **Manual workflow:** 20-30 min per album (Audacity + manual tagging)
-- **Automated workflow:** 3-5 min per album (mostly Discogs confirmation)
-- **Time savings:** ~85% reduction
-
-## Quick Start with Docker (Recommended)
-
-Get VinylFlow running in one command:
+You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed. That's it.
 
 ```bash
 # 1. Clone the repository
-git clone <repository-url>
+git clone https://github.com/olimic1000/vinylflow.git
 cd vinylflow
 
-# 2. Copy and configure environment file
+# 2. Set up your config
 cp .env.example .env
-nano .env  # Add your Discogs token
+```
 
+Edit `.env` and add your Discogs API token (free — get one at [discogs.com/settings/developers](https://www.discogs.com/settings/developers)):
+
+```ini
+DISCOGS_USER_TOKEN=your_token_here
+```
+
+```bash
 # 3. Start VinylFlow
 docker compose up -d
 ```
 
-That's it! Open http://localhost:8000 in your browser.
+Open **http://localhost:8000** in your browser. You're done.
 
-**What you get:**
-- ✅ All dependencies pre-installed (FFmpeg, FLAC, Python packages)
-- ✅ Automatic restarts if the container crashes
-- ✅ Persistent storage for your processed files in `./output`
-- ✅ No system-wide installation required
+---
 
-**Managing the service:**
-```bash
-# View logs
-docker compose logs -f
+## How It Works
 
-# Stop the service
-docker compose stop
+1. **Upload** — drag and drop your WAV or AIFF recording
+2. **Analyze** — VinylFlow detects track boundaries using silence detection
+3. **Search** — find your album on Discogs with visual artwork results
+4. **Map** — match detected tracks to Discogs track listings
+5. **Choose format** — FLAC, MP3, or AIFF output
+6. **Process** — tracks are split, converted, tagged, and saved with cover art
 
-# Restart the service
-docker compose restart
+Your files appear in the `output/` folder, organized as `Artist - Album/A1-Track Name.flac`.
 
-# Remove everything (keeps your files in ./output)
-docker compose down
-```
+---
 
-## Installation (Manual Setup)
-
-### 1. Install System Dependencies
-
-```bash
-# Install ffmpeg and flac via Homebrew
-brew install ffmpeg flac
-```
-
-### 2. Install Python Dependencies
-
-```bash
-# Install required Python packages (including web interface)
-python3 -m pip install --user -r requirements.txt
-
-# Install web server dependencies
-python3 -m pip install --user fastapi "uvicorn[standard]" python-multipart websockets aiofiles
-```
-
-### 3. Set Up Configuration
-
-```bash
-# Create configuration file
-./vinyl_digitizer.py init
-
-# Edit .env and add your Discogs token
-# Get token from: https://www.discogs.com/settings/developers
-nano .env
-```
-
-### 4. Verify Installation
-
-```bash
-# Check that all dependencies are installed
-python3 vinyl_digitizer.py check
-```
-
-## Usage
-
-### Web Interface (Recommended)
-
-The easiest way to use VinylFlow is through the modern web interface:
-
-```bash
-# Start the web server
-./start_web.sh
-
-# Or manually:
-python3 -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
-```
-
-Then open your browser to:
-- **Local:** http://localhost:8000
-- **From other devices:** http://[your-mac-ip]:8000
-
-**Web Interface Features:**
-- 📤 **Drag & drop** WAV files directly from Finder
-- 🎵 **Visual queue** - See all uploaded files and their status
-- 🔍 **Interactive search** - Browse Discogs results with album artwork
-- 🎚️ **Track mapping** - Visual side-by-side comparison with reverse option
-- 📊 **Real-time progress** - Watch processing happen live
-- ⚙️ **Settings** - Adjust silence detection parameters on the fly
-- 📱 **Mobile friendly** - Control from iPad or phone on same network
-
-**Workflow:**
-1. Upload WAV file(s) via drag-and-drop
-2. Click "Analyze & Detect Tracks"
-3. Search Discogs or use auto-suggested query
-4. Select matching album from visual grid
-5. Verify track mapping (use Reverse if needed)
-6. Click "Process & Save"
-7. Watch progress in real-time
-8. Process next file when done
-
-### Command Line Interface
-
-For automation or scripting, use the CLI:
-
-#### Process Single Album
-
-```bash
-# Basic usage
-./vinyl_digitizer.py process "/path/to/album.wav"
-
-# Dry run (test without actually processing)
-./vinyl_digitizer.py process "/path/to/album.wav" --dry-run
-
-# With custom output directory
-./vinyl_digitizer.py process "/path/to/album.wav" -o "/custom/output/"
-
-# Verbose output
-./vinyl_digitizer.py process "/path/to/album.wav" -v
-
-# Adjust silence detection
-./vinyl_digitizer.py process "/path/to/album.wav" --silence-threshold -35
-```
-
-### Batch Process Directory
-
-```bash
-# Process all WAV files in directory
-./vinyl_digitizer.py batch "/path/to/albums/"
-
-# Dry run for entire batch
-./vinyl_digitizer.py batch "/path/to/albums/" --dry-run -v
-```
-
-## Workflow Example
-
-Here's what happens when you process a file:
+## Output Example
 
 ```
-./vinyl_digitizer.py process "aril brikha departure.wav"
+output/
+└── Aril Brikha - Departure/
+    ├── A1-Groove La Chord.flac
+    ├── A2-Art Of Vengeance.flac
+    ├── B1-Ambiogenesis.flac
+    ├── B2-Deeparture In Mars.flac
+    └── folder.jpg
 ```
 
-1. **Validates input file** - Checks that file exists and is valid audio
-2. **Detects silence** - Finds track boundaries automatically
-3. **Searches Discogs** - Uses filename as search query
-4. **Interactive selection** - Shows top 5 matches, you select the correct one
-5. **Maps tracks** - Matches detected splits to Discogs vinyl positions (A1, A2, B1, B2)
-6. **Extracts tracks** - Splits audio and converts to FLAC
-7. **Downloads cover art** - Fetches album artwork from Discogs
-8. **Tags files** - Writes metadata (artist, album, track names, vinyl numbers)
-9. **Organizes output** - Creates folder: `new 12-inches/Aril Brikha - Departure/`
+Each file includes embedded metadata: artist, album, title, track number, year, label, Discogs ID, and cover art.
 
-Result:
-```
-new 12-inches/Aril Brikha - Departure/
-  ├── A1-Groove La Chord.flac
-  ├── A2-Art Of Vengeance.flac
-  ├── B1-Ambiogenesis.flac
-  ├── B2-Deeparture In Mars.flac
-  └── folder.jpg
-```
+---
+
+## Who Is This For?
+
+- **DJs** digitizing crate finds for digital sets
+- **Vinyl collectors** preserving and cataloguing collections
+- **Record labels** archiving back catalogs
+- **Music lovers** who want their vinyl in lossless digital
+
+---
 
 ## Configuration
 
-Edit `.env` to customize settings:
+Edit `.env` to customize:
 
 ```ini
 # Discogs API (required)
 DISCOGS_USER_TOKEN=your_token_here
 
-# Output location
-DEFAULT_OUTPUT_DIR=/path/to/music/output
+# Silence detection (adjust if tracks aren't splitting correctly)
+DEFAULT_SILENCE_THRESHOLD=-40      # dB — increase to -35 if tracks are merging
+DEFAULT_MIN_SILENCE_DURATION=1.5   # seconds — decrease to 1.0 for short gaps
+DEFAULT_MIN_TRACK_LENGTH=30        # seconds — ignore segments shorter than this
 
-# Silence detection (adjust if tracks not splitting correctly)
-DEFAULT_SILENCE_THRESHOLD=-40          # dB level (more negative = quieter)
-DEFAULT_MIN_SILENCE_DURATION=1.5       # seconds
-DEFAULT_MIN_TRACK_LENGTH=30            # seconds
-
-# FLAC compression (0-8, higher = more compression)
+# FLAC compression (0-8, higher = smaller files)
 DEFAULT_FLAC_COMPRESSION=8
 ```
 
-### Adjusting Silence Detection
+You can also adjust silence detection settings live in the app via the ⚙️ Settings button.
 
-If tracks aren't splitting correctly:
+### Silence Detection Tips
 
-- **Tracks merging together:** Increase threshold (e.g., `-35` instead of `-40`)
-- **Too many splits:** Decrease threshold (e.g., `-45` instead of `-40`)
-- **Splitting on brief silence:** Increase min silence duration (e.g., `2.0` instead of `1.5`)
+| Problem | Fix |
+|---|---|
+| Tracks merging together | Increase threshold (e.g. `-35` instead of `-40`) |
+| Too many splits | Decrease threshold (e.g. `-45` instead of `-40`) |
+| Splitting on brief silence | Increase min silence duration (e.g. `2.0`) |
+
+---
+
+## Managing Docker
+
+```bash
+# View logs
+docker compose logs -f
+
+# Stop VinylFlow
+docker compose stop
+
+# Restart
+docker compose restart
+
+# Remove containers (keeps your files in ./output)
+docker compose down
+```
+
+---
 
 ## Troubleshooting
 
-### Docker Issues
+**Container won't start?**
+Check if port 8000 is in use: `lsof -i :8000` (Mac/Linux) or `netstat -ano | findstr :8000` (Windows). Change the port in `.env` with `PORT=8080`.
 
-**Container won't start:**
-```bash
-# Check if port 8000 is already in use
-lsof -i :8000
+**Files not appearing in output/?**
+Make sure the `output/` directory exists and has write permissions: `chmod -R 755 ./output`
 
-# Change port in .env file
-PORT=8080
+**Discogs search returns no results?**
+Check your API token is set correctly in `.env`, then restart: `docker compose restart`
 
-# Restart with new port
-docker compose down && docker compose up -d
-```
+**Tracks not splitting correctly?**
+Try adjusting silence detection in Settings (⚙️), or use duration-based splitting after selecting a Discogs release.
 
-**Can't access web interface:**
-- Make sure container is running: `docker compose ps`
-- Check logs for errors: `docker compose logs -f`
-- Try accessing from host machine: http://localhost:8000
-- If using VPN or firewall, temporarily disable it
-
-**Files not saving to output directory:**
-```bash
-# Check volume mount
-docker compose exec vinylflow ls -la /app/output
-
-# Check permissions
-chmod -R 755 ./output
-
-# Restart container
-docker compose restart
-```
-
-**Missing Discogs token error:**
-```bash
-# Verify .env file exists and has your token
-cat .env | grep DISCOGS_USER_TOKEN
-
-# Restart container to pick up changes
-docker compose restart
-```
-
-**Out of disk space:**
-```bash
-# Clean up Docker images and containers
-docker system prune -a
-
-# Remove old temporary uploads
-docker compose exec vinylflow rm -rf /app/temp_uploads/*
-```
-
-### Tracks Not Splitting Correctly
-
-If silence detection misses track boundaries:
-
-1. The tool will warn you about duration mismatches
-2. Options provided:
-   - **Adjust parameters** - Try different silence threshold
-   - **Duration-based split** - Use Discogs track durations instead
-   - **Skip** - Handle manually in Audacity
-
-### Album Not in Discogs
-
-If your album isn't found:
-
-1. Try a custom search query (enter artist or catalog number)
-2. Check Discogs website manually to confirm it exists
-3. Skip and tag manually later
-
-### Cover Art Issues
-
-If cover art fails to download:
-
-- Processing continues without cover art
-- You can add it manually later
-- Check Discogs page has images
-
-### Rate Limiting
-
-Free Discogs API tier: 60 requests per minute
-
-- Tool automatically rate-limits to 1 req/sec
-- Batch processing paces requests appropriately
-- If you hit limits, wait a minute and continue
-
-## Tips
-
-### Filename Conventions
-
-Your WAV filenames should contain artist/album info:
-- ✓ "aril brikha departure.wav"
-- ✓ "kassem mosse aqueous haze.wav"
-- ✓ "dj assault i'm nigga.wav"
-
-The tool uses filenames as initial Discogs search queries.
-
-### Best Practices
-
-1. **Test with dry-run first** - Verify detection before processing
-2. **Start with known albums** - Test with albums you can verify
-3. **Adjust parameters per genre** - House vs techno may need different thresholds
-4. **Batch similar albums** - Process albums from same era/style together
-
-### Seamless Mixes
-
-For tracks that blend together without silence:
-
-- The tool detects when a segment is 2x expected duration
-- Offers duration-based splitting using Discogs track lengths
-- Works well for DJ mixes and continuous sides
-
-## Commands Reference
-
-```bash
-# Check installation and configuration
-./vinyl_digitizer.py check
-
-# Create default .env file
-./vinyl_digitizer.py init
-
-# Process single file
-./vinyl_digitizer.py process FILE [OPTIONS]
-  -o, --output-dir DIR       Custom output directory
-  --silence-threshold DB     Silence threshold in dB
-  --min-silence-duration SEC Minimum silence duration
-  --dry-run                  Test without processing
-  -v, --verbose              Detailed output
-
-# Batch process directory
-./vinyl_digitizer.py batch DIRECTORY [OPTIONS]
-  -o, --output-dir DIR       Custom output directory
-  --dry-run                  Test without processing
-  -v, --verbose              Detailed output
-```
+---
 
 ## Technology Stack
 
-**Backend:**
-- **FastAPI** - Modern async Python web framework
-- **WebSockets** - Real-time progress updates
-- **ffmpeg** - Audio processing, silence detection, format conversion
-- **mutagen** - FLAC metadata tagging and cover art embedding
-- **discogs-client** - Discogs API integration
-- **Pillow** - Image processing for cover art
+| Component | Technology |
+|---|---|
+| Backend | Python, FastAPI, uvicorn |
+| Audio processing | FFmpeg |
+| Metadata tagging | Mutagen (FLAC, MP3, AIFF) |
+| Music database | Discogs API |
+| Frontend | Alpine.js, Tailwind CSS |
+| Waveform display | WaveSurfer.js |
+| Deployment | Docker |
 
-**Frontend:**
-- **Alpine.js** - Lightweight reactive framework
-- **Tailwind CSS** - Utility-first styling
-- **Vanilla JavaScript** - WebSocket client and API integration
+---
 
-## Metadata Tags
+## Roadmap
 
-Each FLAC file includes:
+### Shipped (v1.0)
+- Core digitization workflow
+- Discogs integration with visual search
+- Interactive waveform editor with draggable track boundaries
+- Manual track splitting and deletion
+- Vinyl-style track numbering (A1, A2, B1, B2)
+- FLAC, MP3, and AIFF output
+- WAV and AIFF input
+- Duration-based splitting fallback
+- WebSocket real-time progress
+- Docker one-command setup
 
-- **ARTIST** - Artist name
-- **ALBUM** - Album title
-- **TITLE** - Track title
-- **TRACKNUMBER** - Vinyl position (A1, B2, etc.)
-- **DATE** - Release year
-- **LABEL** - Record label
-- **DISCOGS_RELEASE_ID** - Discogs reference
-- **COMMENT** - "Digitized from vinyl"
-- **Cover art** - Embedded front cover image
+### Planned
+- BPM and key detection
+- Rekordbox / Traktor export
+- Click and pop removal
+- MusicBrainz integration
+- Cloud-hosted option
 
-## Output Structure
+---
 
-```
-new 12-inches/
-├── Artist - Album/
-│   ├── A1-Track Name.flac
-│   ├── A2-Track Name.flac
-│   ├── B1-Track Name.flac
-│   ├── B2-Track Name.flac
-│   └── folder.jpg
-└── Another Artist - Another Album/
-    └── ...
-```
+## Contributing
+
+Found a bug? Have a feature idea? [Open an issue](https://github.com/olimic1000/vinylflow/issues) — contributions welcome.
+
+---
 
 ## License
 
-Personal use. Not for distribution.
+[MIT](LICENSE) — free to use, modify, and distribute.
 
-## Support
+---
 
-For issues or questions, refer to the implementation plan or source code comments.
+**VinylFlow** — Built with ❤️ by DJs, for DJs.
