@@ -33,7 +33,9 @@ VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tra
 
 ---
 
-## Quick Start (2 minutes)
+## Quick Start (Docker)
+
+**Setup Options**: You can run VinylFlow using Docker (recommended for quick setup) or manually with Python (for more control). See [Manual Setup (Non-Docker)](#manual-setup-non-docker) below for the non-Docker approach.
 
 You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed. That's it.
 
@@ -58,6 +60,78 @@ docker compose up -d
 ```
 
 Open **http://localhost:8000** in your browser. You're done.
+
+---
+
+## Manual Setup (Non-Docker)
+
+For tech-savvy users who prefer managing their own Python environment.
+
+### Prerequisites
+
+You'll need to install these system dependencies first:
+
+- **Python 3.11 or later**
+- **FFmpeg** (audio processing)
+- **FLAC codec** (lossless encoding)
+- **libsndfile1** (optional, audio I/O library)
+
+**Installation by OS:**
+
+**macOS** (using Homebrew):
+```bash
+brew install python@3.11 ffmpeg flac libsndfile
+```
+
+**Ubuntu/Debian**:
+```bash
+sudo apt-get update
+sudo apt-get install python3.11 python3.11-venv ffmpeg flac libsndfile1-dev
+```
+
+**Windows**:
+- Install [Python 3.11+](https://www.python.org/downloads/) (check "Add to PATH" during installation)
+- Download [FFmpeg](https://ffmpeg.org/download.html) and add it to your PATH
+- FLAC and libsndfile are bundled with FFmpeg on Windows
+
+### Installation Steps
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/olimic1000/vinylflow.git
+cd vinylflow
+
+# 2. Create and activate a Python virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# 3. Install Python dependencies
+pip install -r requirements.txt
+
+# 4. Configure your environment
+cp .env.example .env
+```
+
+Edit `.env` and:
+- Add your Discogs API token (get one free at [discogs.com/settings/developers](https://www.discogs.com/settings/developers))
+- Change `DEFAULT_OUTPUT_DIR` from `/app/output` to a local path like `~/Music/VinylFlow`
+
+```ini
+DISCOGS_USER_TOKEN=your_token_here
+DEFAULT_OUTPUT_DIR=~/Music/VinylFlow
+```
+
+```bash
+# 5. Start the server
+python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
+```
+
+Open **http://localhost:8000** in your browser. Done.
+
+**Notes:**
+- The `output/` and `temp_uploads/` directories are created automatically
+- You can adjust silence detection and other settings in `.env` (see [Configuration](#configuration) below)
+- To stop the server, press `Ctrl+C` in the terminal
 
 ---
 
