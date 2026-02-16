@@ -839,6 +839,20 @@ function vinylApp() {
                     this.updateTrackFromRegion(region);
                 });
 
+                // Add click handler for toggling track ignored status
+                this.waveformRegions.on('region-clicked', (region, event) => {
+                    // Prevent drag/resize from triggering this
+                    if (event.target.classList.contains('wavesurfer-handle')) {
+                        return;
+                    }
+                    
+                    const trackNumber = parseInt(region.id.replace('track-', ''));
+                    const track = this.detectedTracks.find(t => t.number === trackNumber);
+                    if (track) {
+                        this.toggleTrackIgnored(track);
+                    }
+                });
+
                 await this.waveform.load(`/api/audio/${this.currentFileId}`, [peaksData.peaks]);
 
             } catch (error) {
