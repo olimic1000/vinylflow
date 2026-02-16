@@ -359,6 +359,25 @@
             </button>
         </div>
 
+        <!-- Context Menu for Region Actions -->
+        <div x-show="regionContextMenu.show"
+             x-cloak
+             @click.away="regionContextMenu.show = false"
+             class="fixed bg-card rounded-lg shadow-lg border z-50 py-1"
+             style="border-color: #8A8A86;"
+             :style="`left: ${regionContextMenu.x}px; top: ${regionContextMenu.y}px;`">
+            <button @click="splitAtRegionContextMenu()"
+                    class="w-full px-4 py-2 text-left text-primary hover:bg-page flex items-center gap-2">
+                <span>✂️</span>
+                <span>Split here</span>
+            </button>
+            <button @click="deleteTrackFromRegionMenu()"
+                    class="w-full px-4 py-2 text-left text-primary hover:bg-page flex items-center gap-2">
+                <span>🗑️</span>
+                <span>Delete Track</span>
+            </button>
+        </div>
+
         <!-- Main Container -->
         <div class="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -565,7 +584,7 @@
                                         but Discogs shows <span class="font-semibold" x-text="selectedRelease?.tracks.length"></span> tracks.
                                     </p>
                                     <p class="text-xs text-muted">
-                                        💡 Scroll up to the waveform and right-click to add splits, or click track regions to remove them.
+                                        💡 Scroll up to the waveform and right-click to add splits, or right-click a track region to ignore it.
                                     </p>
                                 </div>
                             </div>

@@ -40,6 +40,16 @@ function vinylApp() {
             time: 0
         },
 
+        // Context Menu for region actions
+        regionContextMenu: {
+            show: false,
+            x: 0,
+            y: 0,
+            trackNumber: null,
+            isIgnored: false,
+            time: 0  // Position for split functionality
+        },
+
         // Discogs Search
         searchQuery: '',
         searchResults: [],
@@ -839,6 +849,47 @@ function vinylApp() {
                     this.updateTrackFromRegion(region);
                 });
 
+                // Add right-click handler for region actions
+                this.waveformRegions.on('region-created', (region) => {
+                    const regionElement = region.element;
+                    if (regionElement) {
+                        regionElement.addEventListener('contextmenu', (e) => {
+                            // Prevent drag/resize from triggering this
+                            if (e.target.classList.contains('wavesurfer-handle')) {
+                                return;
+                            }
+                            
+                            e.preventDefault();
+                            e.stopPropagation();
+                            
+                            const trackNumber = parseInt(region.id.replace('track-', ''), 10);
+                            if (!isNaN(trackNumber)) {
+                                const track = this.detectedTracks.find(t => t.number === trackNumber);
+                                
+                                // Calculate time position for split functionality
+                                const container = document.getElementById('waveform');
+                                const waveformWrapper = container?.querySelector('[part="wrapper"]') || container?.querySelector('div');
+                                let time = 0;
+                                
+                                if (waveformWrapper) {
+                                    const rect = waveformWrapper.getBoundingClientRect();
+                                    const x = e.clientX - rect.left + waveformWrapper.scrollLeft;
+                                    const totalWidth = waveformWrapper.scrollWidth;
+                                    const relativeX = Math.max(0, Math.min(1, x / totalWidth));
+                                    time = relativeX * this.waveform.getDuration();
+                                }
+                                
+                                this.regionContextMenu.x = e.clientX;
+                                this.regionContextMenu.y = e.clientY;
+                                this.regionContextMenu.trackNumber = trackNumber;
+                                this.regionContextMenu.isIgnored = track ? track.ignored : false;
+                                this.regionContextMenu.time = time;
+                                this.regionContextMenu.show = true;
+                            }
+                        });
+                    }
+                });
+
                 await this.waveform.load(`/api/audio/${this.currentFileId}`, [peaksData.peaks]);
 
             } catch (error) {
@@ -901,13 +952,105 @@ function vinylApp() {
 
             const time = this.contextMenu.time;
 
-            // Find which track contains this time position
+            // Find which track contains this time position (must be strictly inside)
             const trackIndex = this.detectedTracks.findIndex(t =>
-                time >= t.start && time <= t.end
+                time > t.start && time < t.end
             );
 
             if (trackIndex === -1) {
-                alert('Cannot split here - position is outside all tracks');
+                alert('Cannot split here - position must be inside a track (not at boundaries)');
+                return;
+            }
+
+            const trackToSplit = this.detectedTracks[trackIndex];
+
+            // Create two new tracks from the split
+            const newTrack1 = {
+                number: trackToSplit.number,
+                start: trackToSplit.start,
+                end: time,
+                duration: time - trackToSplit.start,
+                editing: false,
+                ignored: false
+            };
+
+            const newTrack2 = {
+                number: trackToSplit.number + 1,
+                start: time,
+                end: trackToSplit.end,
+                duration: trackToSplit.end - time,
+                editing: false,
+                ignored: false
+            };
+
+            // Renumber tracks after the split
+            for (let i = trackIndex + 1; i < this.detectedTracks.length; i++) {
+                this.detectedTracks[i].number++;
+            }
+
+            // Replace the split track with two new tracks
+            this.detectedTracks.splice(trackIndex, 1, newTrack1, newTrack2);
+
+            // Refresh waveform regions
+            this.addTrackRegions();
+
+            // Clear any selected release (track count changed)
+            if (this.selectedRelease) {
+                this.selectedRelease = null;
+                this.trackCountMismatch = false;
+            }
+        },
+
+        /**
+         * Delete track from region context menu
+         */
+        deleteTrackFromRegionMenu() {
+            this.regionContextMenu.show = false;
+            
+            const trackNumber = this.regionContextMenu.trackNumber;
+            const trackIndex = this.detectedTracks.findIndex(t => t.number === trackNumber);
+
+            if (trackIndex === -1) {
+                return;
+            }
+
+            if (!confirm(`Delete Track ${trackNumber}? This cannot be undone.`)) {
+                return;
+            }
+
+            // Remove the track
+            this.detectedTracks.splice(trackIndex, 1);
+
+            // Renumber subsequent tracks
+            for (let i = trackIndex; i < this.detectedTracks.length; i++) {
+                this.detectedTracks[i].number = i + 1;
+            }
+
+            // Refresh waveform regions
+            this.addTrackRegions();
+
+            // Clear any selected release (track count changed)
+            if (this.selectedRelease) {
+                this.selectedRelease = null;
+                this.trackCountMismatch = false;
+            }
+        },
+
+        /**
+         * Split track at region context menu position
+         */
+        splitAtRegionContextMenu() {
+            this.regionContextMenu.show = false;
+
+            const time = this.regionContextMenu.time;
+
+            // Find which track contains this time position (must be strictly inside)
+            const trackIndex = this.detectedTracks.findIndex(t =>
+                time > t.start && time < t.end
+            );
+
+            if (trackIndex === -1) {
+                alert('Cannot split here - position must be inside a track (not at boundaries)');
                 return;
             }
 
