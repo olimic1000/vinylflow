@@ -129,14 +129,14 @@
         /* Full-bleed waveform on larger screens */
         @media (min-width: 768px) {
             #waveform {
-                min-height: 350px !important;
+                min-height: 350px;
             }
         }
 
         /* Responsive waveform height for mobile */
         @media (max-width: 767px) {
             #waveform {
-                min-height: 200px !important;
+                min-height: 200px;
             }
         }
 
@@ -498,7 +498,7 @@
                     </div>
                 </div>
             </div>
-            <div id="waveform" class="w-full mb-6" style="min-height: 350px;"></div>
+            <div id="waveform" class="w-full mb-6"></div>
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div x-show="waveformLoading" class="text-center text-secondary py-8 text-lg">Loading waveform...</div>
                 <div x-show="!waveform && !waveformLoading" class="text-center text-muted py-8">Waveform will appear after analysis completes</div>
