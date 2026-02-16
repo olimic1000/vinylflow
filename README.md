@@ -37,10 +37,26 @@ VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tra
 
 **Setup Options**: You can run VinylFlow using Docker (recommended for quick setup) or manually with Python (for more control). See [Manual Setup (Non-Docker)](#manual-setup-non-docker) below for the non-Docker approach.
 
-You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed. That's it.
+### Prerequisites
+
+You'll need two things:
+- **Docker Desktop** (free) — [Download here](https://www.docker.com/products/docker-desktop/)
+- **A free Discogs API token** — for album metadata and artwork lookup. Get one at [discogs.com/settings/developers](https://www.discogs.com/settings/developers)
+
+That's it. Git is optional (see Step 1 below).
+
+## 1. Get VinylFlow
+
+### Option A: Download ZIP (easiest — no Git required)
+
+1. Go to [github.com/olimic1000/vinylflow](https://github.com/olimic1000/vinylflow)
+2. Click the green **Code** button, then **Download ZIP**
+3. Unzip the folder to a location you can find (like your Downloads or Desktop)
+4. Open the unzipped `vinylflow` folder
+
+### Option B: Clone with Git (for terminal users)
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/olimic1000/vinylflow.git
 cd vinylflow
 ```
@@ -88,11 +104,28 @@ Then open `.env` in your preferred text editor and add your Discogs token.
 
 ## 3. Start VinylFlow
 
-```bash
-docker compose up -d
-```
+**Using the terminal:**
 
-Open **http://localhost:8000** in your browser. You're done.
+1. **Open your terminal:**
+   - **Mac:** Open "Terminal" app (or iTerm)
+   - **Windows:** Open "Command Prompt" or "PowerShell"
+   - **Linux:** Open your terminal application
+
+2. **Navigate to the VinylFlow folder:**
+   - If you downloaded the ZIP, type `cd ` (with a space after) and drag the `vinylflow` folder into the terminal window, then press Enter
+   - Or type the full path, like: `cd ~/Downloads/vinylflow` or `cd C:\Users\YourName\Downloads\vinylflow`
+   - **Windows shortcut:** In File Explorer, open the vinylflow folder, click the address bar, type `cmd` and press Enter
+
+3. **Start VinylFlow:**
+   ```bash
+   docker compose up -d
+   ```
+
+4. **Open your browser** and go to **http://localhost:8000**
+
+**You're done!** 🎵
+
+**Tip:** Next time you want to start VinylFlow, just navigate to the folder and run `docker compose up -d` again.
 
 ---
 
@@ -263,6 +296,16 @@ docker compose down
 
 **"Discogs API token not configured" error on startup?**
 The `.env` file is either missing or doesn't have your token yet. Go back to [step 2 in Quick Start](#quick-start-docker) and make sure you've created the `.env` file and added your Discogs API token. After adding it, restart with `docker compose restart`.
+
+**"command not found: git"?**
+You don't need Git! Use the **Download ZIP** option in [Step 1](#1-get-vinylflow) instead.
+
+**"command not found: docker"?**
+Make sure Docker Desktop is installed and **running**. You should see the Docker icon in your system tray (Mac menu bar or Windows taskbar).
+
+**Can't navigate to the VinylFlow folder in terminal?**
+- **Mac/Linux:** Type `cd ` (with a space) and drag the vinylflow folder into the terminal window, then press Enter
+- **Windows:** Open the vinylflow folder in File Explorer, click the address bar, type `cmd` and press Enter — this opens a terminal already in the right folder
 
 **Container won't start?**
 Check if port 8000 is in use: `lsof -i :8000` (Mac/Linux) or `netstat -ano | findstr :8000` (Windows). Change the port in `.env` with `PORT=8080`.
