@@ -156,6 +156,11 @@ class ConfigUpdate(BaseModel):
     min_track_length: Optional[float] = None
 
 
+class DiscogsSetupRequest(BaseModel):
+    token: str
+    user_agent: Optional[str] = "VinylFlow/1.0"
+
+
 # WebSocket broadcast helper
 async def broadcast_message(message: dict):
     """Broadcast message to all connected WebSocket clients."""
@@ -808,9 +813,72 @@ async def update_config(updates: ConfigUpdate):
 @app.get("/api/status")
 async def get_status():
     """Check app configuration status."""
-    return {
-        "discogs_configured": bool(config.discogs_token and config.discogs_token != "your_token_here")
-    }
+    token_exists = bool(config.discogs_token and config.discogs_token != "your_token_here")
+
+    response = {"discogs_configured": token_exists}
+
+    # If configured, try to get username
+    if token_exists:
+        try:
+            success, message = config.test_discogs_connection()
+            if success and ": " in message:
+                username = message.split(": ")[-1]
+                response["discogs_username"] = username
+        except:
+            pass
+
+    return response
+
+
+@app.post("/api/setup/discogs-token")
+async def setup_discogs_token(request: DiscogsSetupRequest):
+    """
+    Configure Discogs API token via web UI.
+    Validates token, saves to persistent config, reinitializes without restart.
+    """
+    try:
+        # Validate token
+        import discogs_client
+
+        test_client = discogs_client.Client(
+            request.user_agent,
+            user_token=request.token
+        )
+
+        try:
+            identity = test_client.identity()
+            username = identity.username
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid Discogs token: {str(e)}"
+            )
+
+        # Save to persistent config
+        if not config.save_token(request.token, request.user_agent):
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save token to config file"
+            )
+
+        # Reload config and reinitialize handler
+        config.reload()
+        global metadata_handler
+        metadata_handler.reinitialize(config.discogs_token, config.discogs_user_agent)
+
+        return {
+            "success": True,
+            "username": username,
+            "message": f"Connected as {username}"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Setup failed: {str(e)}"
+        )
 
 
 # Mount static files (must be last)

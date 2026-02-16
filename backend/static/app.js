@@ -70,6 +70,13 @@ function vinylApp() {
         // Status
         discogsConfigured: true,
 
+        // Setup (first-run)
+        setupRequired: false,
+        setupLoading: false,
+        setupError: null,
+        setupToken: '',
+        setupUserAgent: 'VinylFlow/1.0',
+
         /**
          * Initialize the application
          */
@@ -212,8 +219,50 @@ function vinylApp() {
                 const response = await fetch('/api/status');
                 const data = await response.json();
                 this.discogsConfigured = data.discogs_configured;
+
+                // Show setup modal if not configured
+                if (!this.discogsConfigured) {
+                    this.setupRequired = true;
+                }
             } catch (error) {
                 console.error('Failed to check status:', error);
+            }
+        },
+
+        /**
+         * Submit setup with Discogs token
+         */
+        async submitSetup() {
+            this.setupLoading = true;
+            this.setupError = null;
+
+            try {
+                const response = await fetch('/api/setup/discogs-token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: this.setupToken,
+                        user_agent: this.setupUserAgent
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Setup failed');
+                }
+
+                // Success!
+                this.discogsConfigured = true;
+                this.setupRequired = false;
+                this.setupToken = '';
+
+                alert(`✅ Successfully connected as ${data.username}!`);
+
+            } catch (error) {
+                this.setupError = error.message;
+            } finally {
+                this.setupLoading = false;
             }
         },
 

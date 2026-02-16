@@ -177,9 +177,25 @@ class MetadataHandler:
             discogs_token: Discogs API token
             user_agent: User agent string
         """
+        self.discogs_token = discogs_token
+        self.discogs_user_agent = user_agent
         self.client = discogs_client.Client(user_agent, user_token=discogs_token)
         self.last_request_time = 0
         self.min_request_interval = 1.0  # Rate limiting: max 1 req/sec
+
+    def reinitialize(self, discogs_token: str, user_agent: str):
+        """
+        Reinitialize Discogs client with new credentials.
+
+        Args:
+            discogs_token: New Discogs API token
+            user_agent: New user agent string
+        """
+        self.discogs_token = discogs_token
+        self.discogs_user_agent = user_agent
+        self.client = discogs_client.Client(user_agent, user_token=discogs_token)
+        self.last_request_time = 0
+        print(f"MetadataHandler reinitialized with new token")
 
     def _rate_limit(self):
         """Enforce rate limiting between requests."""

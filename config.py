@@ -6,6 +6,7 @@ Handles Discogs API credentials, audio processing parameters, and output setting
 """
 
 import os
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -13,25 +14,47 @@ from dotenv import load_dotenv
 class Config:
     """Configuration manager for VinylFlow."""
 
-    def __init__(self, env_path=None):
+    def __init__(self, env_path=None, settings_path=None):
         """
-        Initialize configuration.
+        Initialize configuration with fallback chain:
+        1. settings.json (persistent, user-editable via UI)
+        2. .env file (backward compatibility)
+        3. Environment variables (Docker)
 
         Args:
             env_path: Optional path to .env file. If None, looks in current directory.
+            settings_path: Optional path to settings.json. If None, uses config/settings.json.
         """
+        # Store paths for reload
         if env_path is None:
             env_path = Path(__file__).parent / ".env"
         else:
             env_path = Path(env_path)
 
+        if settings_path is None:
+            settings_path = Path(__file__).parent / "config" / "settings.json"
+        else:
+            settings_path = Path(settings_path)
+
+        self._env_path = env_path
+        self._settings_path = settings_path
+
         # Load .env file if it exists
         if env_path.exists():
-            load_dotenv(env_path)
+            load_dotenv(env_path, override=True)
 
-        # Discogs API settings
-        self.discogs_token = os.getenv("DISCOGS_USER_TOKEN", "")
-        self.discogs_user_agent = os.getenv("DISCOGS_USER_AGENT", "VinylFlow/1.0")
+        # Load JSON settings (takes precedence over .env)
+        json_settings = self._load_from_json(settings_path)
+
+        # Discogs API settings (priority: JSON > env var > default)
+        self.discogs_token = (
+            json_settings.get('DISCOGS_USER_TOKEN') or
+            os.getenv("DISCOGS_USER_TOKEN", "")
+        )
+        self.discogs_user_agent = (
+            json_settings.get('DISCOGS_USER_AGENT') or
+            os.getenv("DISCOGS_USER_AGENT", "VinylFlow/1.0")
+        )
 
         # Output settings
         self.default_output_dir = os.getenv(
@@ -83,6 +106,67 @@ class Config:
             return True, f"Connected as: {identity.username}"
         except Exception as e:
             return False, f"Discogs connection failed: {str(e)}"
+
+    def _load_from_json(self, settings_path: Path) -> dict:
+        """
+        Load settings from JSON file if it exists.
+
+        Args:
+            settings_path: Path to settings.json file
+
+        Returns:
+            dict: Settings dictionary, or empty dict if file doesn't exist
+        """
+        if settings_path.exists():
+            try:
+                with open(settings_path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Warning: Failed to load settings.json: {e}")
+        return {}
+
+    def save_token(self, token: str, user_agent: str = None) -> bool:
+        """
+        Save Discogs token to settings.json.
+
+        Args:
+            token: Discogs API token
+            user_agent: Optional user agent string
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        settings_path = Path(self._settings_path)
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Load existing settings or create new
+        settings = {}
+        if settings_path.exists():
+            try:
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+            except:
+                pass
+
+        # Update token
+        settings['DISCOGS_USER_TOKEN'] = token
+        if user_agent:
+            settings['DISCOGS_USER_AGENT'] = user_agent
+
+        # Write to file
+        try:
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=2)
+            return True
+        except Exception as e:
+            print(f"Failed to save settings: {e}")
+            return False
+
+    def reload(self):
+        """
+        Reload configuration from all sources (settings.json, .env, environment).
+        """
+        self.__init__(env_path=self._env_path, settings_path=self._settings_path)
 
     def __repr__(self):
         """String representation of config (safe - no token)."""

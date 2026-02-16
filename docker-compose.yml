@@ -26,6 +26,8 @@ services:
       - ./output:/app/output
       # Temporary uploads (can be ephemeral)
       - ./temp_uploads:/app/temp_uploads
+      # Config storage for settings.json (PERSISTENT)
+      - ./config:/app/config
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/queue', timeout=5)"]

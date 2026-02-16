@@ -39,11 +39,10 @@ VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tra
 
 ### Prerequisites
 
-You'll need two things:
+You'll need:
 - **Docker Desktop** (free) — [Download here](https://www.docker.com/products/docker-desktop/)
-- **A free Discogs API token** — for album metadata and artwork lookup. Get one at [discogs.com/settings/developers](https://www.discogs.com/settings/developers)
 
-That's it. Git is optional (see Step 1 below).
+That's it! Git is optional (see Step 1 below). No need to mess with configuration files — VinylFlow will guide you through setup in your browser.
 
 ## 1. Get VinylFlow
 
@@ -61,50 +60,7 @@ git clone https://github.com/olimic1000/vinylflow.git
 cd vinylflow
 ```
 
-## 2. Set up your environment file (.env)
-
-VinylFlow needs a **Discogs API token** to search for album metadata and artwork. This token is stored in a `.env` file (a configuration file that lives in the VinylFlow folder).
-
-**Get your free Discogs API token:** https://www.discogs.com/settings/developers
-
-### Option 1: Using your file explorer (easiest for beginners)
-
-1. Open the `vinylflow` folder in your file explorer
-2. **Show hidden files** (the `.env.example` file starts with a dot, so it's hidden by default):
-   - **Windows:** In File Explorer, click **View** > **Show** > **Hidden items**
-   - **Mac:** Press **Cmd + Shift + .** (dot) in Finder
-   - **Linux:** Press **Ctrl + H** in your file manager
-3. Find the file named `.env.example`
-4. Copy it and rename the copy to `.env` (just remove the `.example` part)
-5. Open `.env` with any text editor (Notepad, TextEdit, VS Code, etc.)
-6. Paste your Discogs API token after `DISCOGS_USER_TOKEN=`:
-
-```ini
-DISCOGS_USER_TOKEN=your_token_here
-```
-
-7. Save the file
-
-### Option 2: Using the terminal
-
-If you're comfortable with the command line:
-
-```bash
-cp .env.example .env
-```
-
-Then open `.env` in your preferred text editor and add your Discogs token.
-
-### Troubleshooting
-
-**"Discogs API token not configured" error on startup?** This means either:
-- The `.env` file doesn't exist (you skipped step 2 above)
-- The `.env` file exists but your token hasn't been added yet
-- You need to restart Docker after adding the token: `docker compose restart`
-
-## 3. Start VinylFlow
-
-**Using the terminal:**
+## 2. Start VinylFlow
 
 1. **Open your terminal:**
    - **Mac:** Open "Terminal" app (or iTerm)
@@ -123,9 +79,20 @@ Then open `.env` in your preferred text editor and add your Discogs token.
 
 4. **Open your browser** and go to **http://localhost:8000**
 
-**You're done!** 🎵
+## 3. First-Run Setup
 
-**Tip:** Next time you want to start VinylFlow, just navigate to the folder and run `docker compose up -d` again.
+When you open VinylFlow for the first time, you'll see a welcome screen that guides you through setup in seconds:
+
+![VinylFlow Setup Screen](docs/modal.jpg)
+
+1. **Get your free Discogs API token** — Click the link in the setup screen or visit [discogs.com/settings/developers](https://www.discogs.com/settings/developers)
+2. **Generate a new token** — Click "Generate new token" on the Discogs settings page
+3. **Copy and paste** — Paste your token into VinylFlow's setup screen
+4. **Click Continue** — Done! VinylFlow validates the token and you're ready to digitize
+
+**That's it!** 🎵 No hidden files, no terminal commands, no restart needed. Your token is saved securely and persists across Docker restarts.
+
+**Tip:** You can update your token anytime from the Settings (⚙️) menu in VinylFlow.
 
 ---
 
@@ -174,31 +141,34 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # 3. Install Python dependencies
 pip install -r requirements.txt
 
-# 4. Configure your environment
+# 4. Start the server
+python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
+```
 
-Create a `.env` file from the example:
+Open **http://localhost:8000** in your browser.
+
+### First-Run Setup (Non-Docker)
+
+Just like with Docker, VinylFlow will show you a welcome screen on first run:
+
+1. Visit [discogs.com/settings/developers](https://www.discogs.com/settings/developers) and generate a free API token
+2. Paste it into the VinylFlow setup screen
+3. Click Continue — done!
+
+Your token is saved to `config/settings.json` and works immediately without restart.
+
+**Alternative (for advanced users):** You can still use a `.env` file if you prefer:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and:
-- **Add your Discogs API token** (get one free at [discogs.com/settings/developers](https://www.discogs.com/settings/developers))
-- **Change `DEFAULT_OUTPUT_DIR`** from `/app/output` to a local path like `~/Music/VinylFlow`
+Edit `.env` and add your token:
 
 ```ini
 DISCOGS_USER_TOKEN=your_token_here
 DEFAULT_OUTPUT_DIR=~/Music/VinylFlow
 ```
-
-**Can't find `.env.example`?** It's hidden by default. See step 2 in [Quick Start (Docker)](#quick-start-docker) above for instructions on showing hidden files.
-
-```bash
-# 5. Start the server
-python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
-```
-
-Open **http://localhost:8000** in your browser. Done.
 
 **Notes:**
 - The `output/` and `temp_uploads/` directories are created automatically
@@ -247,12 +217,11 @@ Each file includes embedded metadata: artist, album, title, track number, year, 
 
 ## Configuration
 
-Edit `.env` to customize:
+**Discogs Token**: Managed via the web UI (Settings ⚙️ menu)
+
+**Audio Processing Settings**: Adjust in the app via Settings (⚙️), or for advanced users, edit `config/settings.json` or `.env`:
 
 ```ini
-# Discogs API (required)
-DISCOGS_USER_TOKEN=your_token_here
-
 # Silence detection (adjust if tracks aren't splitting correctly)
 DEFAULT_SILENCE_THRESHOLD=-40      # dB — increase to -35 if tracks are merging
 DEFAULT_MIN_SILENCE_DURATION=1.5   # seconds — decrease to 1.0 for short gaps
@@ -262,7 +231,7 @@ DEFAULT_MIN_TRACK_LENGTH=30        # seconds — ignore segments shorter than th
 DEFAULT_FLAC_COMPRESSION=8
 ```
 
-You can also adjust silence detection settings live in the app via the ⚙️ Settings button.
+**Config Priority**: `config/settings.json` (UI-editable) → `.env` (manual) → environment variables (Docker)
 
 ### Silence Detection Tips
 
@@ -294,8 +263,8 @@ docker compose down
 
 ## Troubleshooting
 
-**"Discogs API token not configured" error on startup?**
-The `.env` file is either missing or doesn't have your token yet. Go back to [step 2 in Quick Start](#quick-start-docker) and make sure you've created the `.env` file and added your Discogs API token. After adding it, restart with `docker compose restart`.
+**See the setup screen on first run?**
+This is normal! VinylFlow guides you through adding your Discogs token via the web interface. Just follow the on-screen instructions — it takes 30 seconds.
 
 **"command not found: git"?**
 You don't need Git! Use the **Download ZIP** option in [Step 1](#1-get-vinylflow) instead.
@@ -314,7 +283,7 @@ Check if port 8000 is in use: `lsof -i :8000` (Mac/Linux) or `netstat -ano | fin
 Make sure the `output/` directory exists and has write permissions: `chmod -R 755 ./output`
 
 **Discogs search returns no results?**
-Check your API token is set correctly in `.env`, then restart: `docker compose restart`
+Your API token might be invalid or revoked. Click the Settings (⚙️) button and update your token, or generate a new one at [discogs.com/settings/developers](https://www.discogs.com/settings/developers)
 
 **Tracks not splitting correctly?**
 Try adjusting silence detection in Settings (⚙️), or use duration-based splitting after selecting a Discogs release.
@@ -348,6 +317,7 @@ Try adjusting silence detection in Settings (⚙️), or use duration-based spli
 - Duration-based splitting fallback
 - WebSocket real-time progress
 - Docker one-command setup
+- **Web-based first-run setup** — no more hidden `.env` files!
 
 ### Planned
 - BPM and key detection
