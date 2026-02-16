@@ -768,7 +768,7 @@ function vinylApp() {
                     waveColor: '#93c5fd',
                     progressColor: '#3b82f6',
                     cursorColor: '#1e40af',
-                    height: 128,
+                    height: 'auto',
                     normalize: true,
                     backend: 'WebAudio',
                     barWidth: 2,
