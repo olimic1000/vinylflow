@@ -58,6 +58,7 @@ function vinylApp() {
         customMapping: [],
 
         // Processing
+        isProcessing: false,
         processingProgress: 0,
         processingMessage: '',
         successMessage: '',
@@ -185,6 +186,7 @@ function vinylApp() {
                     if (data.file_id === this.currentFileId) {
                         this.processingProgress = 1.0;
                         this.processingMessage = 'Complete!';
+                        this.isProcessing = false;
                         this.successMessage = `✅ ${data.tracks.length} tracks saved to your VinylFlow/output folder\n\nTracks: ${data.tracks.join(', ')}`;
 
                         const file = this.uploadedFiles.find(f => f.id === data.file_id);
@@ -196,6 +198,7 @@ function vinylApp() {
 
                 case 'error':
                     if (data.file_id === this.currentFileId) {
+                        this.isProcessing = false;
                         this.processingMessage = `Error: ${data.message}`;
                         alert(`Processing error: ${data.message}`);
 
@@ -1250,6 +1253,7 @@ function vinylApp() {
             }));
 
             try {
+                this.isProcessing = true;
                 this.processingProgress = 0.1;
                 this.processingMessage = 'Starting...';
 
@@ -1275,6 +1279,9 @@ function vinylApp() {
                 }
             } catch (error) {
                 console.error('Processing failed:', error);
+                this.isProcessing = false;
+                this.processingProgress = 0;
+                this.processingMessage = '';
                 alert('Processing failed: ' + error.message);
             }
         },
@@ -1284,6 +1291,7 @@ function vinylApp() {
          */
         resetForNextFile() {
             this.successMessage = '';
+            this.isProcessing = false;
             this.detectedTracks = [];
             this.searchResults = [];
             this.selectedRelease = null;
