@@ -846,10 +846,12 @@ function vinylApp() {
                         return;
                     }
                     
-                    const trackNumber = parseInt(region.id.replace('track-', ''));
-                    const track = this.detectedTracks.find(t => t.number === trackNumber);
-                    if (track) {
-                        this.toggleTrackIgnored(track);
+                    const trackNumber = parseInt(region.id.replace('track-', ''), 10);
+                    if (!isNaN(trackNumber)) {
+                        const track = this.detectedTracks.find(t => t.number === trackNumber);
+                        if (track) {
+                            this.toggleTrackIgnored(track);
+                        }
                     }
                 });
 
