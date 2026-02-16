@@ -43,8 +43,9 @@ You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) insta
 # 1. Clone the repository
 git clone https://github.com/olimic1000/vinylflow.git
 cd vinylflow
+```
 
-# 2. Set up your environment file (.env)
+## 2. Set up your environment file (.env)
 
 VinylFlow needs a **Discogs API token** to search for album metadata and artwork. This token is stored in a `.env` file (a configuration file that lives in the VinylFlow folder).
 
@@ -85,8 +86,9 @@ Then open `.env` in your preferred text editor and add your Discogs token.
 - The `.env` file exists but your token hasn't been added yet
 - You need to restart Docker after adding the token: `docker compose restart`
 
+## 3. Start VinylFlow
+
 ```bash
-# 3. Start VinylFlow
 docker compose up -d
 ```
 
