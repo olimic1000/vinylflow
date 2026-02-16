@@ -126,6 +126,18 @@
             padding: 16px;
         }
 
+        /* Base waveform height (mobile-first) */
+        #waveform {
+            min-height: 200px;
+        }
+
+        /* Larger waveform on desktop screens */
+        @media (min-width: 768px) {
+            #waveform {
+                min-height: 350px;
+            }
+        }
+
         .track-marker {
             position: absolute;
             top: 0;
@@ -378,7 +390,7 @@
             </button>
         </div>
 
-        <!-- Main Container -->
+        <!-- Main Container - Upload & Queue -->
         <div class="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <!-- Left Column: Upload & Queue -->
@@ -446,7 +458,7 @@
                     </div>
                 </div>
 
-                <!-- Right Column: Main Content -->
+                <!-- Right Column: File Info -->
                 <div class="lg:col-span-2 space-y-6">
                     <!-- Current File Info -->
                     <div x-show="currentFile" x-cloak class="bg-card rounded-lg shadow p-6">
@@ -467,24 +479,34 @@
                             </button>
                         </template>
                     </div>
+                </div>
+            </div>
+        </div>
 
-                    <!-- Waveform Visualization -->
-                    <div x-show="detectedTracks.length > 0" x-cloak class="bg-card rounded-lg shadow p-6 mb-6">
-                        <div class="flex justify-between items-center mb-4">
-                            <h3 class="text-lg font-semibold text-primary">Waveform Editor</h3>
-                            <div class="flex gap-2">
-                                <button @click="playWaveform()" :disabled="!waveform" class="px-3 py-1 btn-primary rounded text-sm">▶️ Play</button>
-                                <button @click="stopWaveform()" :disabled="!waveform" class="px-3 py-1 btn-danger rounded text-sm">⏹️ Stop</button>
-                                <button @click="zoomIn()" :disabled="!waveform" class="px-3 py-1 text-white rounded text-sm" style="background-color: #3D3D3D;">🔍 +</button>
-                                <button @click="zoomOut()" :disabled="!waveform" class="px-3 py-1 text-white rounded text-sm" style="background-color: #3D3D3D;">🔍 -</button>
-                            </div>
-                        </div>
-                        <div id="waveform" class="w-full mb-4" style="min-height: 128px;"></div>
-                        <div x-show="waveformLoading" class="text-center text-secondary py-4">Loading waveform...</div>
-                        <div x-show="!waveform && !waveformLoading" class="text-center text-muted py-4 text-sm">Waveform will appear after analysis completes</div>
-                        <p class="text-xs text-muted mt-2">💡 Tip: Drag the colored regions to adjust track boundaries</p>
+        <!-- Waveform Visualization - Full Bleed -->
+        <div x-show="detectedTracks.length > 0" x-cloak class="bg-card shadow-lg py-8 my-8">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="text-2xl font-bold text-primary">Waveform Editor</h3>
+                    <div class="flex gap-2">
+                        <button @click="playWaveform()" :disabled="!waveform" class="px-4 py-2 btn-primary rounded-lg">▶️ Play</button>
+                        <button @click="stopWaveform()" :disabled="!waveform" class="px-4 py-2 btn-danger rounded-lg">⏹️ Stop</button>
+                        <button @click="zoomIn()" :disabled="!waveform" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;">🔍 +</button>
+                        <button @click="zoomOut()" :disabled="!waveform" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;">🔍 -</button>
                     </div>
+                </div>
+            </div>
+            <div id="waveform" class="w-full mb-6"></div>
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div x-show="waveformLoading" class="text-center text-secondary py-8 text-lg">Loading waveform...</div>
+                <div x-show="!waveform && !waveformLoading" class="text-center text-muted py-8">Waveform will appear after analysis completes</div>
+                <p class="text-sm text-muted">💡 Tip: Drag the colored regions to adjust track boundaries, or right-click to add splits</p>
+            </div>
+        </div>
 
+        <!-- Track Controls & Additional Content -->
+        <div class="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
+            <div class="space-y-6">
                     <!-- Detected Tracks with Preview -->
                     <div x-show="detectedTracks.length > 0" x-cloak class="bg-card rounded-lg shadow p-6">
                         <h3 class="text-lg font-semibold text-primary mb-4">
@@ -664,7 +686,6 @@
                             Process Next File
                         </button>
                     </div>
-                </div>
             </div>
         </div>
 
