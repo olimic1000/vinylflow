@@ -72,8 +72,8 @@ For tech-savvy users who prefer managing their own Python environment.
 You'll need to install these system dependencies first:
 
 - **Python 3.11 or later**
-- **FFmpeg** (audio processing)
-- **FLAC codec** (lossless encoding)
+- **FFmpeg** (handles all audio processing and format conversion: MP3, FLAC, AIFF)
+- **FLAC encoder** (optional, provides dedicated FLAC encoding tools)
 - **libsndfile1** (optional, audio I/O library)
 
 **Installation by OS:**
