@@ -366,9 +366,15 @@
              class="fixed bg-card rounded-lg shadow-lg border z-50 py-1"
              style="border-color: #8A8A86;"
              :style="`left: ${regionContextMenu.x}px; top: ${regionContextMenu.y}px;`">
-            <button @click="toggleTrackFromRegionMenu()"
-                    class="w-full px-4 py-2 text-left text-primary hover:bg-page flex items-center gap-2"
-                    x-text="regionContextMenu.isIgnored ? '✓ Unignore Track' : '🚫 Ignore Track'">
+            <button @click="splitAtRegionContextMenu()"
+                    class="w-full px-4 py-2 text-left text-primary hover:bg-page flex items-center gap-2">
+                <span>✂️</span>
+                <span>Split here</span>
+            </button>
+            <button @click="deleteTrackFromRegionMenu()"
+                    class="w-full px-4 py-2 text-left text-primary hover:bg-page flex items-center gap-2">
+                <span>🗑️</span>
+                <span>Delete Track</span>
             </button>
         </div>
 
