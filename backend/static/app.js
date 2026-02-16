@@ -40,6 +40,14 @@ function vinylApp() {
             time: 0
         },
 
+        // Context Menu for region actions
+        regionContextMenu: {
+            show: false,
+            x: 0,
+            y: 0,
+            trackNumber: null
+        },
+
         // Discogs Search
         searchQuery: '',
         searchResults: [],
@@ -839,19 +847,28 @@ function vinylApp() {
                     this.updateTrackFromRegion(region);
                 });
 
-                // Add click handler for toggling track ignored status
-                this.waveformRegions.on('region-clicked', (region, event) => {
-                    // Prevent drag/resize from triggering this
-                    if (event.target.classList.contains('wavesurfer-handle')) {
-                        return;
-                    }
-                    
-                    const trackNumber = parseInt(region.id.replace('track-', ''), 10);
-                    if (!isNaN(trackNumber)) {
-                        const track = this.detectedTracks.find(t => t.number === trackNumber);
-                        if (track) {
-                            this.toggleTrackIgnored(track);
-                        }
+                // Add right-click handler for toggling track ignored status
+                const regionElements = document.querySelectorAll('[data-id^="track-"]');
+                this.waveformRegions.on('region-created', (region) => {
+                    const regionElement = region.element;
+                    if (regionElement) {
+                        regionElement.addEventListener('contextmenu', (e) => {
+                            // Prevent drag/resize from triggering this
+                            if (e.target.classList.contains('wavesurfer-handle')) {
+                                return;
+                            }
+                            
+                            e.preventDefault();
+                            e.stopPropagation();
+                            
+                            const trackNumber = parseInt(region.id.replace('track-', ''), 10);
+                            if (!isNaN(trackNumber)) {
+                                this.regionContextMenu.x = e.clientX;
+                                this.regionContextMenu.y = e.clientY;
+                                this.regionContextMenu.trackNumber = trackNumber;
+                                this.regionContextMenu.show = true;
+                            }
+                        });
                     }
                 });
 
@@ -963,6 +980,19 @@ function vinylApp() {
             if (this.selectedRelease) {
                 this.selectedRelease = null;
                 this.trackCountMismatch = false;
+            }
+        },
+
+        /**
+         * Toggle track ignored status from region context menu
+         */
+        toggleTrackFromRegionMenu() {
+            this.regionContextMenu.show = false;
+            
+            const trackNumber = this.regionContextMenu.trackNumber;
+            const track = this.detectedTracks.find(t => t.number === trackNumber);
+            if (track) {
+                this.toggleTrackIgnored(track);
             }
         },
 
