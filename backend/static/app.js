@@ -45,7 +45,8 @@ function vinylApp() {
             show: false,
             x: 0,
             y: 0,
-            trackNumber: null
+            trackNumber: null,
+            isIgnored: false
         },
 
         // Discogs Search
@@ -848,7 +849,6 @@ function vinylApp() {
                 });
 
                 // Add right-click handler for toggling track ignored status
-                const regionElements = document.querySelectorAll('[data-id^="track-"]');
                 this.waveformRegions.on('region-created', (region) => {
                     const regionElement = region.element;
                     if (regionElement) {
@@ -863,9 +863,11 @@ function vinylApp() {
                             
                             const trackNumber = parseInt(region.id.replace('track-', ''), 10);
                             if (!isNaN(trackNumber)) {
+                                const track = this.detectedTracks.find(t => t.number === trackNumber);
                                 this.regionContextMenu.x = e.clientX;
                                 this.regionContextMenu.y = e.clientY;
                                 this.regionContextMenu.trackNumber = trackNumber;
+                                this.regionContextMenu.isIgnored = track ? track.ignored : false;
                                 this.regionContextMenu.show = true;
                             }
                         });

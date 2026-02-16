@@ -368,7 +368,7 @@
              :style="`left: ${regionContextMenu.x}px; top: ${regionContextMenu.y}px;`">
             <button @click="toggleTrackFromRegionMenu()"
                     class="w-full px-4 py-2 text-left text-primary hover:bg-page flex items-center gap-2"
-                    x-text="detectedTracks.find(t => t.number === regionContextMenu.trackNumber)?.ignored ? '✓ Unignore Track' : '🚫 Ignore Track'">
+                    x-text="regionContextMenu.isIgnored ? '✓ Unignore Track' : '🚫 Ignore Track'">
             </button>
         </div>
 
