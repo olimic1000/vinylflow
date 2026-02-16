@@ -44,15 +44,46 @@ You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) insta
 git clone https://github.com/olimic1000/vinylflow.git
 cd vinylflow
 
-# 2. Set up your config
-cp .env.example .env
-```
+# 2. Set up your environment file (.env)
 
-Edit `.env` and add your Discogs API token (free — get one at [discogs.com/settings/developers](https://www.discogs.com/settings/developers)):
+VinylFlow needs a **Discogs API token** to search for album metadata and artwork. This token is stored in a `.env` file (a configuration file that lives in the VinylFlow folder).
+
+**Get your free Discogs API token:** https://www.discogs.com/settings/developers
+
+### Option 1: Using your file explorer (easiest for beginners)
+
+1. Open the `vinylflow` folder in your file explorer
+2. **Show hidden files** (the `.env.example` file starts with a dot, so it's hidden by default):
+   - **Windows:** In File Explorer, click **View** > **Show** > **Hidden items**
+   - **Mac:** Press **Cmd + Shift + .** (dot) in Finder
+   - **Linux:** Press **Ctrl + H** in your file manager
+3. Find the file named `.env.example`
+4. Copy it and rename the copy to `.env` (just remove the `.example` part)
+5. Open `.env` with any text editor (Notepad, TextEdit, VS Code, etc.)
+6. Paste your Discogs API token after `DISCOGS_USER_TOKEN=`:
 
 ```ini
 DISCOGS_USER_TOKEN=your_token_here
 ```
+
+7. Save the file
+
+### Option 2: Using the terminal
+
+If you're comfortable with the command line:
+
+```bash
+cp .env.example .env
+```
+
+Then open `.env` in your preferred text editor and add your Discogs token.
+
+### Troubleshooting
+
+**"Discogs API token not configured" error on startup?** This means either:
+- The `.env` file doesn't exist (you skipped step 2 above)
+- The `.env` file exists but your token hasn't been added yet
+- You need to restart Docker after adding the token: `docker compose restart`
 
 ```bash
 # 3. Start VinylFlow
@@ -109,17 +140,23 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 # 4. Configure your environment
+
+Create a `.env` file from the example:
+
+```bash
 cp .env.example .env
 ```
 
 Edit `.env` and:
-- Add your Discogs API token (get one free at [discogs.com/settings/developers](https://www.discogs.com/settings/developers))
-- Change `DEFAULT_OUTPUT_DIR` from `/app/output` to a local path like `~/Music/VinylFlow`
+- **Add your Discogs API token** (get one free at [discogs.com/settings/developers](https://www.discogs.com/settings/developers))
+- **Change `DEFAULT_OUTPUT_DIR`** from `/app/output` to a local path like `~/Music/VinylFlow`
 
 ```ini
 DISCOGS_USER_TOKEN=your_token_here
 DEFAULT_OUTPUT_DIR=~/Music/VinylFlow
 ```
+
+**Can't find `.env.example`?** It's hidden by default. See step 2 in [Quick Start (Docker)](#quick-start-docker) above for instructions on showing hidden files.
 
 ```bash
 # 5. Start the server
@@ -221,6 +258,9 @@ docker compose down
 ---
 
 ## Troubleshooting
+
+**"Discogs API token not configured" error on startup?**
+The `.env` file is either missing or doesn't have your token yet. Go back to [step 2 in Quick Start](#quick-start-docker) and make sure you've created the `.env` file and added your Discogs API token. After adding it, restart with `docker compose restart`.
 
 **Container won't start?**
 Check if port 8000 is in use: `lsof -i :8000` (Mac/Linux) or `netstat -ano | findstr :8000` (Windows). Change the port in `.env` with `PORT=8080`.
