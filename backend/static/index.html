@@ -126,17 +126,15 @@
             padding: 16px;
         }
 
-        /* Full-bleed waveform on larger screens */
+        /* Base waveform height (mobile-first) */
+        #waveform {
+            min-height: 200px;
+        }
+
+        /* Larger waveform on desktop screens */
         @media (min-width: 768px) {
             #waveform {
                 min-height: 350px;
-            }
-        }
-
-        /* Responsive waveform height for mobile */
-        @media (max-width: 767px) {
-            #waveform {
-                min-height: 200px;
             }
         }
 
