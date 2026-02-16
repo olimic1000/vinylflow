@@ -952,13 +952,13 @@ function vinylApp() {
 
             const time = this.contextMenu.time;
 
-            // Find which track contains this time position
+            // Find which track contains this time position (must be strictly inside)
             const trackIndex = this.detectedTracks.findIndex(t =>
-                time >= t.start && time <= t.end
+                time > t.start && time < t.end
             );
 
             if (trackIndex === -1) {
-                alert('Cannot split here - position is outside all tracks');
+                alert('Cannot split here - position must be inside a track (not at boundaries)');
                 return;
             }
 
@@ -1044,13 +1044,13 @@ function vinylApp() {
 
             const time = this.regionContextMenu.time;
 
-            // Find which track contains this time position
+            // Find which track contains this time position (must be strictly inside)
             const trackIndex = this.detectedTracks.findIndex(t =>
-                time >= t.start && time <= t.end
+                time > t.start && time < t.end
             );
 
             if (trackIndex === -1) {
-                alert('Cannot split here - position is outside all tracks');
+                alert('Cannot split here - position must be inside a track (not at boundaries)');
                 return;
             }
 
