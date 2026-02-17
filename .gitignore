@@ -12,3 +12,4 @@ temp_uploads/
 venv/
 .venv/
 output/
+config/settings.json

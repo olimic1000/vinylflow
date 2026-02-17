@@ -67,6 +67,9 @@ class Config:
         self.default_min_track_length = float(os.getenv("DEFAULT_MIN_TRACK_LENGTH", "30"))
         self.default_flac_compression = int(os.getenv("DEFAULT_FLAC_COMPRESSION", "8"))
 
+        # Temp file management
+        self.temp_ttl_hours = float(os.getenv("TEMP_TTL_HOURS", "2"))
+
     def validate(self):
         """
         Validate configuration.
@@ -88,6 +91,9 @@ class Config:
 
         if self.default_min_track_length <= 0:
             return False, "Minimum track length must be positive"
+
+        if self.temp_ttl_hours <= 0:
+            return False, "Temp file TTL must be positive"
 
         return True, None
 
@@ -177,7 +183,8 @@ class Config:
             f"  silence_threshold={self.default_silence_threshold}dB,\n"
             f"  min_silence_duration={self.default_min_silence_duration}s,\n"
             f"  min_track_length={self.default_min_track_length}s,\n"
-            f"  flac_compression={self.default_flac_compression}\n"
+            f"  flac_compression={self.default_flac_compression},\n"
+            f"  temp_ttl_hours={self.temp_ttl_hours}h\n"
             f")"
         )
 
