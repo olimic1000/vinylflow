@@ -62,6 +62,9 @@ function vinylApp() {
         processingProgress: 0,
         processingMessage: '',
         successMessage: '',
+        currentJobId: null,
+        processPollTimer: null,
+        lastProgressAt: null,
 
         // Output format
         outputFormat: 'flac',
@@ -173,6 +176,7 @@ function vinylApp() {
                     if (data.file_id === this.currentFileId) {
                         this.processingProgress = data.progress;
                         this.processingMessage = data.message;
+                        this.lastProgressAt = Date.now();
                     }
                     break;
 
@@ -184,6 +188,7 @@ function vinylApp() {
 
                 case 'complete':
                     if (data.file_id === this.currentFileId) {
+                        this.stopProcessPolling();
                         this.processingProgress = 1.0;
                         this.processingMessage = 'Complete!';
                         this.isProcessing = false;
@@ -198,6 +203,7 @@ function vinylApp() {
 
                 case 'error':
                     if (data.file_id === this.currentFileId) {
+                        this.stopProcessPolling();
                         this.isProcessing = false;
                         this.processingMessage = `Error: ${data.message}`;
                         alert(`Processing error: ${data.message}`);
@@ -1256,6 +1262,7 @@ function vinylApp() {
                 this.isProcessing = true;
                 this.processingProgress = 0.1;
                 this.processingMessage = 'Starting...';
+                this.lastProgressAt = Date.now();
 
                 const response = await fetch('/api/process', {
                     method: 'POST',
@@ -1271,7 +1278,12 @@ function vinylApp() {
                 });
 
                 const data = await response.json();
+                if (!response.ok || !data.job_id) {
+                    throw new Error(data.detail || 'Failed to start processing');
+                }
                 console.log('Processing started:', data);
+                this.currentJobId = data.job_id;
+                this.startProcessPolling(data.job_id);
 
                 const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
                 if (file) {
@@ -1279,6 +1291,7 @@ function vinylApp() {
                 }
             } catch (error) {
                 console.error('Processing failed:', error);
+                this.stopProcessPolling();
                 this.isProcessing = false;
                 this.processingProgress = 0;
                 this.processingMessage = '';
@@ -1286,10 +1299,84 @@ function vinylApp() {
             }
         },
 
+        startProcessPolling(jobId) {
+            this.stopProcessPolling();
+
+            this.processPollTimer = setInterval(async () => {
+                if (!this.isProcessing || !jobId) {
+                    this.stopProcessPolling();
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/api/process/${jobId}`);
+                    if (!response.ok) {
+                        return;
+                    }
+
+                    const job = await response.json();
+
+                    if (job.status === 'processing') {
+                        const timeSinceWsUpdate = this.lastProgressAt ? (Date.now() - this.lastProgressAt) : Infinity;
+
+                        if (timeSinceWsUpdate > 5000) {
+                            this.processingProgress = Math.max(this.processingProgress, job.progress || 0.1);
+                            this.processingMessage = job.message || 'Processing...';
+                        }
+                        return;
+                    }
+
+                    if (job.status === 'complete') {
+                        this.stopProcessPolling();
+                        this.processingProgress = 1.0;
+                        this.processingMessage = 'Complete!';
+                        this.isProcessing = false;
+
+                        const tracks = Array.isArray(job.tracks) ? job.tracks : [];
+                        if (tracks.length > 0) {
+                            this.successMessage = `✅ ${tracks.length} tracks saved to your VinylFlow/output folder\n\nTracks: ${tracks.join(', ')}`;
+                        } else {
+                            this.successMessage = '✅ Processing complete. Files saved to your VinylFlow/output folder.';
+                        }
+
+                        const file = this.uploadedFiles.find(f => f.id === job.file_id);
+                        if (file) {
+                            file.status = 'completed';
+                        }
+                        return;
+                    }
+
+                    if (job.status === 'error') {
+                        this.stopProcessPolling();
+                        this.isProcessing = false;
+                        this.processingMessage = `Error: ${job.error || 'Unknown error'}`;
+
+                        const file = this.uploadedFiles.find(f => f.id === job.file_id);
+                        if (file) {
+                            file.status = 'error';
+                        }
+
+                        alert(`Processing error: ${job.error || 'Unknown error'}`);
+                    }
+                } catch (error) {
+                    console.warn('Process polling failed:', error);
+                }
+            }, 1500);
+        },
+
+        stopProcessPolling() {
+            if (this.processPollTimer) {
+                clearInterval(this.processPollTimer);
+                this.processPollTimer = null;
+            }
+            this.currentJobId = null;
+        },
+
         /**
          * Reset UI for next file
          */
         resetForNextFile() {
+            this.stopProcessPolling();
             this.successMessage = '';
             this.isProcessing = false;
             this.detectedTracks = [];
