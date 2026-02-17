@@ -1317,12 +1317,8 @@ function vinylApp() {
                     const job = await response.json();
 
                     if (job.status === 'processing') {
-                        const timeSinceWsUpdate = this.lastProgressAt ? (Date.now() - this.lastProgressAt) : Infinity;
-
-                        if (timeSinceWsUpdate > 5000) {
-                            this.processingProgress = Math.max(this.processingProgress, job.progress || 0.1);
-                            this.processingMessage = job.message || 'Processing...';
-                        }
+                        this.processingProgress = Math.max(this.processingProgress, job.progress || 0.1);
+                        this.processingMessage = job.message || 'Processing...';
                         return;
                     }
 
