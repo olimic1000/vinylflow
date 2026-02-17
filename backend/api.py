@@ -816,14 +816,22 @@ async def remove_from_queue(file_id: str):
 async def clear_all_temp():
     """Clear all temp session folders and uploaded files state."""
     cleared = 0
+    # Collect IDs of sessions that are actively processing
+    processing_ids = {
+        fid for fid, info in uploaded_files.items()
+        if info.get("status") == "processing"
+    }
     for entry in list(UPLOAD_DIR.iterdir()):
-        if entry.is_dir():
+        if entry.is_dir() and entry.name not in processing_ids:
             try:
                 shutil.rmtree(entry)
                 cleared += 1
             except Exception as e:
                 print(f"Failed to remove {entry.name}: {e}")
-    uploaded_files.clear()
+    # Remove non-processing entries from uploaded_files
+    for fid in list(uploaded_files.keys()):
+        if fid not in processing_ids:
+            del uploaded_files[fid]
     return {"status": "cleared", "sessions_removed": cleared}
 
 
