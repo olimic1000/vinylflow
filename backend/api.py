@@ -65,47 +65,74 @@ UPLOAD_DIR = Path(__file__).parent.parent / "temp_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 
+def get_session_path(file_id: str, filename: str = None) -> Path:
+    """Get path within session directory."""
+    session_dir = UPLOAD_DIR / file_id
+    return session_dir if filename is None else session_dir / filename
+
+
+def cleanup_session(file_id: str) -> bool:
+    """Clean up session folder and remove from uploaded_files dict."""
+    try:
+        session_dir = get_session_path(file_id)
+        if session_dir.exists():
+            shutil.rmtree(session_dir)
+        if file_id in uploaded_files:
+            del uploaded_files[file_id]
+        return True
+    except FileNotFoundError:
+        if file_id in uploaded_files:
+            del uploaded_files[file_id]
+        return True
+    except Exception as e:
+        print(f"Cleanup failed for {file_id}: {e}")
+        if file_id in uploaded_files:
+            del uploaded_files[file_id]
+        return False
+
+
 # Background cleanup task
 async def cleanup_old_files():
-    """Delete uploaded files older than 24 hours to prevent disk filling."""
+    """Delete uploaded session folders older than configured TTL."""
     while True:
         try:
-            cutoff = datetime.now() - timedelta(hours=24)
+            cutoff = datetime.now() - timedelta(hours=config.temp_ttl_hours)
 
-            # Clean up audio files of all supported types
-            for ext in ("*.wav", "*.aiff", "*.aif"):
-                for file_path in UPLOAD_DIR.glob(ext):
-                    try:
-                        if datetime.fromtimestamp(file_path.stat().st_mtime) < cutoff:
-                            file_path.unlink()
-                            # Also delete associated files
-                            file_id = file_path.stem
-                            for pattern in ["*_preview_*.mp3", "*_peaks.json", "*_full.mp3"]:
-                                for related in UPLOAD_DIR.glob(f"{file_id}{pattern}"):
-                                    related.unlink(missing_ok=True)
-                    except FileNotFoundError:
-                        continue  # File already deleted
-
-            # Clean up from in-memory state
             expired_ids = []
-            for file_id, info in uploaded_files.items():
+            for entry in UPLOAD_DIR.iterdir():
+                if not entry.is_dir():
+                    continue
+
+                file_id = entry.name
                 try:
-                    file_path = Path(info["path"])
-                    if not file_path.exists():
-                        expired_ids.append(file_id)
-                    elif datetime.fromtimestamp(file_path.stat().st_mtime) < cutoff:
+                    # Check mtime of the directory itself
+                    if datetime.fromtimestamp(entry.stat().st_mtime) < cutoff:
+                        # Skip sessions that are actively processing
+                        file_info = uploaded_files.get(file_id, {})
+                        if file_info.get("status") == "processing":
+                            continue
                         expired_ids.append(file_id)
                 except (FileNotFoundError, OSError):
                     expired_ids.append(file_id)
 
             for file_id in expired_ids:
+                cleanup_session(file_id)
+
+            # Also clean up in-memory entries for missing session folders
+            missing_ids = []
+            for file_id, info in uploaded_files.items():
+                session_dir = get_session_path(file_id)
+                if not session_dir.exists():
+                    missing_ids.append(file_id)
+
+            for file_id in missing_ids:
                 del uploaded_files[file_id]
 
         except Exception as e:
             print(f"Cleanup error: {e}")
 
-        # Run every 6 hours
-        await asyncio.sleep(6 * 3600)
+        # Run every 30 minutes
+        await asyncio.sleep(30 * 60)
 
 
 @app.on_event("startup")
@@ -227,7 +254,7 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
     """
     import subprocess
 
-    mp3_path = UPLOAD_DIR / f"{file_id}_full.mp3"
+    mp3_path = get_session_path(file_id, "full.mp3")
 
     if not mp3_path.exists():
         try:
@@ -269,9 +296,11 @@ async def upload_files(files: List[UploadFile] = File(...)):
         if file_ext not in SUPPORTED_INPUT_EXTENSIONS:
             continue
 
-        # Generate unique file ID, preserve original extension
+        # Generate unique file ID, create session folder
         file_id = str(uuid.uuid4())
-        file_path = UPLOAD_DIR / f"{file_id}{file_ext}"
+        session_dir = get_session_path(file_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        file_path = session_dir / f"source{file_ext}"
 
         # Save uploaded file
         with open(file_path, "wb") as buffer:
@@ -449,13 +478,10 @@ async def preview_track(
     track_end = end if end is not None else track.end
     track_duration = track_end - track_start
 
-    preview_dir = UPLOAD_DIR / "previews"
-    preview_dir.mkdir(exist_ok=True)
-
     import hashlib
 
     params_hash = hashlib.md5(f"{track_start}_{track_end}".encode()).hexdigest()[:8]
-    preview_path = preview_dir / f"{file_id}_track{track_number}_{params_hash}.mp3"
+    preview_path = get_session_path(file_id, f"preview_track{track_number}_{params_hash}.mp3")
 
     try:
         duration = min(30, track_duration)
@@ -502,7 +528,7 @@ async def get_waveform_peaks(file_id: str):
 
     file_path = Path(file_info["path"])
 
-    peaks_cache_path = UPLOAD_DIR / f"{file_id}_peaks.json"
+    peaks_cache_path = get_session_path(file_id, "peaks.json")
     if peaks_cache_path.exists():
         with open(peaks_cache_path, "r") as f:
             cached_data = json.load(f)
@@ -755,6 +781,9 @@ async def process_file_background(request: ProcessRequest, job_id: str):
         processing_jobs[job_id]["progress"] = 1.0
         processing_jobs[job_id]["output_path"] = str(album_folder)
 
+        # Clean up temp files after successful processing
+        await asyncio.to_thread(cleanup_session, request.file_id)
+
     except Exception as e:
         await broadcast_message(
             {
@@ -778,12 +807,24 @@ async def get_queue():
 async def remove_from_queue(file_id: str):
     """Remove file from queue."""
     if file_id in uploaded_files:
-        file_path = Path(uploaded_files[file_id]["path"])
-        if file_path.exists():
-            file_path.unlink()
-        del uploaded_files[file_id]
+        await asyncio.to_thread(cleanup_session, file_id)
         return {"status": "removed"}
     raise HTTPException(status_code=404, detail="File not found")
+
+
+@app.delete("/api/temp/clear-all")
+async def clear_all_temp():
+    """Clear all temp session folders and uploaded files state."""
+    cleared = 0
+    for entry in list(UPLOAD_DIR.iterdir()):
+        if entry.is_dir():
+            try:
+                shutil.rmtree(entry)
+                cleared += 1
+            except Exception as e:
+                print(f"Failed to remove {entry.name}: {e}")
+    uploaded_files.clear()
+    return {"status": "cleared", "sessions_removed": cleared}
 
 
 @app.get("/api/config")
