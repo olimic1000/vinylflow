@@ -663,16 +663,6 @@
                             </span>
                         </button>
 
-                        <!-- Processing Progress -->
-                        <div x-show="isProcessing" x-cloak class="mt-4 p-4 rounded-lg" style="background-color: rgba(229, 161, 0, 0.1); border: 1px solid #E5A100;">
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-sm font-semibold text-primary" x-text="processingMessage || 'Starting...'"></span>
-                                <span class="text-sm font-semibold" style="color: #E5A100;" x-text="Math.round(processingProgress * 100) + '%'"></span>
-                            </div>
-                            <div class="w-full bg-page rounded-full h-3 overflow-hidden">
-                                <div class="progress-bar progress-bar-primary h-3 rounded-full" :style="`width: ${processingProgress * 100}%`"></div>
-                            </div>
-                        </div>
                     </div>
 
                     <!-- Success Message -->

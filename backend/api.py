@@ -662,7 +662,13 @@ async def process_file(request: ProcessRequest):
         )
 
     job_id = str(uuid.uuid4())
-    processing_jobs[job_id] = {"file_id": request.file_id, "status": "processing", "progress": 0}
+    processing_jobs[job_id] = {
+        "job_id": job_id,
+        "file_id": request.file_id,
+        "status": "processing",
+        "progress": 0.1,
+        "message": "Starting processing...",
+    }
     uploaded_files[request.file_id]["status"] = "processing"
 
     asyncio.create_task(process_file_background(request, job_id))
@@ -686,6 +692,8 @@ async def process_file_background(request: ProcessRequest, job_id: str):
                 "message": "Fetching release metadata from Discogs...",
             }
         )
+        processing_jobs[job_id]["progress"] = 0.2
+        processing_jobs[job_id]["message"] = "Fetching release metadata from Discogs..."
 
         release = metadata_handler.get_release_by_id(request.release_id)
         if not release:
@@ -730,6 +738,8 @@ async def process_file_background(request: ProcessRequest, job_id: str):
                 "message": "Downloading cover art...",
             }
         )
+        processing_jobs[job_id]["progress"] = 0.3
+        processing_jobs[job_id]["message"] = "Downloading cover art..."
 
         cover_data = None
         if release.cover_url:
@@ -754,6 +764,8 @@ async def process_file_background(request: ProcessRequest, job_id: str):
                     "message": f"Processing track {i+1}/{len(detected_tracks)}...",
                 }
             )
+            processing_jobs[job_id]["progress"] = progress
+            processing_jobs[job_id]["message"] = f"Processing track {i+1}/{len(detected_tracks)}..."
 
             temp_output = album_folder / f"temp_{track.vinyl_number}{ext}"
 
@@ -781,10 +793,11 @@ async def process_file_background(request: ProcessRequest, job_id: str):
 
         processing_jobs[job_id]["status"] = "complete"
         processing_jobs[job_id]["progress"] = 1.0
+        processing_jobs[job_id]["message"] = "Complete!"
         processing_jobs[job_id]["output_path"] = str(album_folder)
-
-        # Clean up temp files after successful processing
-        await asyncio.to_thread(cleanup_session, request.file_id)
+        processing_jobs[job_id]["tracks"] = output_files
+        if request.file_id in uploaded_files:
+            uploaded_files[request.file_id]["status"] = "completed"
 
     except Exception as e:
         await broadcast_message(
@@ -797,8 +810,18 @@ async def process_file_background(request: ProcessRequest, job_id: str):
         )
         processing_jobs[job_id]["status"] = "error"
         processing_jobs[job_id]["error"] = str(e)
+        processing_jobs[job_id]["message"] = f"Processing failed: {str(e)}"
         if request.file_id in uploaded_files:
             uploaded_files[request.file_id]["status"] = "error"
+
+
+@app.get("/api/process/{job_id}")
+async def get_process_job(job_id: str):
+    """Get processing job status and progress for polling fallbacks."""
+    job = processing_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @app.get("/api/queue")
