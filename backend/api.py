@@ -796,6 +796,8 @@ async def process_file_background(request: ProcessRequest, job_id: str):
         processing_jobs[job_id]["message"] = "Complete!"
         processing_jobs[job_id]["output_path"] = str(album_folder)
         processing_jobs[job_id]["tracks"] = output_files
+        if request.file_id in uploaded_files:
+            uploaded_files[request.file_id]["status"] = "completed"
 
     except Exception as e:
         await broadcast_message(
