@@ -15,7 +15,6 @@ jobs:
     env:
       PYTHON_VERSION: "3.11"
       APP_PATH: dist/VinylFlow.app
-      APPLE_NOTARY_PROFILE: vinylflow-notary
 
     steps:
       - name: Checkout
@@ -68,16 +67,22 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
-          xcrun notarytool store-credentials "$APPLE_NOTARY_PROFILE" \
+          xcrun notarytool store-credentials "vinylflow-notary" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD"
 
-      - name: Sign and notarize app (when credentials available)
-        if: ${{ secrets.MACOS_SIGN_IDENTITY != '' }}
+      - name: Sign and notarize app (when all credentials available)
+        if: ${{ secrets.MACOS_SIGN_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
         env:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          APPLE_NOTARY_PROFILE: ${{ (secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '') && env.APPLE_NOTARY_PROFILE || '' }}
+          APPLE_NOTARY_PROFILE: vinylflow-notary
+        run: bash scripts/sign_notarize_macos.sh
+
+      - name: Sign app only (no notarization credentials)
+        if: ${{ secrets.MACOS_SIGN_IDENTITY != '' && (secrets.APPLE_ID == '' || secrets.APPLE_TEAM_ID == '' || secrets.APPLE_APP_PASSWORD == '') }}
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: bash scripts/sign_notarize_macos.sh
 
       - name: Create release zip
