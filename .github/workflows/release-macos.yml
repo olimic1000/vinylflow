@@ -40,12 +40,17 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" dist/VinylFlow-macos-unsigned.zip
 
       - name: Import signing certificate
-        if: ${{ secrets.MACOS_SIGN_IDENTITY != '' && secrets.MACOS_CERTIFICATE_P12_BASE64 != '' && secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
         env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           CERT_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
         run: |
+          if [[ -z "$MACOS_SIGN_IDENTITY" || -z "$CERT_BASE64" || -z "$CERT_PASSWORD" ]]; then
+            echo "Skipping cert import (missing signing secrets)."
+            exit 0
+          fi
+
           KEYCHAIN=build.keychain
           CERT_PATH=$RUNNER_TEMP/cert.p12
 
@@ -61,29 +66,42 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASSWORD:-temp-pass}" "$KEYCHAIN"
 
       - name: Configure notary profile
-        if: ${{ secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
+          if [[ -z "$APPLE_ID" || -z "$APPLE_TEAM_ID" || -z "$APPLE_APP_PASSWORD" ]]; then
+            echo "Skipping notary profile setup (missing Apple notarization secrets)."
+            exit 0
+          fi
+
           xcrun notarytool store-credentials "vinylflow-notary" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD"
 
-      - name: Sign and notarize app (when all credentials available)
-        if: ${{ secrets.MACOS_SIGN_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
+      - name: Sign app (and notarize when credentials available)
         env:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          APPLE_NOTARY_PROFILE: vinylflow-notary
-        run: bash scripts/sign_notarize_macos.sh
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [[ -z "$MACOS_SIGN_IDENTITY" ]]; then
+            echo "Skipping signing/notarization (MACOS_SIGN_IDENTITY not configured)."
+            exit 0
+          fi
 
-      - name: Sign app only (no notarization credentials)
-        if: ${{ secrets.MACOS_SIGN_IDENTITY != '' && (secrets.APPLE_ID == '' || secrets.APPLE_TEAM_ID == '' || secrets.APPLE_APP_PASSWORD == '') }}
-        env:
-          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-        run: bash scripts/sign_notarize_macos.sh
+          if [[ -n "$APPLE_ID" && -n "$APPLE_TEAM_ID" && -n "$APPLE_APP_PASSWORD" ]]; then
+            export APPLE_NOTARY_PROFILE="vinylflow-notary"
+            echo "Notarization enabled (profile: $APPLE_NOTARY_PROFILE)."
+          else
+            unset APPLE_NOTARY_PROFILE
+            echo "Notarization disabled (missing Apple notarization secrets)."
+          fi
+
+          bash scripts/sign_notarize_macos.sh
 
       - name: Create release zip
         run: |
