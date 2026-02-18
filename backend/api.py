@@ -182,6 +182,7 @@ class ConfigUpdate(BaseModel):
     silence_threshold: Optional[float] = None
     min_silence_duration: Optional[float] = None
     min_track_length: Optional[float] = None
+    output_dir: Optional[str] = None
 
 
 class DiscogsSetupRequest(BaseModel):
@@ -873,6 +874,7 @@ async def get_config():
         "min_silence_duration": audio_processor.min_silence_duration,
         "min_track_length": audio_processor.min_track_length,
         "flac_compression": audio_processor.flac_compression,
+        "output_dir": config.default_output_dir,
     }
 
 
@@ -885,6 +887,10 @@ async def update_config(updates: ConfigUpdate):
         audio_processor.min_silence_duration = updates.min_silence_duration
     if updates.min_track_length is not None:
         audio_processor.min_track_length = updates.min_track_length
+    if updates.output_dir is not None:
+        output_dir = str(Path(updates.output_dir).expanduser())
+        config.default_output_dir = output_dir
+        config.save_output_dir(output_dir)
 
     return await get_config()
 
