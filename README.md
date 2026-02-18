@@ -8,6 +8,14 @@ Turn your vinyl recordings into perfectly tagged, organized digital files in min
 
 ---
 
+## Use VinylFlow
+
+- 🖥️ **Desktop apps:** install builds from [vinylflow.app/install](https://vinylflow.app/install)
+- 🐳 **Docker (self-hosted):** run locally via [Quick Start (Docker)](#quick-start-docker)
+- ⚙️ **Python local mode:** see [Manual Setup (Non-Docker)](#manual-setup-non-docker)
+
+---
+
 ## The Problem
 
 Digitizing a vinyl record manually takes **20–30 minutes per album**: record in Audacity, manually find track boundaries, split, export, look up metadata, type it all in, find cover art, embed it. Multiply that by a collection of hundreds of records and it's a weekend project that never ends.
@@ -96,12 +104,22 @@ When you open VinylFlow for the first time, you'll see a welcome screen that gui
 
 ## Desktop Apps (Beta)
 
-VinylFlow also has desktop app builds for macOS and Windows in a beta track.
+VinylFlow desktop apps are available for macOS and Windows (beta track).
+
+- Installer downloads: [vinylflow.app/install](https://vinylflow.app/install)
 
 - Desktop beta work is published from `desktop-beta`
 - `main` remains the stable Docker-first channel
 - For local desktop mode, run: `python desktop_launcher.py`
 - Packaging/release scripts are in `scripts/`
+
+### Developer Branch Note
+
+To avoid accidental promotion of beta app work:
+
+- Open desktop feature PRs into `desktop-beta`
+- Keep `main` for stable/docs/release-safe changes
+- Promote desktop work to `main` only when explicitly ready
 
 For full branching and release details, see [docs/BRANCHING_STRATEGY.md](docs/BRANCHING_STRATEGY.md).
 

@@ -1,0 +1,94 @@
+name: Privacy Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure sensitive local settings are not tracked
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files --error-unmatch config/settings.json >/dev/null 2>&1; then
+            echo "❌ config/settings.json must never be tracked"
+            exit 1
+          fi
+
+      - name: Ensure build spec does not bundle config directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q "('config', 'config')" VinylFlow.spec; then
+            echo "❌ VinylFlow.spec must not bundle config directory"
+            exit 1
+          fi
+
+      - name: Scan tracked text files for personal data patterns
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib
+          import re
+          import subprocess
+          import sys
+
+          tracked = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
+
+          patterns = [
+              (
+                  "Hardcoded Discogs token",
+                  re.compile(r"DISCOGS_USER_TOKEN\s*[:=]\s*['\"]?(?!your_token_here\b)[A-Za-z0-9]{20,}")
+              ),
+              (
+                  "macOS personal user path",
+                  re.compile(r"/Users/(?!you\b)[A-Za-z0-9._-]+")
+              ),
+              (
+                  "Windows personal user path",
+                  re.compile(r"C:\\\\Users\\\\(?!you\b)[A-Za-z0-9._-]+")
+              ),
+          ]
+
+          allowed_files = {
+              ".env.example",
+          }
+
+          failures = []
+          for rel in tracked:
+              if rel in allowed_files:
+                  continue
+              p = pathlib.Path(rel)
+              if not p.exists() or p.is_dir():
+                  continue
+
+              try:
+                  text = p.read_text(encoding="utf-8")
+              except Exception:
+                  continue
+
+              for name, regex in patterns:
+                  for m in regex.finditer(text):
+                      line = text.count("\n", 0, m.start()) + 1
+                      failures.append((rel, line, name, m.group(0)[:200]))
+
+          if failures:
+              print("❌ Privacy guard found potential leaks:")
+              for rel, line, name, snippet in failures:
+                  print(f"- {rel}:{line}: {name}: {snippet}")
+              sys.exit(1)
+
+          print("✅ Privacy guard passed")
+          PY
