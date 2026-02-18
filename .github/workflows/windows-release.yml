@@ -1,0 +1,58 @@
+name: Build Windows Release Asset
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to update (e.g. v0.2.0-beta6)"
+        required: true
+        default: "v0.2.0-beta6"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install FFmpeg
+        shell: powershell
+        run: |
+          choco install ffmpeg -y
+          ffmpeg -version
+
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Windows app
+        shell: powershell
+        run: |
+          pyinstaller --clean -y VinylFlow.spec
+
+      - name: Package unsigned Windows app
+        shell: powershell
+        run: |
+          if (Test-Path VinylFlow-windows-unsigned.zip) { Remove-Item VinylFlow-windows-unsigned.zip -Force }
+          Compress-Archive -Path dist\VinylFlow\* -DestinationPath VinylFlow-windows-unsigned.zip
+          Get-Item VinylFlow-windows-unsigned.zip | Format-List Name,Length,LastWriteTime
+
+      - name: Replace release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: |
+          gh release upload ${{ inputs.tag }} VinylFlow-windows-unsigned.zip --clobber
+          gh release view ${{ inputs.tag }} --json assets --jq '.assets[] | select(.name=="VinylFlow-windows-unsigned.zip") | {name,size,updatedAt,url}'
