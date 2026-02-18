@@ -39,6 +39,21 @@ VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tra
 
 Desktop builds are currently available as an **experimental beta** for users who want to try them. See [Desktop Beta (Experimental)](#desktop-beta-experimental) below.
 
+### Branch and Release Channel Context
+
+This repo currently uses a two-track model:
+
+- `main` = stable, Docker-first releases
+- `desktop-beta` = ongoing macOS + Windows desktop beta work
+
+If you're trying desktop beta features from source, switch to:
+
+```bash
+git checkout desktop-beta
+```
+
+Desktop beta tags use a pre-release format such as `v1.1.0-beta1`.
+
 ### Prerequisites
 
 You'll need:
@@ -157,6 +172,7 @@ Desktop mode is currently a **beta channel**.
 - It may be less stable than Docker
 - macOS builds may require security bypass steps until signed/notarized releases are available
 - Docker remains the recommended production path
+- Beta builds/releases should come from `desktop-beta`, not `main`
 
 ### Desktop Launcher (No Docker, easiest local mode)
 
@@ -483,7 +499,28 @@ Open `http://localhost:8000/api/diagnostics` to see FFmpeg source (bundled/syste
 
 Found a bug? Have a feature idea? [Open an issue](https://github.com/olimic1000/vinylflow/issues) — contributions welcome.
 
-Branching/release workflow for this project: see [docs/BRANCHING_STRATEGY.md](docs/BRANCHING_STRATEGY.md).
+### Branching Workflow (Current)
+
+- Desktop-only changes: branch from `desktop-beta` and open PRs back to `desktop-beta`
+- Stable fixes for all users: branch from `main` and open PRs back to `main`
+- Keep branches aligned by back-merging or cherry-picking stable fixes from `main` into `desktop-beta`
+
+### Release Channels
+
+- Stable releases come from `main`
+- Desktop pre-releases (beta) come from `desktop-beta`
+
+### Beta → Stable Promotion Criteria
+
+Promote desktop flow into `main` only when:
+
+- install flow is consistently successful
+- processing reliability matches Docker path
+- support load is manageable
+- macOS signing/notarization (or accepted alternative) is in place
+- Windows beta is at acceptable stability
+
+Full workflow details remain documented in [docs/BRANCHING_STRATEGY.md](docs/BRANCHING_STRATEGY.md).
 
 ---
 
