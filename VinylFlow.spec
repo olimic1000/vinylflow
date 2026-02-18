@@ -2,6 +2,7 @@
 
 import shutil
 import sys
+from pathlib import Path
 
 
 WINDOWS_ICON = 'assets/VinylFlow.ico' if sys.platform.startswith('win') else None
@@ -10,12 +11,16 @@ FFMPEG_PATH = shutil.which('ffmpeg')
 if not FFMPEG_PATH:
     raise RuntimeError('ffmpeg was not found on PATH. Install ffmpeg before building.')
 
+DATA_FILES = [('backend/static', 'backend/static')]
+if Path('config').exists():
+    DATA_FILES.append(('config', 'config'))
+
 
 a = Analysis(
     ['desktop_launcher.py'],
     pathex=[],
     binaries=[(FFMPEG_PATH, 'ffmpeg_bin')],
-    datas=[('backend/static', 'backend/static'), ('config', 'config')],
+    datas=DATA_FILES,
     hiddenimports=[
         'backend.api',
         'webview',
