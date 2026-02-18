@@ -10,9 +10,9 @@ Turn your vinyl recordings into perfectly tagged, organized digital files in min
 
 ## Use VinylFlow
 
-- 🌐 **Web app (stable):** [vinylflow.app](https://vinylflow.app)
-- 🖥️ **Desktop apps (beta):** macOS + Windows builds are in active development
-- ⚙️ **Source/self-hosted:** Docker and Python workflows are documented below
+- 🖥️ **Desktop apps:** install builds from [vinylflow.app/install](https://vinylflow.app/install)
+- 🐳 **Docker (self-hosted):** run locally via [Quick Start (Docker)](#quick-start-docker)
+- ⚙️ **Python local mode:** see [Manual Setup (Non-Docker)](#manual-setup-non-docker)
 
 ---
 
@@ -104,7 +104,9 @@ When you open VinylFlow for the first time, you'll see a welcome screen that gui
 
 ## Desktop Apps (Beta)
 
-VinylFlow also has desktop app builds for macOS and Windows in a beta track.
+VinylFlow desktop apps are available for macOS and Windows (beta track).
+
+- Installer downloads: [vinylflow.app/install](https://vinylflow.app/install)
 
 - Desktop beta work is published from `desktop-beta`
 - `main` remains the stable Docker-first channel
