@@ -33,9 +33,11 @@ VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tra
 
 ---
 
-## Quick Start (Docker)
+## Quick Start (Docker — Recommended / Stable)
 
-**Setup Options**: You can run VinylFlow using Docker (recommended for quick setup) or manually with Python (for more control). See [Manual Setup (Non-Docker)](#manual-setup-non-docker) below for the non-Docker approach.
+**Setup Options**: You can run VinylFlow using Docker (**recommended stable path**) or manually with Python.
+
+Desktop builds are currently available as an **experimental beta** for users who want to try them. See [Desktop Beta (Experimental)](#desktop-beta-experimental) below.
 
 ### Prerequisites
 
@@ -146,6 +148,143 @@ python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
 ```
 
 Open **http://localhost:8000** in your browser.
+
+## Desktop Beta (Experimental)
+
+Desktop mode is currently a **beta channel**.
+
+- It is available for testers who want to try Docker-free usage
+- It may be less stable than Docker
+- macOS builds may require security bypass steps until signed/notarized releases are available
+- Docker remains the recommended production path
+
+### Desktop Launcher (No Docker, easiest local mode)
+
+For a simpler local run without Docker commands, use the desktop launcher:
+
+```bash
+python desktop_launcher.py
+```
+
+This mode automatically:
+- opens VinylFlow in your browser
+- stores config in `~/Library/Application Support/VinylFlow/config`
+- stores temp uploads in `~/Library/Application Support/VinylFlow/temp_uploads`
+- stores output in `~/Music/VinylFlow`
+- uses bundled FFmpeg in packaged desktop builds when available
+
+### macOS Packaging Spike (PyInstaller)
+
+To build a local `.app` prototype for testing:
+
+```bash
+bash scripts/build_desktop_macos.sh
+```
+
+Output app:
+
+```bash
+dist/VinylFlow.app
+```
+
+The build script bundles your local FFmpeg binary into the `.app` and the runtime uses:
+1. bundled FFmpeg (desktop app)
+2. system FFmpeg from PATH (fallback)
+
+### Unsigned macOS Beta Install
+
+If you are not enrolled in the Apple Developer Program yet, you can still distribute unsigned beta builds.
+
+Recommended release artifact:
+- `VinylFlow-macos-unsigned.zip`
+
+Create it with one command:
+
+```bash
+bash scripts/package_unsigned_macos.sh
+```
+
+Create a GitHub draft release with the unsigned artifact:
+
+```bash
+bash scripts/draft_unsigned_release.sh v0.2.0-beta1
+```
+
+Or run the full unsigned beta release flow in one command:
+
+```bash
+bash scripts/release_unsigned_macos.sh v0.2.0-beta1
+```
+
+To only build/package without creating a draft release:
+
+```bash
+SKIP_DRAFT=1 bash scripts/release_unsigned_macos.sh v0.2.0-beta1
+```
+
+Install steps for testers:
+1. Download and unzip the app bundle
+2. Move `VinylFlow.app` to `Applications`
+3. First launch: right-click `VinylFlow.app` → `Open`
+4. If blocked: macOS `System Settings` → `Privacy & Security` → click `Open Anyway`
+
+Notes:
+- First launch may show a security warning because the app is unsigned
+- This is expected for beta builds without Apple signing/notarization
+- After first approval, app launches normally
+
+### macOS Signing & Notarization
+
+After building `dist/VinylFlow.app`, you can sign and notarize it for end-user distribution:
+
+```bash
+export MACOS_SIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)"
+bash scripts/sign_notarize_macos.sh
+```
+
+Optional notarization (if you configured an App Store Connect keychain profile):
+
+```bash
+export APPLE_NOTARY_PROFILE="vinylflow-notary"
+bash scripts/sign_notarize_macos.sh
+```
+
+If `APPLE_NOTARY_PROFILE` is not set, the script signs and verifies the app, then skips notarization.
+
+Preflight your local release setup before signing:
+
+```bash
+bash scripts/preflight_macos_release.sh
+```
+
+### GitHub Actions macOS Release (optional)
+
+This repo includes `.github/workflows/release-macos.yml` to build on tag push (`v*`) and upload app zips to GitHub Releases.
+
+Required GitHub secrets for signed builds:
+- `MACOS_SIGN_IDENTITY` (example: `Developer ID Application: NAME (TEAMID)`)
+- `MACOS_CERTIFICATE_P12_BASE64` (base64 of your Developer ID `.p12` certificate)
+- `MACOS_CERTIFICATE_PASSWORD`
+
+Optional secrets for notarization:
+- `APPLE_ID`
+- `APPLE_TEAM_ID`
+- `APPLE_APP_PASSWORD` (app-specific password)
+
+Optional keychain secret:
+- `MACOS_KEYCHAIN_PASSWORD` (if omitted, a temporary password is used)
+
+For an unsigned beta release, you can omit all signing/notarization secrets and publish `VinylFlow-macos-unsigned.zip`.
+
+### Windows Desktop Beta (Planned)
+
+Windows desktop support is planned as an experimental beta, following the same approach as macOS:
+
+- packaged app build
+- bundled FFmpeg
+- diagnostics support for troubleshooting
+
+Until Windows beta packaging lands, use Docker on Windows for the stable path.
 
 ### First-Run Setup (Non-Docker)
 
@@ -288,6 +427,9 @@ Your API token might be invalid or revoked. Click the Settings (⚙️) button a
 **Tracks not splitting correctly?**
 Try adjusting silence detection in Settings (⚙️), or use duration-based splitting after selecting a Discogs release.
 
+**Need runtime diagnostics (FFmpeg/path checks)?**
+Open `http://localhost:8000/api/diagnostics` to see FFmpeg source (bundled/system), version, and key runtime paths.
+
 ---
 
 ## Technology Stack
@@ -325,12 +467,15 @@ Try adjusting silence detection in Settings (⚙️), or use duration-based spli
 - Click and pop removal
 - MusicBrainz integration
 - Cloud-hosted option
+- Windows desktop beta packaging
 
 ---
 
 ## Contributing
 
 Found a bug? Have a feature idea? [Open an issue](https://github.com/olimic1000/vinylflow/issues) — contributions welcome.
+
+Branching/release workflow for this project: see [docs/BRANCHING_STRATEGY.md](docs/BRANCHING_STRATEGY.md).
 
 ---
 

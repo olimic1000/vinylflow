@@ -90,6 +90,7 @@ function vinylApp() {
         setupError: null,
         setupToken: '',
         setupUserAgent: 'VinylFlow/1.0',
+        diagnosticsCopying: false,
 
         /**
          * Initialize the application
@@ -304,6 +305,45 @@ function vinylApp() {
             } catch (error) {
                 console.error('Failed to save config:', error);
                 alert('Failed to save settings');
+            }
+        },
+
+        /**
+         * Copy runtime diagnostics JSON to clipboard for support/debugging.
+         */
+        async copyDiagnostics() {
+            this.diagnosticsCopying = true;
+
+            try {
+                const response = await fetch('/api/diagnostics');
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Failed to fetch diagnostics');
+                }
+
+                const payload = JSON.stringify(data, null, 2);
+
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(payload);
+                } else {
+                    const textArea = document.createElement('textarea');
+                    textArea.value = payload;
+                    textArea.style.position = 'fixed';
+                    textArea.style.left = '-9999px';
+                    document.body.appendChild(textArea);
+                    textArea.focus();
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                }
+
+                alert('Diagnostics copied to clipboard. Paste this in a GitHub issue or support message.');
+            } catch (error) {
+                console.error('Failed to copy diagnostics:', error);
+                alert('Failed to copy diagnostics: ' + error.message);
+            } finally {
+                this.diagnosticsCopying = false;
             }
         },
 

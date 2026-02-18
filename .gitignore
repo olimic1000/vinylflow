@@ -13,3 +13,6 @@ venv/
 .venv/
 output/
 config/settings.json
+build/
+dist/
+*.spec

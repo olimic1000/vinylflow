@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 from typing import List, Tuple, Optional
 
+from ffmpeg_utils import get_ffmpeg_binary
+
 # Supported input formats
 SUPPORTED_INPUT_EXTENSIONS = {".wav", ".aiff", ".aif"}
 
@@ -102,7 +104,7 @@ class AudioProcessor:
             Duration in seconds, or None if error
         """
         try:
-            cmd = ["ffmpeg", "-i", str(file_path), "-f", "null", "-"]
+            cmd = [get_ffmpeg_binary(), "-i", str(file_path), "-f", "null", "-"]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
             # Parse duration from ffmpeg output
@@ -135,7 +137,7 @@ class AudioProcessor:
 
         # Run ffmpeg silence detection
         cmd = [
-            "ffmpeg",
+            get_ffmpeg_binary(),
             "-i",
             str(file_path),
             "-af",
@@ -285,7 +287,7 @@ class AudioProcessor:
         format_config = OUTPUT_FORMATS.get(output_format, OUTPUT_FORMATS["flac"])
 
         cmd = [
-            "ffmpeg",
+            get_ffmpeg_binary(),
             "-i",
             str(input_file),
             "-ss",

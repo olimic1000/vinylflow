@@ -353,6 +353,16 @@
                         <button @click="saveConfig()" class="flex-1 px-4 py-2 btn-primary rounded-lg">Save</button>
                         <button @click="showSettings = false" class="flex-1 px-4 py-2 text-primary rounded-lg hover:bg-page" style="background-color: #F0EFEB;">Cancel</button>
                     </div>
+
+                    <button
+                        @click="copyDiagnostics()"
+                        :disabled="diagnosticsCopying"
+                        class="w-full px-4 py-2 text-primary rounded-lg hover:bg-page"
+                        style="background-color: #F0EFEB;"
+                    >
+                        <span x-show="!diagnosticsCopying">Copy Diagnostics</span>
+                        <span x-show="diagnosticsCopying">Copying diagnostics...</span>
+                    </button>
                 </div>
             </div>
         </div>

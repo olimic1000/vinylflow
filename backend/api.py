@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import Config
 from audio_processor import AudioProcessor, Track, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS
 from metadata_handler import MetadataHandler
+from ffmpeg_utils import get_ffmpeg_binary, get_ffmpeg_diagnostics
 
 # Initialize FastAPI app
 app = FastAPI(title="VinylFlow API", version="1.0.0")
@@ -61,7 +62,8 @@ audio_processor = AudioProcessor(
 metadata_handler = MetadataHandler(config.discogs_token, config.discogs_user_agent)
 
 # Temp directory for uploads
-UPLOAD_DIR = Path(__file__).parent.parent / "temp_uploads"
+upload_dir_env = os.getenv("VINYLFLOW_UPLOAD_DIR")
+UPLOAD_DIR = Path(upload_dir_env) if upload_dir_env else Path(__file__).parent.parent / "temp_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 
@@ -262,7 +264,7 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
             await asyncio.to_thread(
                 subprocess.run,
                 [
-                    "ffmpeg",
+                    get_ffmpeg_binary(),
                     "-y",
                     "-i",
                     str(file_path),
@@ -489,7 +491,7 @@ async def preview_track(
 
         subprocess.run(
             [
-                "ffmpeg",
+                get_ffmpeg_binary(),
                 "-y",
                 "-i",
                 str(file_path),
@@ -537,7 +539,7 @@ async def get_waveform_peaks(file_id: str):
 
     try:
         cmd = [
-            "ffmpeg",
+            get_ffmpeg_binary(),
             "-i",
             str(file_path),
             "-f",
@@ -907,6 +909,37 @@ async def get_status():
             pass
 
     return response
+
+
+@app.get("/api/diagnostics")
+async def get_diagnostics():
+    """Return runtime diagnostics for support and troubleshooting."""
+    upload_dir = UPLOAD_DIR
+    config_dir_env = os.getenv("VINYLFLOW_CONFIG_DIR")
+    config_dir = Path(config_dir_env) if config_dir_env else Path(__file__).parent.parent / "config"
+    settings_path = config_dir / "settings.json"
+    output_dir = Path(config.default_output_dir)
+
+    return {
+        "app": {"name": "VinylFlow", "version": app.version},
+        "ffmpeg": get_ffmpeg_diagnostics(),
+        "paths": {
+            "upload_dir": str(upload_dir),
+            "upload_dir_exists": upload_dir.exists(),
+            "config_dir": str(config_dir),
+            "config_dir_exists": config_dir.exists(),
+            "settings_path": str(settings_path),
+            "settings_exists": settings_path.exists(),
+            "output_dir": str(output_dir),
+            "output_dir_exists": output_dir.exists(),
+        },
+        "env": {
+            "host": os.getenv("HOST", "0.0.0.0"),
+            "port": os.getenv("PORT", "8000"),
+            "auto_open_browser": os.getenv("AUTO_OPEN_BROWSER"),
+            "temp_ttl_hours": config.temp_ttl_hours,
+        },
+    }
 
 
 @app.post("/api/setup/discogs-token")

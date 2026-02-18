@@ -26,13 +26,20 @@ class Config:
             settings_path: Optional path to settings.json. If None, uses config/settings.json.
         """
         # Store paths for reload
+        env_path_override = os.getenv("VINYLFLOW_ENV_PATH")
+
         if env_path is None:
-            env_path = Path(__file__).parent / ".env"
+            env_path = Path(env_path_override) if env_path_override else Path(__file__).parent / ".env"
         else:
             env_path = Path(env_path)
 
+        config_dir_override = os.getenv("VINYLFLOW_CONFIG_DIR")
+
         if settings_path is None:
-            settings_path = Path(__file__).parent / "config" / "settings.json"
+            if config_dir_override:
+                settings_path = Path(config_dir_override) / "settings.json"
+            else:
+                settings_path = Path(__file__).parent / "config" / "settings.json"
         else:
             settings_path = Path(settings_path)
 
