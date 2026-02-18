@@ -5,19 +5,44 @@ VinylFlow Desktop Launcher
 Runs VinylFlow in a no-Docker local desktop mode:
 - Uses writable user directories for config/temp/output
 - Starts the FastAPI backend locally
-- Opens the browser automatically
+- Opens a native desktop app window
 """
 
 import os
 import sys
-import webbrowser
+import time
 import threading
+from socket import create_connection
 from pathlib import Path
 
 import uvicorn
+import webview
 
 
 APP_NAME = "VinylFlow"
+
+
+class DesktopApi:
+    def select_output_folder(self, initial_path: str = "") -> str | None:
+        try:
+            directory = None
+            if initial_path:
+                candidate = Path(initial_path).expanduser()
+                if candidate.exists() and candidate.is_dir():
+                    directory = str(candidate)
+
+            window = webview.windows[0]
+            dialog_type = webview.FOLDER_DIALOG
+            if hasattr(webview, "FileDialog") and hasattr(webview.FileDialog, "FOLDER"):
+                dialog_type = webview.FileDialog.FOLDER
+
+            result = window.create_file_dialog(dialog_type, directory=directory)
+            if not result:
+                return None
+
+            return str(result[0])
+        except Exception:
+            return None
 
 
 def _macos_app_support_dir() -> Path:
@@ -56,7 +81,7 @@ def configure_desktop_environment() -> tuple[str, int]:
     os.environ.setdefault("DEFAULT_OUTPUT_DIR", str(output_dir))
     os.environ.setdefault("HOST", "127.0.0.1")
     os.environ.setdefault("PORT", "8000")
-    os.environ.setdefault("AUTO_OPEN_BROWSER", "1")
+    os.environ.setdefault("AUTO_OPEN_BROWSER", "0")
 
     bundled_ffmpeg = _bundled_ffmpeg_path()
     if bundled_ffmpeg:
@@ -67,26 +92,40 @@ def configure_desktop_environment() -> tuple[str, int]:
     return host, port
 
 
-def maybe_open_browser(host: str, port: int) -> None:
-    if os.getenv("AUTO_OPEN_BROWSER", "1") != "1":
-        return
+def _run_server(host: str, port: int) -> None:
+    from backend.api import app
 
-    url = f"http://{host}:{port}"
+    uvicorn.run(app, host=host, port=port)
 
-    def _open() -> None:
-        webbrowser.open(url)
 
-    timer = threading.Timer(1.2, _open)
-    timer.daemon = True
-    timer.start()
+def _wait_for_server(host: str, port: int, timeout: float = 10.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with create_connection((host, port), timeout=0.5):
+                return True
+        except OSError:
+            time.sleep(0.1)
+    return False
 
 
 def main() -> None:
     host, port = configure_desktop_environment()
-    from backend.api import app
+    server_thread = threading.Thread(target=lambda: _run_server(host, port), daemon=True)
+    server_thread.start()
 
-    maybe_open_browser(host, port)
-    uvicorn.run(app, host=host, port=port)
+    if not _wait_for_server(host, port):
+        raise RuntimeError(f"VinylFlow backend failed to start on http://{host}:{port}")
+
+    webview.create_window(
+        "VinylFlow",
+        f"http://{host}:{port}",
+        width=1280,
+        height=900,
+        min_size=(900, 700),
+        js_api=DesktopApi(),
+    )
+    webview.start()
 
 
 if __name__ == "__main__":

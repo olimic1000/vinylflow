@@ -75,7 +75,8 @@ function vinylApp() {
             silence_threshold: -40,
             min_silence_duration: 1.5,
             min_track_length: 30,
-            flac_compression: 8
+            flac_compression: 8,
+            output_dir: ''
         },
 
         // Supported input file extensions
@@ -291,21 +292,39 @@ function vinylApp() {
          */
         async saveConfig() {
             try {
-                // Don't send output_dir to API
-                const { output_dir, ...configToSave } = this.config;
                 const response = await fetch('/api/config', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(configToSave)
+                    body: JSON.stringify(this.config)
                 });
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to save settings');
+                }
                 const data = await response.json();
                 this.config = data;
                 this.showSettings = false;
                 alert('Settings saved!');
             } catch (error) {
                 console.error('Failed to save config:', error);
-                alert('Failed to save settings');
+                alert(`Failed to save settings: ${error.message}`);
             }
+        },
+
+        async browseOutputFolder() {
+            if (window.pywebview && window.pywebview.api && window.pywebview.api.select_output_folder) {
+                try {
+                    const selectedPath = await window.pywebview.api.select_output_folder(this.config.output_dir || '');
+                    if (selectedPath) {
+                        this.config.output_dir = selectedPath;
+                    }
+                    return;
+                } catch (error) {
+                    console.warn('Desktop folder picker failed:', error);
+                }
+            }
+
+            alert('Folder picker is only available in the desktop app. You can still paste a full path manually.');
         },
 
         /**

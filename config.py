@@ -63,9 +63,10 @@ class Config:
             os.getenv("DISCOGS_USER_AGENT", "VinylFlow/1.0")
         )
 
-        # Output settings
-        self.default_output_dir = os.getenv(
-            "DEFAULT_OUTPUT_DIR", str(Path.home() / "Music" / "new 12-inches")
+        # Output settings (priority: JSON > env var > default)
+        self.default_output_dir = (
+            json_settings.get('DEFAULT_OUTPUT_DIR') or
+            os.getenv("DEFAULT_OUTPUT_DIR", str(Path.home() / "Music" / "new 12-inches"))
         )
 
         # Audio processing settings
@@ -152,21 +153,39 @@ class Config:
         settings_path = Path(self._settings_path)
         settings_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Load existing settings or create new
+        updates = {'DISCOGS_USER_TOKEN': token}
+        if user_agent:
+            updates['DISCOGS_USER_AGENT'] = user_agent
+
+        return self._update_settings(updates)
+
+    def save_output_dir(self, output_dir: str) -> bool:
+        """
+        Save default output directory to settings.json.
+
+        Args:
+            output_dir: Absolute or user-relative output directory path
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self._update_settings({'DEFAULT_OUTPUT_DIR': output_dir})
+
+    def _update_settings(self, updates: dict) -> bool:
+        """Merge updates into settings.json and write back to disk."""
+        settings_path = Path(self._settings_path)
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+
         settings = {}
         if settings_path.exists():
             try:
                 with open(settings_path, 'r') as f:
                     settings = json.load(f)
-            except:
+            except Exception:
                 pass
 
-        # Update token
-        settings['DISCOGS_USER_TOKEN'] = token
-        if user_agent:
-            settings['DISCOGS_USER_AGENT'] = user_agent
+        settings.update(updates)
 
-        # Write to file
         try:
             with open(settings_path, 'w') as f:
                 json.dump(settings, f, indent=2)

@@ -19,6 +19,8 @@ $pyiArgs = @(
     "--windowed",
     "--name", "VinylFlow",
     "--hidden-import", "backend.api",
+    "--hidden-import", "webview",
+    "--hidden-import", "webview.platforms.winforms",
     "--add-binary", "$ffmpegPath;ffmpeg_bin",
     "--add-data", "backend/static;backend/static"
 )

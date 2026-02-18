@@ -319,6 +319,13 @@
                         <label class="block text-sm font-medium text-secondary mb-1">Min Silence Duration (sec)</label>
                         <input type="number" step="0.1" x-model="config.min_silence_duration" class="w-full px-3 py-2 border focus-primary rounded-md" style="border-color: #8A8A86;">
                     </div>
+                    <div>
+                        <label class="block text-sm font-medium text-secondary mb-1">Output Folder</label>
+                        <div class="flex gap-2">
+                            <input type="text" x-model="config.output_dir" class="flex-1 px-3 py-2 border focus-primary rounded-md text-sm" style="border-color: #8A8A86;" placeholder="/Users/yourname/Music/VinylFlow">
+                            <button @click="browseOutputFolder()" type="button" class="px-4 py-2 btn-primary rounded-md text-sm">Browse</button>
+                        </div>
+                    </div>
 
                     <!-- Discogs Token Section -->
                     <div class="border-t pt-4 mt-4" style="border-color: #8A8A86;">
