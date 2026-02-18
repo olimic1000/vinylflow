@@ -13,14 +13,19 @@ fi
 python3 -m pip install -r requirements.txt
 python3 -m pip install pyinstaller
 
-pyinstaller \
-  --noconfirm \
-  --windowed \
-  --name "VinylFlow" \
-  --hidden-import "backend.api" \
-  --add-binary "$FFMPEG_BIN:ffmpeg_bin" \
-  --add-data "backend/static:backend/static" \
-  --add-data "config:config" \
-  desktop_launcher.py
+PYI_ARGS=(
+  --noconfirm
+  --windowed
+  --name "VinylFlow"
+  --hidden-import "backend.api"
+  --add-binary "$FFMPEG_BIN:ffmpeg_bin"
+  --add-data "backend/static:backend/static"
+)
+
+if [[ -d "config" ]]; then
+  PYI_ARGS+=(--add-data "config:config")
+fi
+
+pyinstaller "${PYI_ARGS[@]}" desktop_launcher.py
 
 echo "Build complete: dist/VinylFlow.app"

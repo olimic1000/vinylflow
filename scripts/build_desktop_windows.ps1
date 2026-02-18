@@ -14,14 +14,21 @@ python -m pip install pyinstaller
 
 $ffmpegPath = $ffmpeg.Source
 
-python -m PyInstaller `
-  --noconfirm `
-  --windowed `
-  --name VinylFlow `
-  --hidden-import backend.api `
-  --add-binary "$ffmpegPath;ffmpeg_bin" `
-  --add-data "backend/static;backend/static" `
-  --add-data "config;config" `
-  desktop_launcher.py
+$pyiArgs = @(
+    "--noconfirm",
+    "--windowed",
+    "--name", "VinylFlow",
+    "--hidden-import", "backend.api",
+    "--add-binary", "$ffmpegPath;ffmpeg_bin",
+    "--add-data", "backend/static;backend/static"
+)
+
+if (Test-Path "config") {
+    $pyiArgs += @("--add-data", "config;config")
+}
+
+$pyiArgs += "desktop_launcher.py"
+
+python -m PyInstaller @pyiArgs
 
 Write-Host "Build complete: dist/VinylFlow/VinylFlow.exe"
