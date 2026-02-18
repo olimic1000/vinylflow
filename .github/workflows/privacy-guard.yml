@@ -54,11 +54,11 @@ jobs:
               ),
               (
                   "macOS personal user path",
-                  re.compile(r"/Users/[A-Za-z0-9._-]+")
+                  re.compile(r"/Users/(?!you\b)[A-Za-z0-9._-]+")
               ),
               (
                   "Windows personal user path",
-                  re.compile(r"C:\\\\Users\\\\[A-Za-z0-9._-]+")
+                  re.compile(r"C:\\\\Users\\\\(?!you\b)[A-Za-z0-9._-]+")
               ),
           ]
 
