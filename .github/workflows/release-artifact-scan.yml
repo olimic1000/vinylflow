@@ -61,10 +61,10 @@ jobs:
 
           forbidden = [s.strip() for s in "${{ inputs.forbidden_strings }}".split(',') if s.strip()]
 
-          path_patterns = [
-              re.compile(r'/Users/(?!you\\b)[A-Za-z0-9._-]+'),
-              re.compile(r'C:\\\\Users\\\\(?!you\\b)[A-Za-z0-9._-]+', re.IGNORECASE),
-          ]
+            path_patterns = [
+              re.compile(r'/Users/(?!you\b)[A-Za-z0-9._-]+'),
+              re.compile(r'C:\\\\Users\\\\(?!you\b)[A-Za-z0-9._-]+', re.IGNORECASE),
+            ]
 
           banned_entry_patterns = [
               re.compile(r'(^|/)config/settings\.json$', re.IGNORECASE),
