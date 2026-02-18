@@ -32,7 +32,11 @@ class Config:
             env_path = Path(env_path)
 
         if settings_path is None:
-            settings_path = Path(__file__).parent / "config" / "settings.json"
+            config_dir_env = os.getenv("VINYLFLOW_CONFIG_DIR")
+            if config_dir_env:
+                settings_path = Path(config_dir_env) / "settings.json"
+            else:
+                settings_path = Path(__file__).parent / "config" / "settings.json"
         else:
             settings_path = Path(settings_path)
 

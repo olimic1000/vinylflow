@@ -12,8 +12,6 @@ if not FFMPEG_PATH:
     raise RuntimeError('ffmpeg was not found on PATH. Install ffmpeg before building.')
 
 DATA_FILES = [('backend/static', 'backend/static')]
-if Path('config').exists():
-    DATA_FILES.append(('config', 'config'))
 
 
 a = Analysis(
