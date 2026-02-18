@@ -75,7 +75,8 @@ function vinylApp() {
             silence_threshold: -40,
             min_silence_duration: 1.5,
             min_track_length: 30,
-            flac_compression: 8
+            flac_compression: 8,
+            output_dir: ''
         },
 
         // Supported input file extensions
@@ -290,12 +291,10 @@ function vinylApp() {
          */
         async saveConfig() {
             try {
-                // Don't send output_dir to API
-                const { output_dir, ...configToSave } = this.config;
                 const response = await fetch('/api/config', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(configToSave)
+                    body: JSON.stringify(this.config)
                 });
                 const data = await response.json();
                 this.config = data;
@@ -304,6 +303,26 @@ function vinylApp() {
             } catch (error) {
                 console.error('Failed to save config:', error);
                 alert('Failed to save settings');
+            }
+        },
+
+        /**
+         * Open desktop folder picker for output directory
+         */
+        async chooseOutputFolder() {
+            try {
+                if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.select_output_folder) {
+                    alert('Folder picker is available in the desktop app only.');
+                    return;
+                }
+
+                const selected = await window.pywebview.api.select_output_folder(this.config.output_dir || '');
+                if (selected) {
+                    this.config.output_dir = selected;
+                }
+            } catch (error) {
+                console.error('Failed to choose output folder:', error);
+                alert('Failed to open folder picker');
             }
         },
 

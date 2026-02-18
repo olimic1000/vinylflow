@@ -32,7 +32,11 @@ class Config:
             env_path = Path(env_path)
 
         if settings_path is None:
-            settings_path = Path(__file__).parent / "config" / "settings.json"
+            config_dir_env = os.getenv("VINYLFLOW_CONFIG_DIR")
+            if config_dir_env:
+                settings_path = Path(config_dir_env) / "settings.json"
+            else:
+                settings_path = Path(__file__).parent / "config" / "settings.json"
         else:
             settings_path = Path(settings_path)
 
@@ -57,8 +61,9 @@ class Config:
         )
 
         # Output settings
-        self.default_output_dir = os.getenv(
-            "DEFAULT_OUTPUT_DIR", str(Path.home() / "Music" / "new 12-inches")
+        self.default_output_dir = (
+            json_settings.get('DEFAULT_OUTPUT_DIR') or
+            os.getenv("DEFAULT_OUTPUT_DIR", str(Path.home() / "Music" / "new 12-inches"))
         )
 
         # Audio processing settings
@@ -160,6 +165,37 @@ class Config:
             settings['DISCOGS_USER_AGENT'] = user_agent
 
         # Write to file
+        try:
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=2)
+            return True
+        except Exception as e:
+            print(f"Failed to save settings: {e}")
+            return False
+
+    def save_output_dir(self, output_dir: str) -> bool:
+        """
+        Save default output directory to settings.json.
+
+        Args:
+            output_dir: Output directory path
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        settings_path = Path(self._settings_path)
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+        settings = {}
+        if settings_path.exists():
+            try:
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+            except:
+                pass
+
+        settings['DEFAULT_OUTPUT_DIR'] = output_dir
+
         try:
             with open(settings_path, 'w') as f:
                 json.dump(settings, f, indent=2)
