@@ -1,0 +1,140 @@
+name: Release Artifact Privacy Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to scan (e.g. v0.2.0-beta6)"
+        required: true
+        default: "v0.2.0-beta6"
+      assets:
+        description: "Comma-separated asset names"
+        required: true
+        default: "VinylFlow-macos-unsigned.zip,VinylFlow-windows-unsigned.zip"
+      forbidden_strings:
+        description: "Comma-separated strings that must never appear in artifacts"
+        required: false
+        default: "QYDBdskzVdLFzeZvxScmvaagZerNspEksSLAmYBG,oliviermichelet,/Users/oliviermichelet"
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p scan_artifacts
+          IFS=',' read -r -a files <<< "${{ inputs.assets }}"
+          for f in "${files[@]}"; do
+            f_trimmed="$(echo "$f" | xargs)"
+            echo "Downloading $f_trimmed"
+            gh release download "${{ inputs.tag }}" --pattern "$f_trimmed" --dir scan_artifacts --clobber
+          done
+          ls -lh scan_artifacts
+
+      - name: Scan artifacts for leaked settings/tokens
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import re
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          artifacts_dir = Path('scan_artifacts')
+          assets = [p for p in artifacts_dir.glob('*.zip')]
+          if not assets:
+              print('❌ No zip assets found to scan')
+              sys.exit(1)
+
+          forbidden = [s.strip() for s in "${{ inputs.forbidden_strings }}".split(',') if s.strip()]
+
+          path_patterns = [
+              re.compile(r'/Users/(?!you\\b)[A-Za-z0-9._-]+'),
+              re.compile(r'C:\\\\Users\\\\(?!you\\b)[A-Za-z0-9._-]+', re.IGNORECASE),
+          ]
+
+          banned_entry_patterns = [
+              re.compile(r'(^|/)config/settings\.json$', re.IGNORECASE),
+              re.compile(r'(^|/)config/.+', re.IGNORECASE),
+          ]
+
+            text_suffixes = {
+              '.txt', '.md', '.json', '.yml', '.yaml', '.toml', '.ini', '.cfg', '.conf',
+              '.env', '.py', '.js', '.ts', '.html', '.css', '.xml', '.plist', '.csv',
+            }
+
+          findings = []
+
+          for zip_path in assets:
+              with zipfile.ZipFile(zip_path, 'r') as zf:
+                  for name in zf.namelist():
+                      normalized = name.replace('\\\\', '/').lstrip('/')
+
+                      for rx in banned_entry_patterns:
+                          if rx.search(normalized):
+                              findings.append({
+                                  'artifact': zip_path.name,
+                                  'entry': name,
+                                  'type': 'banned-entry',
+                                  'match': rx.pattern,
+                              })
+
+                      data = zf.read(name)
+
+                        entry_path = Path(normalized)
+                        is_text_entry = entry_path.suffix.lower() in text_suffixes
+
+                      # byte-level string checks
+                      for s in forbidden:
+                          b = s.encode('utf-8')
+                          if b in data:
+                              findings.append({
+                                  'artifact': zip_path.name,
+                                  'entry': name,
+                                  'type': 'forbidden-string',
+                                  'match': s,
+                              })
+
+                        if is_text_entry:
+                          text = data.decode('utf-8', errors='ignore')
+                          if 'DISCOGS_USER_TOKEN' in text:
+                            findings.append({
+                              'artifact': zip_path.name,
+                              'entry': name,
+                              'type': 'token-key',
+                              'match': 'DISCOGS_USER_TOKEN',
+                            })
+
+                          # generic user path patterns
+                          for rx in path_patterns:
+                            m = rx.search(text)
+                            if m:
+                              findings.append({
+                                'artifact': zip_path.name,
+                                'entry': name,
+                                'type': 'user-path',
+                                'match': m.group(0)[:160],
+                              })
+
+          if findings:
+              print('❌ Artifact privacy scan failed:')
+              print(json.dumps(findings[:100], indent=2))
+              sys.exit(1)
+
+          print('✅ Artifact privacy scan passed for:')
+          for a in assets:
+              print(f' - {a.name}')
+          PY
