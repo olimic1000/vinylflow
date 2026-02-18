@@ -35,7 +35,7 @@ VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tra
 
 ## Quick Start (Docker)
 
-**Setup Options**: You can run VinylFlow using Docker (recommended for quick setup) or manually with Python (for more control). See [Manual Setup (Non-Docker)](#manual-setup-non-docker) below for the non-Docker approach.
+**Recommended path:** Docker (stable). If you prefer local Python, see [Manual Setup (Non-Docker)](#manual-setup-non-docker).
 
 ### Prerequisites
 
@@ -93,6 +93,17 @@ When you open VinylFlow for the first time, you'll see a welcome screen that gui
 **That's it!** 🎵 No hidden files, no terminal commands, no restart needed. Your token is saved securely and persists across Docker restarts.
 
 **Tip:** You can update your token anytime from the Settings (⚙️) menu in VinylFlow.
+
+## Desktop Apps (Beta)
+
+VinylFlow also has desktop app builds for macOS and Windows in a beta track.
+
+- Desktop beta work is published from `desktop-beta`
+- `main` remains the stable Docker-first channel
+- For local desktop mode, run: `python desktop_launcher.py`
+- Packaging/release scripts are in `scripts/`
+
+For full branching and release details, see [docs/BRANCHING_STRATEGY.md](docs/BRANCHING_STRATEGY.md).
 
 ---
 
