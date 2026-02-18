@@ -85,7 +85,16 @@ def configure_desktop_environment() -> tuple[str, int]:
 
     bundled_ffmpeg = _bundled_ffmpeg_path()
     if bundled_ffmpeg:
-        os.environ.setdefault("VINYLFLOW_FFMPEG_PATH", str(bundled_ffmpeg))
+        bundled_ffmpeg_str = str(bundled_ffmpeg)
+        os.environ.setdefault("VINYLFLOW_FFMPEG_PATH", bundled_ffmpeg_str)
+        os.environ.setdefault("FFMPEG_BINARY", bundled_ffmpeg_str)
+        os.environ.setdefault("IMAGEIO_FFMPEG_EXE", bundled_ffmpeg_str)
+
+        ffmpeg_dir = str(bundled_ffmpeg.parent)
+        current_path = os.environ.get("PATH", "")
+        path_parts = [p for p in current_path.split(os.pathsep) if p]
+        if ffmpeg_dir not in path_parts:
+            os.environ["PATH"] = os.pathsep.join([ffmpeg_dir, *path_parts])
 
     host = os.environ["HOST"]
     port = int(os.environ["PORT"])
