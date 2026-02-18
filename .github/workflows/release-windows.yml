@@ -1,0 +1,52 @@
+name: Release Windows App
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      PYTHON_VERSION: "3.11"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install FFmpeg (if missing)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg -y
+          }
+
+      - name: Build Windows app bundle
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\build_desktop_windows.ps1
+
+      - name: Package unsigned zip
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\package_unsigned_windows.ps1
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VinylFlow-windows
+          path: dist/VinylFlow-windows-unsigned.zip
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/VinylFlow-windows-unsigned.zip

@@ -173,6 +173,23 @@ This mode automatically:
 - stores output in `~/Music/VinylFlow`
 - uses bundled FFmpeg in packaged desktop builds when available
 
+### Windows Desktop Beta (experimental)
+
+On Windows, you can build an unsigned desktop beta package with PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release_unsigned_windows.ps1 -Tag v0.2.0-beta1
+```
+
+To only build/package without creating a draft release:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release_unsigned_windows.ps1 -Tag v0.2.0-beta1 -SkipDraft
+```
+
+Expected artifact:
+- `dist/VinylFlow-windows-unsigned.zip`
+
 ### macOS Packaging Spike (PyInstaller)
 
 To build a local `.app` prototype for testing:
@@ -276,15 +293,7 @@ Optional keychain secret:
 
 For an unsigned beta release, you can omit all signing/notarization secrets and publish `VinylFlow-macos-unsigned.zip`.
 
-### Windows Desktop Beta (Planned)
-
-Windows desktop support is planned as an experimental beta, following the same approach as macOS:
-
-- packaged app build
-- bundled FFmpeg
-- diagnostics support for troubleshooting
-
-Until Windows beta packaging lands, use Docker on Windows for the stable path.
+Windows beta release artifacts can also be generated in CI using `.github/workflows/release-windows.yml`.
 
 ### First-Run Setup (Non-Docker)
 
@@ -467,7 +476,6 @@ Open `http://localhost:8000/api/diagnostics` to see FFmpeg source (bundled/syste
 - Click and pop removal
 - MusicBrainz integration
 - Cloud-hosted option
-- Windows desktop beta packaging
 
 ---
 
