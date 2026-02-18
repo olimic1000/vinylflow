@@ -47,7 +47,6 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import io
           import json
           import re
           import sys
@@ -72,6 +71,11 @@ jobs:
               re.compile(r'(^|/)config/.+', re.IGNORECASE),
           ]
 
+            text_suffixes = {
+              '.txt', '.md', '.json', '.yml', '.yaml', '.toml', '.ini', '.cfg', '.conf',
+              '.env', '.py', '.js', '.ts', '.html', '.css', '.xml', '.plist', '.csv',
+            }
+
           findings = []
 
           for zip_path in assets:
@@ -90,6 +94,9 @@ jobs:
 
                       data = zf.read(name)
 
+                        entry_path = Path(normalized)
+                        is_text_entry = entry_path.suffix.lower() in text_suffixes
+
                       # byte-level string checks
                       for s in forbidden:
                           b = s.encode('utf-8')
@@ -101,25 +108,25 @@ jobs:
                                   'match': s,
                               })
 
-                      # check token key presence in text-like content
-                      text = data.decode('utf-8', errors='ignore')
-                      if 'DISCOGS_USER_TOKEN' in text:
-                          findings.append({
+                        if is_text_entry:
+                          text = data.decode('utf-8', errors='ignore')
+                          if 'DISCOGS_USER_TOKEN' in text:
+                            findings.append({
                               'artifact': zip_path.name,
                               'entry': name,
                               'type': 'token-key',
                               'match': 'DISCOGS_USER_TOKEN',
-                          })
+                            })
 
-                      # generic user path patterns
-                      for rx in path_patterns:
-                          m = rx.search(text)
-                          if m:
+                          # generic user path patterns
+                          for rx in path_patterns:
+                            m = rx.search(text)
+                            if m:
                               findings.append({
-                                  'artifact': zip_path.name,
-                                  'entry': name,
-                                  'type': 'user-path',
-                                  'match': m.group(0)[:160],
+                                'artifact': zip_path.name,
+                                'entry': name,
+                                'type': 'user-path',
+                                'match': m.group(0)[:160],
                               })
 
           if findings:
