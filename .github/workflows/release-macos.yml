@@ -1,0 +1,102 @@
+name: Release macOS App
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    env:
+      PYTHON_VERSION: "3.11"
+      APP_PATH: dist/VinylFlow.app
+      APPLE_NOTARY_PROFILE: vinylflow-notary
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install FFmpeg (if missing)
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            brew install ffmpeg
+          fi
+
+      - name: Build app bundle
+        run: bash scripts/build_desktop_macos.sh
+
+      - name: Create unsigned zip (reference)
+        run: |
+          rm -f dist/VinylFlow-macos-unsigned.zip
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" dist/VinylFlow-macos-unsigned.zip
+
+      - name: Import signing certificate
+        if: ${{ secrets.MACOS_SIGN_IDENTITY != '' && secrets.MACOS_CERTIFICATE_P12_BASE64 != '' && secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
+        env:
+          CERT_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          CERT_PATH=$RUNNER_TEMP/cert.p12
+
+          echo "$CERT_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "${KEYCHAIN_PASSWORD:-temp-pass}" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD:-temp-pass}" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASSWORD:-temp-pass}" "$KEYCHAIN"
+
+      - name: Configure notary profile
+        if: ${{ secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials "$APPLE_NOTARY_PROFILE" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+
+      - name: Sign and notarize app (when credentials available)
+        if: ${{ secrets.MACOS_SIGN_IDENTITY != '' }}
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_NOTARY_PROFILE: ${{ (secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '') && env.APPLE_NOTARY_PROFILE || '' }}
+        run: bash scripts/sign_notarize_macos.sh
+
+      - name: Create release zip
+        run: |
+          rm -f dist/VinylFlow-macos.zip
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" dist/VinylFlow-macos.zip
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VinylFlow-macos
+          path: |
+            dist/VinylFlow-macos.zip
+            dist/VinylFlow-macos-unsigned.zip
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/VinylFlow-macos.zip
+            dist/VinylFlow-macos-unsigned.zip
