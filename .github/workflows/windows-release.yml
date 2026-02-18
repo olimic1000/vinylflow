@@ -55,4 +55,6 @@ jobs:
         shell: powershell
         run: |
           gh release upload ${{ inputs.tag }} VinylFlow-windows-unsigned.zip --clobber
-          gh release view ${{ inputs.tag }} --json assets --jq '.assets[] | select(.name=="VinylFlow-windows-unsigned.zip") | {name,size,updatedAt,url}'
+          $release = gh release view ${{ inputs.tag }} --json assets | ConvertFrom-Json
+          $asset = $release.assets | Where-Object { $_.name -eq 'VinylFlow-windows-unsigned.zip' }
+          $asset | Select-Object name,size,updatedAt,url | Format-List
