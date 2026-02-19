@@ -5,7 +5,7 @@ VinylFlow Desktop Launcher
 Runs VinylFlow in a no-Docker local desktop mode:
 - Uses writable user directories for config/temp/output
 - Starts the FastAPI backend locally
-- Opens a native desktop app window
+- Opens a native desktop app window (WebView2 on Windows, WKWebView on macOS)
 """
 
 import os
@@ -18,13 +18,30 @@ from pathlib import Path
 
 import uvicorn
 
+# Must be set before `import webview` so pywebview picks up the correct backend.
 if sys.platform.startswith("win"):
     os.environ.setdefault("PYWEBVIEW_GUI", "edgechromium")
 
+# Point requests/urllib3 at the bundled certifi CA bundle when running from a
+# PyInstaller one-folder bundle.  The runtime hook already does this, but we
+# repeat it here in case the launcher is run outside a bundle (development).
+def _configure_ssl_certs() -> None:
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return
+    cacert = Path(meipass) / "certifi" / "cacert.pem"
+    if cacert.exists():
+        os.environ.setdefault("SSL_CERT_FILE", str(cacert))
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", str(cacert))
+
+_configure_ssl_certs()
+
 try:
     import webview
-except Exception:
+    _WEBVIEW_IMPORT_ERROR: Exception | None = None
+except Exception as exc:
     webview = None
+    _WEBVIEW_IMPORT_ERROR = exc
 
 
 APP_NAME = "VinylFlow"
@@ -67,20 +84,47 @@ def _windows_app_support_dir() -> Path:
 
 
 def _bundled_ffmpeg_path() -> Path | None:
-    candidates = []
-
+    """Return path to bundled ffmpeg binary, or None if not found."""
     meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        candidates.append(Path(meipass) / "ffmpeg_bin" / "ffmpeg")
+    if not meipass:
+        return None
 
-    executable_path = Path(sys.executable).resolve()
-    candidates.append(executable_path.parent.parent / "Resources" / "ffmpeg_bin" / "ffmpeg")
-
-    for path in candidates:
-        if path.exists() and path.is_file() and os.access(path, os.X_OK):
+    ffmpeg_dir = Path(meipass) / "ffmpeg_bin"
+    # On Windows the binary name includes the .exe extension.
+    candidates = ["ffmpeg.exe", "ffmpeg"] if sys.platform.startswith("win") else ["ffmpeg"]
+    for name in candidates:
+        path = ffmpeg_dir / name
+        if path.exists() and path.is_file():
             return path
-
     return None
+
+
+def _check_webview2_available() -> bool:
+    """
+    Return True if the Microsoft WebView2 Runtime is installed.
+    Only meaningful on Windows; always returns True on other platforms.
+    WebView2 is pre-installed on Windows 11.  On Windows 10 it ships with
+    Microsoft Edge, but may be absent on fresh / locked-down installs.
+    """
+    if not sys.platform.startswith("win"):
+        return True
+    try:
+        import winreg
+        client_guid = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+        subkeys = [
+            rf"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{client_guid}",
+            rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{client_guid}",
+        ]
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            for subkey in subkeys:
+                try:
+                    with winreg.OpenKey(hive, subkey):
+                        return True
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return False
 
 
 def configure_desktop_environment() -> tuple[str, int]:
@@ -141,6 +185,13 @@ def _wait_for_server(host: str, port: int, timeout: float = 10.0) -> bool:
     return False
 
 
+def _open_browser_fallback(app_url: str, server_thread: threading.Thread) -> None:
+    """Open app in default browser and keep the server alive."""
+    webbrowser.open(app_url)
+    while server_thread.is_alive():
+        time.sleep(0.5)
+
+
 def main() -> None:
     host, port = configure_desktop_environment()
     server_thread = threading.Thread(target=lambda: _run_server(host, port), daemon=True)
@@ -151,12 +202,28 @@ def main() -> None:
 
     app_url = f"http://{host}:{port}"
 
+    # --- webview not importable at all ---
     if webview is None:
-        webbrowser.open(app_url)
-        while server_thread.is_alive():
-            time.sleep(0.5)
+        print(
+            f"[VinylFlow] pywebview unavailable ({_WEBVIEW_IMPORT_ERROR}). "
+            "Opening in default browser.",
+            file=sys.stderr,
+        )
+        _open_browser_fallback(app_url, server_thread)
         return
 
+    # --- Windows: check WebView2 Runtime before attempting to start ---
+    if sys.platform.startswith("win") and not _check_webview2_available():
+        print(
+            "[VinylFlow] Microsoft WebView2 Runtime not found.\n"
+            "  Download: https://developer.microsoft.com/microsoft-edge/webview2/\n"
+            "  Opening in default browser as fallback.",
+            file=sys.stderr,
+        )
+        _open_browser_fallback(app_url, server_thread)
+        return
+
+    # --- Try native desktop window ---
     try:
         webview.create_window(
             "VinylFlow",
@@ -170,10 +237,12 @@ def main() -> None:
             webview.start(gui="edgechromium")
         else:
             webview.start()
-    except Exception:
-        webbrowser.open(app_url)
-        while server_thread.is_alive():
-            time.sleep(0.5)
+    except Exception as exc:
+        print(
+            f"[VinylFlow] Native window failed ({exc}). Opening in default browser.",
+            file=sys.stderr,
+        )
+        _open_browser_fallback(app_url, server_thread)
 
 
 if __name__ == "__main__":
