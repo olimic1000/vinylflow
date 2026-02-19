@@ -231,8 +231,7 @@ async def read_root():
     """Serve the main HTML page."""
     html_path = Path(__file__).parent / "static" / "index.html"
     if html_path.exists():
-        with open(html_path) as f:
-            return HTMLResponse(content=f.read())
+        return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
     return HTMLResponse(
         content="<h1>VinylFlow</h1><p>Frontend not found. Please create static/index.html</p>"
     )
