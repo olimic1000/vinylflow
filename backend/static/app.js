@@ -96,6 +96,14 @@ function vinylApp() {
          * Initialize the application
          */
         async init() {
+            // Suppress the native WebKit/WKWebView context menu globally.
+            // WaveSurfer v7 renders inside a shadow DOM; by the time the
+            // 'contextmenu' event bubbles to our container listener WKWebView
+            // has already decided to show its native menu.  Calling
+            // preventDefault() in the capture phase (before any shadow-DOM
+            // handler fires) is the only reliable way to stop it.
+            document.addEventListener('contextmenu', e => e.preventDefault(), true);
+
             await this.loadConfig();
             await this.loadFormats();
             await this.checkStatus();
@@ -827,29 +835,25 @@ function vinylApp() {
                     this.currentZoom = Math.max(1, Math.min(calculatedZoom, 200));
                     this.waveform.zoom(this.currentZoom);
 
-                    // Add right-click handler for manual splits
-                    container.addEventListener('contextmenu', (e) => {
+                    const openWaveformContextMenu = (e) => {
+                        const isSecondaryClick = e.type === 'contextmenu' || e.button === 2 || (e.button === 0 && e.ctrlKey);
+                        if (!isSecondaryClick) {
+                            return;
+                        }
+
                         e.preventDefault();
 
-                        // Find the waveform wrapper
-                        const waveformWrapper = container.querySelector('[part="wrapper"]') ||
-                                               container.querySelector('div');
+                        const waveformWrapper = container.querySelector('[part="wrapper"]') || container.querySelector('div');
 
                         if (!waveformWrapper) {
                             console.error('Could not find waveform wrapper');
                             return;
                         }
 
-                        // Get the wrapper's bounding rectangle
                         const rect = waveformWrapper.getBoundingClientRect();
-
-                        // Calculate relative position (0-1) accounting for scroll
-                        // This mimics WaveSurfer's internal getRelativePointerPosition
                         const x = e.clientX - rect.left + waveformWrapper.scrollLeft;
                         const totalWidth = waveformWrapper.scrollWidth;
                         const relativeX = Math.max(0, Math.min(1, x / totalWidth));
-
-                        // Convert to time
                         const time = relativeX * this.waveform.getDuration();
 
                         console.log('Split calculation:', {
@@ -860,12 +864,15 @@ function vinylApp() {
                             time
                         });
 
-                        // Show context menu at click position
                         this.contextMenu.x = e.clientX;
                         this.contextMenu.y = e.clientY;
                         this.contextMenu.time = time;
                         this.contextMenu.show = true;
-                    });
+                    };
+
+                    // Add right-click handler for manual splits
+                    container.addEventListener('contextmenu', openWaveformContextMenu);
+                    container.addEventListener('mousedown', openWaveformContextMenu);
 
                     setTimeout(() => {
                         this.addTrackRegions();
@@ -881,24 +888,26 @@ function vinylApp() {
                 this.waveformRegions.on('region-created', (region) => {
                     const regionElement = region.element;
                     if (regionElement) {
-                        regionElement.addEventListener('contextmenu', (e) => {
-                            // Prevent drag/resize from triggering this
+                        const openRegionContextMenu = (e) => {
+                            const isSecondaryClick = e.type === 'contextmenu' || e.button === 2 || (e.button === 0 && e.ctrlKey);
+                            if (!isSecondaryClick) {
+                                return;
+                            }
+
                             if (e.target.classList.contains('wavesurfer-handle')) {
                                 return;
                             }
-                            
+
                             e.preventDefault();
                             e.stopPropagation();
-                            
+
                             const trackNumber = parseInt(region.id.replace('track-', ''), 10);
                             if (!isNaN(trackNumber)) {
                                 const track = this.detectedTracks.find(t => t.number === trackNumber);
-                                
-                                // Calculate time position for split functionality
                                 const container = document.getElementById('waveform');
                                 const waveformWrapper = container?.querySelector('[part="wrapper"]') || container?.querySelector('div');
                                 let time = 0;
-                                
+
                                 if (waveformWrapper) {
                                     const rect = waveformWrapper.getBoundingClientRect();
                                     const x = e.clientX - rect.left + waveformWrapper.scrollLeft;
@@ -906,7 +915,7 @@ function vinylApp() {
                                     const relativeX = Math.max(0, Math.min(1, x / totalWidth));
                                     time = relativeX * this.waveform.getDuration();
                                 }
-                                
+
                                 this.regionContextMenu.x = e.clientX;
                                 this.regionContextMenu.y = e.clientY;
                                 this.regionContextMenu.trackNumber = trackNumber;
@@ -914,7 +923,10 @@ function vinylApp() {
                                 this.regionContextMenu.time = time;
                                 this.regionContextMenu.show = true;
                             }
-                        });
+                        };
+
+                        regionElement.addEventListener('contextmenu', openRegionContextMenu);
+                        regionElement.addEventListener('mousedown', openRegionContextMenu);
                     }
                 });
 
