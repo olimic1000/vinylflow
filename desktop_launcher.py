@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import threading
+import webbrowser
 from socket import create_connection
 from pathlib import Path
 
@@ -20,7 +21,10 @@ import uvicorn
 if sys.platform.startswith("win"):
     os.environ.setdefault("PYWEBVIEW_GUI", "edgechromium")
 
-import webview
+try:
+    import webview
+except Exception:
+    webview = None
 
 
 APP_NAME = "VinylFlow"
@@ -28,6 +32,8 @@ APP_NAME = "VinylFlow"
 
 class DesktopApi:
     def select_output_folder(self, initial_path: str = "") -> str | None:
+        if webview is None:
+            return None
         try:
             directory = None
             if initial_path:
@@ -53,6 +59,13 @@ def _macos_app_support_dir() -> Path:
     return Path.home() / "Library" / "Application Support" / APP_NAME
 
 
+def _windows_app_support_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / APP_NAME
+    return Path.home() / "AppData" / "Roaming" / APP_NAME
+
+
 def _bundled_ffmpeg_path() -> Path | None:
     candidates = []
 
@@ -71,7 +84,13 @@ def _bundled_ffmpeg_path() -> Path | None:
 
 
 def configure_desktop_environment() -> tuple[str, int]:
-    app_data_dir = _macos_app_support_dir()
+    if sys.platform.startswith("win"):
+        app_data_dir = _windows_app_support_dir()
+    elif sys.platform == "darwin":
+        app_data_dir = _macos_app_support_dir()
+    else:
+        app_data_dir = Path.home() / ".config" / APP_NAME
+
     config_dir = app_data_dir / "config"
     upload_dir = app_data_dir / "temp_uploads"
     output_dir = Path.home() / "Music" / APP_NAME
@@ -130,18 +149,31 @@ def main() -> None:
     if not _wait_for_server(host, port):
         raise RuntimeError(f"VinylFlow backend failed to start on http://{host}:{port}")
 
-    webview.create_window(
-        "VinylFlow",
-        f"http://{host}:{port}",
-        width=1280,
-        height=900,
-        min_size=(900, 700),
-        js_api=DesktopApi(),
-    )
-    if sys.platform.startswith("win"):
-        webview.start(gui="edgechromium")
-    else:
-        webview.start()
+    app_url = f"http://{host}:{port}"
+
+    if webview is None:
+        webbrowser.open(app_url)
+        while server_thread.is_alive():
+            time.sleep(0.5)
+        return
+
+    try:
+        webview.create_window(
+            "VinylFlow",
+            app_url,
+            width=1280,
+            height=900,
+            min_size=(900, 700),
+            js_api=DesktopApi(),
+        )
+        if sys.platform.startswith("win"):
+            webview.start(gui="edgechromium")
+        else:
+            webview.start()
+    except Exception:
+        webbrowser.open(app_url)
+        while server_thread.is_alive():
+            time.sleep(0.5)
 
 
 if __name__ == "__main__":
