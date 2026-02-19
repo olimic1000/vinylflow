@@ -13,19 +13,23 @@ if not FFMPEG_PATH:
 
 DATA_FILES = [('backend/static', 'backend/static')]
 
+HIDDEN_IMPORTS = [
+    'backend.api',
+    'webview',
+]
+
+if sys.platform.startswith('win'):
+    HIDDEN_IMPORTS.append('webview.platforms.edgechromium')
+elif sys.platform == 'darwin':
+    HIDDEN_IMPORTS.append('webview.platforms.cocoa')
+
 
 a = Analysis(
     ['desktop_launcher.py'],
     pathex=[],
     binaries=[(FFMPEG_PATH, 'ffmpeg_bin')],
     datas=DATA_FILES,
-    hiddenimports=[
-        'backend.api',
-        'webview',
-        'webview.platforms.cocoa',
-        'webview.platforms.edgechromium',
-        'webview.platforms.winforms',
-    ],
+    hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

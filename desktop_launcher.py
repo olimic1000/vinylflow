@@ -134,7 +134,10 @@ def main() -> None:
         min_size=(900, 700),
         js_api=DesktopApi(),
     )
-    webview.start()
+    if sys.platform.startswith("win"):
+        webview.start(gui="edgechromium")
+    else:
+        webview.start()
 
 
 if __name__ == "__main__":
