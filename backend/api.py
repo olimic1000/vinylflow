@@ -16,11 +16,15 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 
+import logging
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 # Import our existing modules
 import sys
@@ -60,9 +64,13 @@ audio_processor = AudioProcessor(
 )
 metadata_handler = MetadataHandler(config.discogs_token, config.discogs_user_agent)
 
-# Temp directory for uploads
-UPLOAD_DIR = Path(__file__).parent.parent / "temp_uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+# Temp directory for uploads.
+# In desktop/bundled mode the launcher sets VINYLFLOW_UPLOAD_DIR to a
+# writable location inside the user's AppData folder.  Fall back to a path
+# relative to the source tree when running in development.
+_upload_dir_env = os.getenv("VINYLFLOW_UPLOAD_DIR")
+UPLOAD_DIR = Path(_upload_dir_env) if _upload_dir_env else Path(__file__).parent.parent / "temp_uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_session_path(file_id: str, filename: str = None) -> Path:
@@ -412,9 +420,9 @@ async def analyze_duration_based(request: DurationBasedAnalyzeRequest):
     try:
         # Use existing duration-based splitting method
         processor = AudioProcessor(
-            silence_threshold=config.DEFAULT_SILENCE_THRESHOLD,
-            min_silence_duration=config.DEFAULT_MIN_SILENCE_DURATION,
-            min_track_length=config.DEFAULT_MIN_TRACK_LENGTH,
+            silence_threshold=config.default_silence_threshold,
+            min_silence_duration=config.default_min_silence_duration,
+            min_track_length=config.default_min_track_length,
         )
 
         tracks = processor.split_tracks_duration_based(
