@@ -23,6 +23,7 @@ a = Analysis(
         'backend.api',
         'webview',
         'webview.platforms.cocoa',
+        'webview.platforms.edgechromium',
         'webview.platforms.winforms',
     ],
     hookspath=[],
