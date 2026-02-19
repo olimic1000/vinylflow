@@ -367,7 +367,7 @@
         <!-- Context Menu for Waveform Splits -->
         <div x-show="contextMenu.show"
              x-cloak
-             @click.away="contextMenu.show = false"
+             @click.away="if (!$event.ctrlKey) contextMenu.show = false"
              class="fixed bg-card rounded-lg shadow-lg border z-50 py-1"
              style="border-color: #8A8A86;"
              :style="`left: ${contextMenu.x}px; top: ${contextMenu.y}px;`">
@@ -381,7 +381,7 @@
         <!-- Context Menu for Region Actions -->
         <div x-show="regionContextMenu.show"
              x-cloak
-             @click.away="regionContextMenu.show = false"
+             @click.away="if (!$event.ctrlKey) regionContextMenu.show = false"
              class="fixed bg-card rounded-lg shadow-lg border z-50 py-1"
              style="border-color: #8A8A86;"
              :style="`left: ${regionContextMenu.x}px; top: ${regionContextMenu.y}px;`">
