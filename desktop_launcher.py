@@ -16,6 +16,10 @@ from socket import create_connection
 from pathlib import Path
 
 import uvicorn
+
+if sys.platform.startswith("win"):
+    os.environ.setdefault("PYWEBVIEW_GUI", "edgechromium")
+
 import webview
 
 

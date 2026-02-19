@@ -18,8 +18,15 @@ HIDDEN_IMPORTS = [
     'webview',
 ]
 
+EXCLUDES = []
+
 if sys.platform.startswith('win'):
     HIDDEN_IMPORTS.append('webview.platforms.edgechromium')
+    EXCLUDES.extend([
+        'pythonnet',
+        'clr',
+        'clr_loader',
+    ])
 elif sys.platform == 'darwin':
     HIDDEN_IMPORTS.append('webview.platforms.cocoa')
 
@@ -33,7 +40,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=EXCLUDES,
     noarchive=False,
     optimize=0,
 )
