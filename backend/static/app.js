@@ -70,6 +70,9 @@ function vinylApp() {
         outputFormat: 'flac',
         availableFormats: [],
 
+        // Audio restoration
+        restorationLevel: 0,   // 0=disabled, 1=enabled
+
         // Config
         config: {
             silence_threshold: -40,
@@ -1304,7 +1307,8 @@ function vinylApp() {
                         track_mapping: trackMapping,
                         reversed: this.trackMappingReversed,
                         track_boundaries: trackBoundaries,
-                        output_format: this.outputFormat
+                        output_format: this.outputFormat,
+                        restoration_level: this.restorationLevel
                     })
                 });
 

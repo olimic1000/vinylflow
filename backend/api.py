@@ -184,6 +184,8 @@ class ProcessRequest(BaseModel):
     reversed: bool = False
     track_boundaries: Optional[List[TrackBoundary]] = None
     output_format: str = "flac"  # 'flac', 'mp3', or 'aiff'
+    restoration_level: int = 0   # 0=none, 1=light clean, 2=full restore
+    hum_freq: int = 50           # Electrical hum frequency in Hz (50=EU, 60=US)
 
 
 class ConfigUpdate(BaseModel):
@@ -778,7 +780,11 @@ async def process_file_background(request: ProcessRequest, job_id: str):
             temp_output = album_folder / f"temp_{track.vinyl_number}{ext}"
 
             # Split and convert to chosen format
-            audio_processor.extract_track(file_path, track, temp_output, output_format)
+            audio_processor.extract_track(
+                file_path, track, temp_output, output_format,
+                restoration_level=request.restoration_level,
+                hum_freq=request.hum_freq,
+            )
 
             # Tag with metadata
             metadata_handler.tag_file(temp_output, track, release, cover_data, output_format)

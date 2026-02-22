@@ -273,6 +273,24 @@ class AudioProcessor:
 
         return tracks
 
+    def _build_restoration_filters(self, restoration_level: int, hum_freq: int = 0) -> Optional[str]:
+        """Build an ffmpeg -af filter chain for audio restoration.
+
+        Args:
+            restoration_level: 0=disabled, 1=enabled
+            hum_freq: Optional hum notch frequency in Hz (0=off, 50=EU, 60=US)
+
+        Returns:
+            Filter chain string, or None if restoration is disabled
+        """
+        if restoration_level != 1:
+            return None
+
+        # highpass=f=15: removes inaudible turntable motor rumble (below 15 Hz) without touching bass
+        # adeclick=t=3:b=3: conservative click/pop removal (threshold 3 vs default 2, less likely to catch drum transients)
+        filters = ["highpass=f=15", "adeclick=t=3:b=3", "loudnorm=I=-14:LRA=11:TP=-1"]
+        return ", ".join(filters)
+
     def extract_track(
         self,
         input_file: Path,
@@ -280,6 +298,8 @@ class AudioProcessor:
         output_file: Path,
         output_format: str = "flac",
         verbose: bool = False,
+        restoration_level: int = 0,
+        hum_freq: int = 50,
     ) -> bool:
         """
         Extract a single track and convert to the specified format.
@@ -290,6 +310,8 @@ class AudioProcessor:
             output_file: Output file path
             output_format: One of 'flac', 'mp3', 'aiff'
             verbose: Print detailed output
+            restoration_level: 0=none, 1=light clean, 2=full restore
+            hum_freq: Electrical hum frequency in Hz (50 or 60) for full restore
 
         Returns:
             True if successful
@@ -315,6 +337,11 @@ class AudioProcessor:
         # Add FLAC compression level if applicable
         if output_format == "flac":
             cmd.extend(["-compression_level", str(self.flac_compression)])
+
+        # Add audio restoration filter chain if requested
+        af_chain = self._build_restoration_filters(restoration_level, hum_freq)
+        if af_chain:
+            cmd.extend(["-af", af_chain])
 
         cmd.extend([
             "-y",  # Overwrite output file

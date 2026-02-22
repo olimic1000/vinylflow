@@ -638,6 +638,17 @@
                             </div>
                         </div>
 
+                        <!-- Audio Restoration -->
+                        <div class="mb-4 p-4 bg-page rounded-lg">
+                            <button type="button" @click="restorationLevel = restorationLevel === 1 ? 0 : 1"
+                                    class="cursor-pointer px-4 py-2 rounded-lg border-2 transition text-sm font-medium"
+                                    :style="restorationLevel === 1 ? 'border-color: #E5A100; color: #E5A100; font-weight: 600;' : 'border-color: #8A8A86;'"
+                                    :class="restorationLevel !== 1 ? 'hover:bg-card' : ''">
+                                Restore &amp; Normalize
+                            </button>
+                            <p class="mt-2 text-xs text-muted">Removes inaudible turntable rumble, reduces clicks and pops, and adjusts volume to a consistent listening level.</p>
+                        </div>
+
                         <!-- Mapping Table -->
                         <div class="space-y-2 mb-4">
                             <div class="grid grid-cols-2 gap-4 text-sm font-semibold text-secondary pb-2" style="border-bottom: 1px solid #8A8A86;">
