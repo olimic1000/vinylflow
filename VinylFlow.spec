@@ -92,7 +92,6 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    # UPX can corrupt .NET assemblies; exclude Python.Runtime.dll to be safe.
     # UPX can corrupt .NET assemblies and third-party executables.
     # ffmpeg.exe in particular can be mis-flagged by AV when UPX-packed.
     upx_exclude=['Python.Runtime.dll', 'ffmpeg.exe'],
