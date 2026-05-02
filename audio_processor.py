@@ -22,6 +22,29 @@ def _ffmpeg() -> str:
     """
     return os.environ.get("VINYLFLOW_FFMPEG_PATH") or "ffmpeg"
 
+
+def run_ffmpeg(args: list, *, text: bool = True, **kwargs) -> subprocess.CompletedProcess:
+    """Run ffmpeg with the bundled binary path + correct text-mode defaults.
+
+    All ffmpeg invocations across the project must go through this seam,
+    not call ``subprocess.run(["ffmpeg", ...])`` directly — bundled
+    builds depend on ``VINYLFLOW_FFMPEG_PATH`` and Windows requires
+    utf-8/replace decoding so non-ASCII filenames don't crash the
+    subprocess module.
+
+    ``text=True`` (default) captures stdout/stderr as utf-8 strings with
+    error replacement — correct for parsing ffmpeg's stderr (silence
+    detection, duration probing).  Pass ``text=False`` when you need
+    raw bytes (e.g. piping PCM through stdout for waveform peaks).
+
+    All other ``subprocess.run`` kwargs flow through unchanged.
+    """
+    cmd = [_ffmpeg(), *args]
+    if text:
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
+    return subprocess.run(cmd, **kwargs)
+
 # Supported input formats
 SUPPORTED_INPUT_EXTENSIONS = {".wav", ".aiff", ".aif"}
 
@@ -113,9 +136,10 @@ class AudioProcessor:
             Duration in seconds, or None if error
         """
         try:
-            cmd = [_ffmpeg(), "-i", str(file_path), "-f", "null", "-"]
-            result = subprocess.run(
-                cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30
+            result = run_ffmpeg(
+                ["-i", str(file_path), "-f", "null", "-"],
+                capture_output=True,
+                timeout=30,
             )
 
             # Parse duration from ffmpeg output
@@ -147,8 +171,7 @@ class AudioProcessor:
             )
 
         # Run ffmpeg silence detection
-        cmd = [
-            _ffmpeg(),
+        args = [
             "-i",
             str(file_path),
             "-af",
@@ -159,9 +182,7 @@ class AudioProcessor:
         ]
 
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=300
-            )
+            result = run_ffmpeg(args, capture_output=True, timeout=300)
 
             # Parse silence periods from stderr
             silence_starts = []
@@ -321,8 +342,7 @@ class AudioProcessor:
 
         format_config = OUTPUT_FORMATS.get(output_format, OUTPUT_FORMATS["flac"])
 
-        cmd = [
-            _ffmpeg(),
+        args = [
             "-i",
             str(input_file),
             "-ss",
@@ -332,26 +352,24 @@ class AudioProcessor:
         ]
 
         # Add codec-specific args
-        cmd.extend(format_config["codec_args"])
+        args.extend(format_config["codec_args"])
 
         # Add FLAC compression level if applicable
         if output_format == "flac":
-            cmd.extend(["-compression_level", str(self.flac_compression)])
+            args.extend(["-compression_level", str(self.flac_compression)])
 
         # Add audio restoration filter chain if requested
         af_chain = self._build_restoration_filters(restoration_level, hum_freq)
         if af_chain:
-            cmd.extend(["-af", af_chain])
+            args.extend(["-af", af_chain])
 
-        cmd.extend([
+        args.extend([
             "-y",  # Overwrite output file
             str(output_file),
         ])
 
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=600
-            )
+            result = run_ffmpeg(args, capture_output=True, timeout=600)
 
             if result.returncode != 0:
                 print(f"Error: ffmpeg failed: {result.stderr}")

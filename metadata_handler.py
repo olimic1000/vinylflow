@@ -7,6 +7,7 @@ Manages release searches, track mapping, and file tagging for FLAC, MP3, and AIF
 
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from io import BytesIO
@@ -18,6 +19,27 @@ from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TPUB, COMM, APIC, TXXX
 from mutagen.aiff import AIFF
 from PIL import Image
+
+
+@dataclass(frozen=True)
+class TagSet:
+    """Format-neutral logical tags for one Track of a Release.
+
+    Computed once per file via ``MetadataHandler._build_tag_set``; written
+    by format-specific applicators (``_apply_vorbis`` for FLAC,
+    ``_apply_id3`` for MP3/AIFF).  Adding a new field touches the
+    builder + both applicators — no per-format tagger to keep in sync.
+    """
+
+    artist: str
+    album: str
+    title: str
+    track_number: str
+    year: Optional[int]
+    label: Optional[str]
+    release_id: int
+    comment: str = "Digitized from vinyl"
+    cover_data: Optional[bytes] = None
 
 
 class DiscogsTrack:
@@ -381,6 +403,68 @@ class MetadataHandler:
         print(f"Warning: No Discogs track found for {track.vinyl_number}")
         return None
 
+    def _build_tag_set(
+        self,
+        track: "Track",
+        release: DiscogsRelease,
+        cover_data: Optional[bytes],
+    ) -> Optional[TagSet]:
+        """Compute the TagSet for one track.  Returns None if the Discogs
+        track lookup fails — caller treats that as a tag-write failure."""
+        discogs_track = self._find_discogs_track(track, release)
+        if discogs_track is None:
+            return None
+        return TagSet(
+            artist=release.artist,
+            album=release.title,
+            title=discogs_track.title,
+            track_number=track.vinyl_number,
+            year=release.year,
+            label=release.label or None,
+            release_id=release.id,
+            cover_data=cover_data,
+        )
+
+    def _apply_vorbis(self, audio: FLAC, tags: TagSet) -> None:
+        """Write a TagSet to a FLAC file using Vorbis comments."""
+        audio["ARTIST"] = tags.artist
+        audio["ALBUM"] = tags.album
+        audio["TITLE"] = tags.title
+        audio["TRACKNUMBER"] = tags.track_number
+        audio["DATE"] = str(tags.year) if tags.year else ""
+        if tags.label:
+            audio["LABEL"] = tags.label
+        audio["DISCOGS_RELEASE_ID"] = str(tags.release_id)
+        audio["COMMENT"] = tags.comment
+        if tags.cover_data:
+            picture = Picture()
+            picture.type = 3  # Front cover
+            picture.mime = "image/jpeg"
+            picture.desc = "Cover"
+            picture.data = tags.cover_data
+            audio.add_picture(picture)
+
+    def _apply_id3(self, audio, tags: TagSet) -> None:
+        """Write a TagSet to an ID3v2-tagged file (MP3 or AIFF)."""
+        audio.tags["TIT2"] = TIT2(encoding=3, text=tags.title)
+        audio.tags["TPE1"] = TPE1(encoding=3, text=tags.artist)
+        audio.tags["TALB"] = TALB(encoding=3, text=tags.album)
+        audio.tags["TRCK"] = TRCK(encoding=3, text=tags.track_number)
+        if tags.year:
+            audio.tags["TDRC"] = TDRC(encoding=3, text=str(tags.year))
+        if tags.label:
+            audio.tags["TPUB"] = TPUB(encoding=3, text=tags.label)
+        audio.tags["TXXX:DISCOGS_RELEASE_ID"] = TXXX(
+            encoding=3, desc="DISCOGS_RELEASE_ID", text=str(tags.release_id),
+        )
+        audio.tags["COMM"] = COMM(
+            encoding=3, lang="eng", desc="", text=tags.comment,
+        )
+        if tags.cover_data:
+            audio.tags["APIC"] = APIC(
+                encoding=3, mime="image/jpeg", type=3, desc="Cover", data=tags.cover_data,
+            )
+
     def _tag_flac(
         self,
         file_path: Path,
@@ -388,142 +472,56 @@ class MetadataHandler:
         release: DiscogsRelease,
         cover_data: Optional[bytes] = None,
     ) -> bool:
-        """Write Vorbis comment tags to FLAC file."""
+        tags = self._build_tag_set(track, release, cover_data)
+        if tags is None:
+            return False
         try:
             audio = FLAC(file_path)
             audio.clear_pictures()
             audio.delete()
-
-            discogs_track = self._find_discogs_track(track, release)
-            if not discogs_track:
-                return False
-
-            audio["ARTIST"] = release.artist
-            audio["ALBUM"] = release.title
-            audio["TITLE"] = discogs_track.title
-            audio["TRACKNUMBER"] = track.vinyl_number
-            audio["DATE"] = str(release.year) if release.year else ""
-
-            if release.label:
-                audio["LABEL"] = release.label
-
-            audio["DISCOGS_RELEASE_ID"] = str(release.id)
-            audio["COMMENT"] = "Digitized from vinyl"
-
-            if cover_data:
-                picture = Picture()
-                picture.type = 3  # Front cover
-                picture.mime = "image/jpeg"
-                picture.desc = "Cover"
-                picture.data = cover_data
-                audio.add_picture(picture)
-
+            self._apply_vorbis(audio, tags)
             audio.save()
             return True
-
         except Exception as e:
             print(f"Failed to tag {file_path}: {e}")
             return False
 
-    def _tag_mp3(
+    def _tag_id3_format(
         self,
         file_path: Path,
         track: "Track",
         release: DiscogsRelease,
-        cover_data: Optional[bytes] = None,
+        cover_data: Optional[bytes],
+        open_audio,
     ) -> bool:
-        """Write ID3v2 tags to MP3 file."""
-        try:
-            audio = MP3(file_path, ID3=ID3)
+        """Shared ID3 tagger used by ``_tag_mp3`` and ``_tag_aiff``.
 
+        ``open_audio(path)`` returns the Mutagen wrapper instance; the
+        only difference between the MP3 and AIFF paths.
+        """
+        tags = self._build_tag_set(track, release, cover_data)
+        if tags is None:
+            return False
+        try:
+            audio = open_audio(file_path)
             try:
                 audio.add_tags()
             except Exception:
                 pass  # Tags already exist
-
-            discogs_track = self._find_discogs_track(track, release)
-            if not discogs_track:
-                return False
-
-            audio.tags["TIT2"] = TIT2(encoding=3, text=discogs_track.title)
-            audio.tags["TPE1"] = TPE1(encoding=3, text=release.artist)
-            audio.tags["TALB"] = TALB(encoding=3, text=release.title)
-            audio.tags["TRCK"] = TRCK(encoding=3, text=track.vinyl_number)
-
-            if release.year:
-                audio.tags["TDRC"] = TDRC(encoding=3, text=str(release.year))
-
-            if release.label:
-                audio.tags["TPUB"] = TPUB(encoding=3, text=release.label)
-
-            audio.tags["TXXX:DISCOGS_RELEASE_ID"] = TXXX(
-                encoding=3, desc="DISCOGS_RELEASE_ID", text=str(release.id)
-            )
-            audio.tags["COMM"] = COMM(
-                encoding=3, lang="eng", desc="", text="Digitized from vinyl"
-            )
-
-            if cover_data:
-                audio.tags["APIC"] = APIC(
-                    encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_data,
-                )
-
+            self._apply_id3(audio, tags)
             audio.save()
             return True
-
         except Exception as e:
             print(f"Failed to tag {file_path}: {e}")
             return False
 
-    def _tag_aiff(
-        self,
-        file_path: Path,
-        track: "Track",
-        release: DiscogsRelease,
-        cover_data: Optional[bytes] = None,
-    ) -> bool:
-        """Write ID3v2 tags to AIFF file (AIFF uses ID3 tags like MP3)."""
-        try:
-            audio = AIFF(file_path)
+    def _tag_mp3(self, file_path, track, release, cover_data=None):
+        return self._tag_id3_format(
+            file_path, track, release, cover_data, lambda p: MP3(p, ID3=ID3),
+        )
 
-            try:
-                audio.add_tags()
-            except Exception:
-                pass  # Tags already exist
-
-            discogs_track = self._find_discogs_track(track, release)
-            if not discogs_track:
-                return False
-
-            audio.tags["TIT2"] = TIT2(encoding=3, text=discogs_track.title)
-            audio.tags["TPE1"] = TPE1(encoding=3, text=release.artist)
-            audio.tags["TALB"] = TALB(encoding=3, text=release.title)
-            audio.tags["TRCK"] = TRCK(encoding=3, text=track.vinyl_number)
-
-            if release.year:
-                audio.tags["TDRC"] = TDRC(encoding=3, text=str(release.year))
-
-            if release.label:
-                audio.tags["TPUB"] = TPUB(encoding=3, text=release.label)
-
-            audio.tags["TXXX:DISCOGS_RELEASE_ID"] = TXXX(
-                encoding=3, desc="DISCOGS_RELEASE_ID", text=str(release.id)
-            )
-            audio.tags["COMM"] = COMM(
-                encoding=3, lang="eng", desc="", text="Digitized from vinyl"
-            )
-
-            if cover_data:
-                audio.tags["APIC"] = APIC(
-                    encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_data,
-                )
-
-            audio.save()
-            return True
-
-        except Exception as e:
-            print(f"Failed to tag {file_path}: {e}")
-            return False
+    def _tag_aiff(self, file_path, track, release, cover_data=None):
+        return self._tag_id3_format(file_path, track, release, cover_data, AIFF)
 
     def sanitize_filename(self, name: str) -> str:
         """Sanitize string for use in filename."""

@@ -8,10 +8,10 @@ Supports WAV and AIFF input, with FLAC, MP3, and AIFF output.
 
 import os
 import uuid
-import copy
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional
+from subprocess import CalledProcessError
+from typing import List, Optional
 import asyncio
 import json
 from datetime import datetime, timedelta
@@ -32,8 +32,16 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config
-from audio_processor import AudioProcessor, Track, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS
+from audio_processor import AudioProcessor, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg
 from metadata_handler import MetadataHandler
+from backend.sessions import (
+    OutputSpec,
+    ProgressEvent,
+    Session,
+    SessionState,
+    SessionStore,
+    pipeline,
+)
 
 # Initialize FastAPI app
 app = FastAPI(title="VinylFlow API", version="1.0.0")
@@ -49,10 +57,76 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global state management
-uploaded_files: Dict[str, dict] = {}
-processing_jobs: Dict[str, dict] = {}
+# Global state management.  ``session_store`` owns every Session;
+# ``websocket_connections`` is the list of subscribers for progress
+# broadcasts (orthogonal to per-Session state).  See CONTEXT.md for the
+# Session lifecycle.
+session_store = SessionStore()
 websocket_connections: List[WebSocket] = []
+
+
+def _session_status(session: Session) -> str:
+    """Map Session.state → the UI status string the frontend expects.
+
+    The frontend distinguishes "uploaded" (READY without boundaries) from
+    "analyzed" (READY with boundaries detected) — derive that here so
+    the wire format stays unchanged after the dict-level state went away.
+    """
+    if session.state == SessionState.PROCESSING:
+        return "processing"
+    if session.state == SessionState.COMPLETE:
+        return "completed"
+    if session.state == SessionState.FAILED:
+        return "error"
+    return "analyzed" if session.boundaries else "uploaded"
+
+
+def _serialize_uploaded(session: Session) -> dict:
+    """Wire shape returned by /api/queue and friends — matches the dict
+    shape the frontend used to consume from ``uploaded_files``."""
+    return {
+        "id": session.id,
+        "filename": session.source_filename,
+        "path": str(session.source_audio),
+        "size": session.source_size,
+        "duration": session.source_duration,
+        "status": _session_status(session),
+    }
+
+
+def _serialize_job(session: Session) -> dict:
+    """Wire shape returned by /api/process and /api/process/{job_id}.
+
+    job_id == session_id post-Step-4: there's no separate per-run
+    identifier any more.  Re-running a Session overwrites ``last_run``;
+    callers polling the same id keep seeing fresh status.
+    """
+    run = session.last_run
+    state = session.state
+    if state == SessionState.PROCESSING:
+        status = "processing"
+    elif state == SessionState.COMPLETE:
+        status = "complete"
+    elif state == SessionState.FAILED:
+        status = "error"
+    else:
+        status = "processing"  # only reached if /api/process called but pipeline not yet started
+
+    out: dict = {
+        "job_id": session.id,
+        "file_id": session.id,
+        "status": status,
+        "progress": run.final_fraction if run is not None else 0.0,
+        "message": (run.message if run is not None else "Starting processing..."),
+    }
+    if run is not None:
+        if run.output_folder is not None:
+            out["output_path"] = str(run.output_folder)
+        if run.output_files:
+            out["tracks"] = list(run.output_files)
+        if run.error:
+            out["error"] = run.error
+    return out
 
 # Initialize config and handlers
 config = Config()
@@ -80,62 +154,49 @@ def get_session_path(file_id: str, filename: str = None) -> Path:
 
 
 def cleanup_session(file_id: str) -> bool:
-    """Clean up session folder and remove from uploaded_files dict."""
+    """Drop a Session and its on-disk source folder."""
+    session_dir = get_session_path(file_id)
     try:
-        session_dir = get_session_path(file_id)
         if session_dir.exists():
             shutil.rmtree(session_dir)
-        if file_id in uploaded_files:
-            del uploaded_files[file_id]
+        session_store.remove(file_id)
         return True
     except FileNotFoundError:
-        if file_id in uploaded_files:
-            del uploaded_files[file_id]
+        session_store.remove(file_id)
         return True
     except Exception as e:
         print(f"Cleanup failed for {file_id}: {e}")
-        if file_id in uploaded_files:
-            del uploaded_files[file_id]
+        session_store.remove(file_id)
         return False
 
 
 # Background cleanup task
 async def cleanup_old_files():
-    """Delete uploaded session folders older than configured TTL."""
+    """Delete Sessions and source folders older than the configured TTL."""
     while True:
         try:
-            cutoff = datetime.now() - timedelta(hours=config.temp_ttl_hours)
+            ttl = config.temp_ttl_hours
+            cutoff = datetime.now() - timedelta(hours=ttl)
 
-            expired_ids = []
+            # Drop stale Sessions (the store skips PROCESSING entries),
+            # then remove their on-disk source folders.
+            for sid in session_store.reap_stale(ttl_hours=ttl):
+                session_dir = get_session_path(sid)
+                if session_dir.exists():
+                    shutil.rmtree(session_dir, ignore_errors=True)
+
+            # Drop orphan dirs — folders with no live Session that have
+            # been on disk past the TTL (e.g. crash-recovery leftovers).
             for entry in UPLOAD_DIR.iterdir():
                 if not entry.is_dir():
                     continue
-
-                file_id = entry.name
+                if session_store.get(entry.name) is not None:
+                    continue
                 try:
-                    file_info = uploaded_files.get(file_id, {})
-                    if file_info.get("status") == "processing":
-                        continue
-
-                    source_files = list(entry.glob("source.*"))
-                    mtime_path = source_files[0] if source_files else entry
-
-                    if datetime.fromtimestamp(mtime_path.stat().st_mtime) < cutoff:
-                        expired_ids.append(file_id)
+                    if datetime.fromtimestamp(entry.stat().st_mtime) < cutoff:
+                        shutil.rmtree(entry, ignore_errors=True)
                 except (FileNotFoundError, OSError):
-                    expired_ids.append(file_id)
-
-            for file_id in expired_ids:
-                cleanup_session(file_id)
-
-            # Clean up in-memory state for missing session folders
-            missing_ids = []
-            for file_id in uploaded_files:
-                if not get_session_path(file_id).exists():
-                    missing_ids.append(file_id)
-
-            for file_id in missing_ids:
-                del uploaded_files[file_id]
+                    pass
 
         except Exception as e:
             print(f"Cleanup error: {e}")
@@ -263,16 +324,13 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
     Convert audio to MP3 in background for faster waveform loading.
     Uses lower bitrate (128k) for quick conversion and smaller file size.
     """
-    import subprocess
-
     mp3_path = get_session_path(file_id, "full.mp3")
 
     if not mp3_path.exists():
         try:
             await asyncio.to_thread(
-                subprocess.run,
+                run_ffmpeg,
                 [
-                    "ffmpeg",
                     "-y",
                     "-i",
                     str(file_path),
@@ -329,15 +387,13 @@ async def upload_files(files: List[UploadFile] = File(...)):
         except Exception:
             duration = 0
 
-        # Store file info
-        uploaded_files[file_id] = {
-            "id": file_id,
-            "filename": file.filename,
-            "path": str(file_path),
-            "size": file_size,
-            "duration": duration,
-            "status": "uploaded",
-        }
+        session_store.create(
+            session_id=file_id,
+            source_audio=file_path,
+            source_filename=file.filename,
+            source_duration=float(duration),
+            source_size=file_size,
+        )
 
         # Start MP3 conversion in background (for fast waveform loading)
         asyncio.create_task(preconvert_to_mp3(file_id, file_path))
@@ -355,11 +411,11 @@ async def analyze_file(request: AnalyzeRequest):
     Analyze audio file for silence detection and track boundaries.
     Returns detected track segments.
     """
-    file_info = uploaded_files.get(request.file_id)
-    if not file_info:
+    session = session_store.get(request.file_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    file_path = Path(file_info["path"])
+    file_path = session.source_audio
 
     await broadcast_message(
         {
@@ -379,8 +435,7 @@ async def analyze_file(request: AnalyzeRequest):
             for i, track in enumerate(tracks)
         ]
 
-        file_info["detected_tracks"] = tracks
-        file_info["status"] = "analyzed"
+        session.set_boundaries(tracks)
 
         await broadcast_message(
             {
@@ -411,11 +466,11 @@ async def analyze_duration_based(request: DurationBasedAnalyzeRequest):
     Create track boundaries based on Discogs track durations.
     Fallback method when silence detection fails.
     """
-    file_info = uploaded_files.get(request.file_id)
-    if not file_info:
+    session = session_store.get(request.file_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    file_path = Path(file_info["path"])
+    file_path = session.source_audio
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Audio file not found")
 
@@ -433,10 +488,7 @@ async def analyze_duration_based(request: DurationBasedAnalyzeRequest):
             verbose=True
         )
 
-        # Store tracks for this file
-        file_info["detected_tracks"] = tracks
-        file_info["detection_method"] = "duration_based"
-        file_info["status"] = "analyzed"
+        session.set_boundaries(tracks)
 
         # Broadcast via WebSocket
         await broadcast_message({
@@ -472,18 +524,17 @@ async def preview_track(
     Supports custom start/end times for manual adjustments.
     """
     from fastapi.responses import FileResponse
-    import subprocess
 
-    file_info = uploaded_files.get(file_id)
-    if not file_info:
+    session = session_store.get(file_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    detected_tracks = file_info.get("detected_tracks", [])
-    if track_number < 1 or track_number > len(detected_tracks):
+    boundaries = session.boundaries
+    if track_number < 1 or track_number > len(boundaries):
         raise HTTPException(status_code=404, detail="Track not found")
 
-    track = detected_tracks[track_number - 1]
-    file_path = Path(file_info["path"])
+    track = boundaries[track_number - 1]
+    file_path = session.source_audio
 
     track_start = start if start is not None else track.start
     track_end = end if end is not None else track.end
@@ -497,9 +548,8 @@ async def preview_track(
     try:
         duration = min(30, track_duration)
 
-        subprocess.run(
+        run_ffmpeg(
             [
-                "ffmpeg",
                 "-y",
                 "-i",
                 str(file_path),
@@ -530,14 +580,13 @@ async def preview_track(
 @app.get("/api/waveform-peaks/{file_id}")
 async def get_waveform_peaks(file_id: str):
     """Generate waveform peaks for visualization."""
-    import subprocess
     import numpy as np
 
-    file_info = uploaded_files.get(file_id)
-    if not file_info:
+    session = session_store.get(file_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    file_path = Path(file_info["path"])
+    file_path = session.source_audio
 
     peaks_cache_path = get_session_path(file_id, "peaks.json")
     if peaks_cache_path.exists():
@@ -546,22 +595,25 @@ async def get_waveform_peaks(file_id: str):
             return JSONResponse(content=cached_data)
 
     try:
-        cmd = [
-            "ffmpeg",
-            "-i",
-            str(file_path),
-            "-f",
-            "s16le",
-            "-acodec",
-            "pcm_s16le",
-            "-ac",
-            "1",
-            "-ar",
-            "8000",
-            "-",
-        ]
-
-        result = subprocess.run(cmd, capture_output=True, check=True)
+        # text=False — we want raw PCM bytes on stdout, not utf-8 text.
+        result = run_ffmpeg(
+            [
+                "-i",
+                str(file_path),
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "-ac",
+                "1",
+                "-ar",
+                "8000",
+                "-",
+            ],
+            text=False,
+            capture_output=True,
+            check=True,
+        )
         audio_data = np.frombuffer(result.stdout, dtype=np.int16)
 
         target_peaks = 3000
@@ -581,7 +633,7 @@ async def get_waveform_peaks(file_id: str):
         response_data = {
             "peaks": peaks,
             "length": len(peaks),
-            "duration": file_info.get("duration", 0),
+            "duration": session.source_duration,
         }
 
         with open(peaks_cache_path, "w") as f:
@@ -589,8 +641,9 @@ async def get_waveform_peaks(file_id: str):
 
         return JSONResponse(content=response_data)
 
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"FFmpeg failed: {e.stderr.decode()}")
+    except CalledProcessError as e:
+        stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        raise HTTPException(status_code=500, detail=f"FFmpeg failed: {stderr}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Peaks generation failed: {str(e)}")
 
@@ -600,11 +653,11 @@ async def get_audio_file(file_id: str):
     """Serve audio file for waveform playback."""
     from fastapi.responses import FileResponse
 
-    file_info = uploaded_files.get(file_id)
-    if not file_info:
+    session = session_store.get(file_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    file_path = Path(file_info["path"])
+    file_path = session.source_audio
 
     # Determine media type from extension
     ext = file_path.suffix.lower()
@@ -659,8 +712,8 @@ async def process_file(request: ProcessRequest):
     Process file: split tracks, tag with metadata, and save.
     Supports FLAC, MP3, and AIFF output formats.
     """
-    file_info = uploaded_files.get(request.file_id)
-    if not file_info:
+    session = session_store.get(request.file_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="File not found")
 
     # Validate output format
@@ -671,210 +724,157 @@ async def process_file(request: ProcessRequest):
             f"Choose from: {', '.join(OUTPUT_FORMATS.keys())}",
         )
 
-    job_id = str(uuid.uuid4())
-    processing_jobs[job_id] = {
-        "job_id": job_id,
-        "file_id": request.file_id,
-        "status": "processing",
-        "progress": 0.1,
-        "message": "Starting processing...",
-    }
-    uploaded_files[request.file_id]["status"] = "processing"
+    if request.track_boundaries:
+        session.set_boundaries(list(request.track_boundaries))
+    session.set_mappings({m.detected: m.discogs for m in request.track_mapping})
 
-    asyncio.create_task(process_file_background(request, job_id))
+    # job_id == session_id post-Step-4: re-runs reuse the same id, since
+    # ``last_run`` is overwritten on each invocation and there's no
+    # per-run tracking surface to preserve across restarts.
+    asyncio.create_task(process_file_background(request))
 
-    return {"job_id": job_id, "status": "processing"}
+    return {"job_id": session.id, "status": "processing"}
 
 
-async def process_file_background(request: ProcessRequest, job_id: str):
-    """Background task to process the file."""
-    file_info = uploaded_files[request.file_id]
-    file_path = Path(file_info["path"])
-    output_format = request.output_format
+# Map Pipeline phase names → existing UI step names so the frontend
+# WebSocket consumer keeps working unchanged during the strangler.
+_PHASE_TO_UI_STEP = {
+    "fetching_release": "fetching",
+    "downloading_cover": "cover_art",
+    "extracting": "splitting",
+}
+
+
+async def process_file_background(request: ProcessRequest):
+    """Run the Pipeline for ``request`` and bridge progress events to the
+    WebSocket broadcaster.
+
+    Per-run state lives on ``session.last_run`` (mutated by the Pipeline);
+    this coroutine just translates Pipeline ProgressEvents into the
+    WebSocket message shapes the frontend expects, plus updates
+    ``last_run.message`` / ``last_run.final_fraction`` so polling
+    /api/process/{job_id} returns fresh status.
+
+    The Pipeline itself is sync; we run it in a worker thread so ffmpeg
+    no longer blocks the FastAPI event loop.  Progress callbacks are
+    re-marshalled onto the main loop via ``run_coroutine_threadsafe``.
+    """
+    file_id = request.file_id
+    session = session_store.get(file_id)
+    if session is None:
+        return
+
+    spec = OutputSpec(
+        output_format=request.output_format,
+        output_dir=Path(config.default_output_dir),
+        flac_compression=config.default_flac_compression,
+        restoration_level=request.restoration_level,
+        hum_freq=request.hum_freq,
+    )
+
+    loop = asyncio.get_running_loop()
+
+    async def emit(event: ProgressEvent) -> None:
+        run = session.last_run
+        if event.phase == "complete":
+            await broadcast_message({
+                "type": "complete",
+                "file_id": file_id,
+                "output_path": str(run.output_folder) if run and run.output_folder else "",
+                "tracks": list(run.output_files) if run else [],
+            })
+        elif event.phase == "error":
+            await broadcast_message({
+                "type": "error",
+                "file_id": file_id,
+                "message": event.message,
+                "recoverable": False,
+            })
+        else:
+            if run is not None:
+                run.final_fraction = event.fraction
+                run.message = event.message
+            await broadcast_message({
+                "type": "progress",
+                "file_id": file_id,
+                "step": _PHASE_TO_UI_STEP.get(event.phase, event.phase),
+                "progress": event.fraction,
+                "message": event.message,
+            })
+
+    def on_progress(event: ProgressEvent) -> None:
+        # pipeline.run executes in a worker thread; bounce each event back
+        # to the main loop so broadcasts stay single-threaded.
+        asyncio.run_coroutine_threadsafe(emit(event), loop)
 
     try:
-        await broadcast_message(
-            {
-                "type": "progress",
-                "file_id": request.file_id,
-                "step": "fetching",
-                "progress": 0.2,
-                "message": "Fetching release metadata from Discogs...",
-            }
+        await asyncio.to_thread(
+            pipeline.run,
+            session,
+            spec,
+            request.release_id,
+            audio_processor,
+            metadata_handler,
+            on_progress,
         )
-        processing_jobs[job_id]["progress"] = 0.2
-        processing_jobs[job_id]["message"] = "Fetching release metadata from Discogs..."
-
-        release = metadata_handler.get_release_by_id(request.release_id)
-        if not release:
-            raise Exception("Failed to fetch Discogs release")
-
-        # Build detected tracks from boundaries sent by frontend
-        # This handles manually split tracks correctly
-        if request.track_boundaries:
-            # Create fresh Track objects from boundaries
-            detected_tracks = []
-            for boundary in request.track_boundaries:
-                detected_tracks.append(
-                    Track(
-                        number=boundary.number,
-                        start=boundary.start,
-                        end=boundary.end,
-                    )
-                )
-        else:
-            # Fall back to original detected tracks if no boundaries provided
-            detected_tracks = copy.deepcopy(file_info.get("detected_tracks", []))
-
-        # Apply vinyl numbers from track mapping
-        for mapping in request.track_mapping:
-            # Find track by number (not by index, since numbers may not be sequential)
-            track = next((t for t in detected_tracks if t.number == mapping.detected), None)
-            if track:
-                track.vinyl_number = mapping.discogs
-
-        # Create output directory
-        output_base = Path(config.default_output_dir)
-        album_folder = output_base / metadata_handler.create_album_folder_name(release)
-        album_folder.mkdir(parents=True, exist_ok=True)
-
-        # Download cover art
-        await broadcast_message(
-            {
-                "type": "progress",
-                "file_id": request.file_id,
-                "step": "cover_art",
-                "progress": 0.3,
-                "message": "Downloading cover art...",
-            }
-        )
-        processing_jobs[job_id]["progress"] = 0.3
-        processing_jobs[job_id]["message"] = "Downloading cover art..."
-
-        cover_data = None
-        if release.cover_url:
-            cover_path = album_folder / "folder.jpg"
-            if metadata_handler.download_cover_art(release.cover_url, cover_path):
-                cover_data = metadata_handler.prepare_cover_for_embedding(cover_path)
-
-        # Split and tag tracks
-        format_config = OUTPUT_FORMATS[output_format]
-        ext = format_config["extension"]
-        output_files = []
-
-        for i, track in enumerate(detected_tracks):
-            progress = 0.4 + (i / len(detected_tracks)) * 0.5
-
-            await broadcast_message(
-                {
-                    "type": "progress",
-                    "file_id": request.file_id,
-                    "step": "splitting",
-                    "progress": progress,
-                    "message": f"Processing track {i+1}/{len(detected_tracks)}...",
-                }
-            )
-            processing_jobs[job_id]["progress"] = progress
-            processing_jobs[job_id]["message"] = f"Processing track {i+1}/{len(detected_tracks)}..."
-
-            temp_output = album_folder / f"temp_{track.vinyl_number}{ext}"
-
-            # Split and convert to chosen format
-            audio_processor.extract_track(
-                file_path, track, temp_output, output_format,
-                restoration_level=request.restoration_level,
-                hum_freq=request.hum_freq,
-            )
-
-            # Tag with metadata
-            metadata_handler.tag_file(temp_output, track, release, cover_data, output_format)
-
-            # Rename to final filename
-            final_filename = metadata_handler.create_track_filename(track, release, output_format)
-            final_path = album_folder / final_filename
-            temp_output.rename(final_path)
-
-            output_files.append(final_filename)
-
-        await broadcast_message(
-            {
-                "type": "complete",
-                "file_id": request.file_id,
-                "output_path": str(album_folder),
-                "tracks": output_files,
-            }
-        )
-
-        processing_jobs[job_id]["status"] = "complete"
-        processing_jobs[job_id]["progress"] = 1.0
-        processing_jobs[job_id]["message"] = "Complete!"
-        processing_jobs[job_id]["output_path"] = str(album_folder)
-        processing_jobs[job_id]["tracks"] = output_files
-        if request.file_id in uploaded_files:
-            uploaded_files[request.file_id]["status"] = "completed"
-
-    except Exception as e:
-        await broadcast_message(
-            {
-                "type": "error",
-                "file_id": request.file_id,
-                "message": f"Processing failed: {str(e)}",
-                "recoverable": False,
-            }
-        )
-        processing_jobs[job_id]["status"] = "error"
-        processing_jobs[job_id]["error"] = str(e)
-        processing_jobs[job_id]["message"] = f"Processing failed: {str(e)}"
-        if request.file_id in uploaded_files:
-            uploaded_files[request.file_id]["status"] = "error"
+    except Exception:
+        # The Pipeline already emitted an "error" event and marked the
+        # Session FAILED.  Nothing to clean up here.
+        pass
 
 
 @app.get("/api/process/{job_id}")
 async def get_process_job(job_id: str):
-    """Get processing job status and progress for polling fallbacks."""
-    job = processing_jobs.get(job_id)
-    if not job:
+    """Get processing job status and progress for polling fallbacks.
+
+    ``job_id`` is the Session id post-Step-4: every process invocation
+    against the same Session updates ``last_run`` in place.
+    """
+    session = session_store.get(job_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    # _serialize_job copes with last_run==None — returns a "processing"
+    # stub for the brief window between /api/process kickoff and the
+    # Pipeline calling mark_processing.
+    return _serialize_job(session)
 
 
 @app.get("/api/queue")
 async def get_queue():
-    """Get current processing queue status."""
-    return {"uploaded": list(uploaded_files.values()), "processing": list(processing_jobs.values())}
+    """Get current Session queue + per-Session run status."""
+    sessions = session_store.list()
+    return {
+        "uploaded": [_serialize_uploaded(s) for s in sessions],
+        "processing": [_serialize_job(s) for s in sessions if s.last_run is not None],
+    }
 
 
 @app.delete("/api/queue/{file_id}")
 async def remove_from_queue(file_id: str):
-    """Remove file from queue."""
-    if file_id in uploaded_files:
-        await asyncio.to_thread(cleanup_session, file_id)
-        return {"status": "removed"}
-    raise HTTPException(status_code=404, detail="File not found")
+    """Remove a Session and its on-disk source folder."""
+    if session_store.get(file_id) is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    await asyncio.to_thread(cleanup_session, file_id)
+    return {"status": "removed"}
 
 
 @app.delete("/api/temp/clear-all")
 async def clear_all_temp():
-    """Clear all temp session folders and uploaded file state."""
+    """Drop every Session and source folder except those mid-Pipeline."""
     cleared = 0
-
-    processing_ids = {
-        file_id
-        for file_id, info in uploaded_files.items()
-        if info.get("status") == "processing"
-    }
+    keep_ids = {s.id for s in session_store.list() if s.state == SessionState.PROCESSING}
 
     for entry in list(UPLOAD_DIR.iterdir()):
-        if entry.is_dir() and entry.name not in processing_ids:
+        if entry.is_dir() and entry.name not in keep_ids:
             try:
                 shutil.rmtree(entry)
                 cleared += 1
             except Exception as e:
                 print(f"Failed to remove {entry.name}: {e}")
 
-    for file_id in list(uploaded_files.keys()):
-        if file_id not in processing_ids:
-            del uploaded_files[file_id]
+    for session in session_store.list():
+        if session.id not in keep_ids:
+            session_store.remove(session.id)
 
     return {"status": "cleared", "sessions_removed": cleared}
 
