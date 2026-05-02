@@ -18,10 +18,6 @@ from pathlib import Path
 
 import uvicorn
 
-# Must be set before `import webview` so pywebview picks up the correct backend.
-if sys.platform.startswith("win"):
-    os.environ.setdefault("PYWEBVIEW_GUI", "edgechromium")
-
 # Point requests/urllib3 at the bundled certifi CA bundle when running from a
 # PyInstaller one-folder bundle.  The runtime hook already does this, but we
 # repeat it here in case the launcher is run outside a bundle (development).
@@ -127,6 +123,37 @@ def _check_webview2_available() -> bool:
     return False
 
 
+def _check_qt_available() -> bool:
+    """Return True if a Qt + QtWebEngine binding usable by pywebview is importable."""
+    try:
+        import PySide6.QtCore  # noqa: F401
+        import PySide6.QtWebEngineWidgets  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_gui_backend() -> tuple[str | None, bool]:
+    """
+    Return (gui_name, has_backend).
+
+    gui_name is the value to pass to ``webview.start(gui=...)``; None means
+    let pywebview use its platform default (cocoa on macOS, gtk on Linux).
+    has_backend is False when no native webview is available — the caller
+    should fall back to opening the URL in the default browser.
+
+    Windows preference order: WebView2 (edgechromium) → Qt (PySide6).
+    """
+    if not sys.platform.startswith("win"):
+        return None, True
+
+    if _check_webview2_available():
+        return "edgechromium", True
+    if _check_qt_available():
+        return "qt", True
+    return None, False
+
+
 def configure_desktop_environment() -> tuple[str, int]:
     if sys.platform.startswith("win"):
         app_data_dir = _windows_app_support_dir()
@@ -212,16 +239,22 @@ def main() -> None:
         _open_browser_fallback(app_url, server_thread)
         return
 
-    # --- Windows: check WebView2 Runtime before attempting to start ---
-    if sys.platform.startswith("win") and not _check_webview2_available():
+    gui, has_backend = _resolve_gui_backend()
+    if not has_backend:
         print(
-            "[VinylFlow] Microsoft WebView2 Runtime not found.\n"
-            "  Download: https://developer.microsoft.com/microsoft-edge/webview2/\n"
+            "[VinylFlow] No native webview backend found.\n"
+            "  Install Microsoft WebView2 Runtime: https://developer.microsoft.com/microsoft-edge/webview2/\n"
             "  Opening in default browser as fallback.",
             file=sys.stderr,
         )
         _open_browser_fallback(app_url, server_thread)
         return
+
+    if gui == "qt":
+        print(
+            "[VinylFlow] WebView2 Runtime not found — using bundled Qt backend.",
+            file=sys.stderr,
+        )
 
     # --- Try native desktop window ---
     try:
@@ -233,8 +266,8 @@ def main() -> None:
             min_size=(900, 700),
             js_api=DesktopApi(),
         )
-        if sys.platform.startswith("win"):
-            webview.start(gui="edgechromium")
+        if gui:
+            webview.start(gui=gui)
         else:
             webview.start()
     except Exception as exc:

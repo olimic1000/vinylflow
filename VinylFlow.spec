@@ -4,7 +4,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 
 WINDOWS_ICON = 'assets/VinylFlow.ico' if sys.platform.startswith('win') else None
@@ -22,6 +22,7 @@ DATA_FILES = [
     ('backend/static', 'backend/static'),
     *certifi_datas,
 ]
+BINARIES = [(FFMPEG_PATH, 'ffmpeg_bin')]
 
 HIDDEN_IMPORTS = [
     'backend.api',
@@ -34,9 +35,12 @@ HIDDEN_IMPORTS = [
 EXCLUDES = []
 
 if sys.platform.startswith('win'):
-    # edgechromium (WebView2) backend needs clr / pythonnet at runtime.
+    # Primary backend: edgechromium (WebView2) needs clr / pythonnet at runtime.
+    # Fallback backend: qt (pywebview's PySide6 + QtWebEngine), used on Windows
+    # installs without the WebView2 Runtime.
     HIDDEN_IMPORTS += [
         'webview.platforms.edgechromium',
+        'webview.platforms.qt',
         'clr',
         'clr_loader',
     ]
@@ -49,6 +53,19 @@ if sys.platform.startswith('win'):
         pythonnet_datas = []
     DATA_FILES += pythonnet_datas
 
+    # Bundle PySide6 + QtWebEngine so the qt fallback works without the user
+    # having to install Qt separately. collect_all gathers Qt's plugins,
+    # translations, .pak resources, QtWebEngineProcess.exe, etc.
+    try:
+        qt_datas, qt_binaries, qt_imports = collect_all('PySide6')
+        DATA_FILES += qt_datas
+        BINARIES += qt_binaries
+        HIDDEN_IMPORTS += qt_imports
+    except Exception:
+        # PySide6 not installed in the build environment — qt fallback will
+        # be unavailable in the resulting bundle, but the build still succeeds.
+        pass
+
 elif sys.platform == 'darwin':
     HIDDEN_IMPORTS.append('webview.platforms.cocoa')
 
@@ -56,7 +73,7 @@ elif sys.platform == 'darwin':
 a = Analysis(
     ['desktop_launcher.py'],
     pathex=[],
-    binaries=[(FFMPEG_PATH, 'ffmpeg_bin')],
+    binaries=BINARIES,
     datas=DATA_FILES,
     hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
@@ -92,9 +109,25 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    # UPX can corrupt .NET assemblies and third-party executables.
-    # ffmpeg.exe in particular can be mis-flagged by AV when UPX-packed.
-    upx_exclude=['Python.Runtime.dll', 'ffmpeg.exe'],
+    # UPX can corrupt .NET assemblies, Qt/Chromium binaries, and other
+    # third-party executables. ffmpeg.exe in particular can be mis-flagged by
+    # AV when UPX-packed; QtWebEngineProcess.exe + Qt6*.dll fail to load when
+    # compressed.
+    upx_exclude=[
+        'Python.Runtime.dll',
+        'ffmpeg.exe',
+        'QtWebEngineProcess.exe',
+        'Qt6Core.dll',
+        'Qt6Gui.dll',
+        'Qt6Widgets.dll',
+        'Qt6Network.dll',
+        'Qt6Qml.dll',
+        'Qt6WebEngineCore.dll',
+        'Qt6WebEngineWidgets.dll',
+        'Qt6WebChannel.dll',
+        'Qt6Positioning.dll',
+        'Qt6PrintSupport.dll',
+    ],
     name='VinylFlow',
 )
 app = BUNDLE(
