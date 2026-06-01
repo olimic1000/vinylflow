@@ -29,6 +29,14 @@ The WAV/AIFF recording the user uploads. Contains some-or-all of a Release's tra
 
 A timestamp range `(start, end)` within a Source Audio file, identifying one Track. Produced by silence detection (primary) or fallback duration-based analysis. Editable by the user via the waveform UI before processing.
 
+The calculation that turns audio analysis into Track Boundaries lives in `track_boundaries.py` and is independent of ffmpeg: the silence path computes boundaries from the **Gaps** between audio, the fallback path computes them from Discogs durations. Both are pure functions over plain data — the ffmpeg subprocess sits outside them, in `AudioProcessor.detect_silence`.
+
+## Gap
+
+A `(start, end)` span of detected silence within a Source Audio file, produced by parsing ffmpeg's `silencedetect` output. The final Gap may be **open** (`end = None`) when the side fades to silence at EOF — an open Gap yields no trailing Track.
+
+Gaps are the intermediate representation between silence parsing and Track Boundary calculation: a Track occupies the audio *between* consecutive Gaps. Lead-in/lead-out silence and any resulting span shorter than the minimum track length yield no Track Boundary. Defined in `track_boundaries.py`.
+
 ## Position
 
 The vinyl track designation: `A1`, `A2`, `B1`, etc. Comes from the Release. A Track Boundary becomes a tagged output file only after the user assigns it a Position (the Position Mapping step).

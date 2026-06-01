@@ -12,6 +12,17 @@ import subprocess
 from pathlib import Path
 from typing import List, Tuple, Optional
 
+# Track Boundary calculation lives in its own pure module.  Re-export Track
+# so existing callers that do ``from audio_processor import Track`` keep
+# working — the dependency arrow stays one-way (audio_processor ->
+# track_boundaries, no import cycle).
+from track_boundaries import (
+    Track,
+    boundaries_from_durations,
+    boundaries_from_gaps,
+    parse_silence_log,
+)
+
 
 def _ffmpeg() -> str:
     """Return the ffmpeg executable to use.
@@ -66,39 +77,6 @@ OUTPUT_FORMATS = {
         "label": "AIFF (Lossless)",
     },
 }
-
-
-class Track:
-    """Represents a detected or split track."""
-
-    def __init__(self, number: int, start: float, end: float):
-        """
-        Initialize track.
-
-        Args:
-            number: Track number (1-indexed)
-            start: Start time in seconds
-            end: End time in seconds
-        """
-        self.number = number
-        self.start = start
-        self.end = end
-        self.duration = end - start
-        self.vinyl_number = None  # Will be set during mapping (e.g., "A1", "B2")
-        self.title = None  # Will be set from Discogs
-
-    def format_time(self, seconds: float) -> str:
-        """Format seconds as MM:SS."""
-        minutes = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{minutes}:{secs:02d}"
-
-    def __repr__(self):
-        duration_str = self.format_time(self.duration)
-        time_range = f"{self.format_time(self.start)} - {self.format_time(self.end)}"
-        vinyl = f" [{self.vinyl_number}]" if self.vinyl_number else ""
-        title = f" - {self.title}" if self.title else ""
-        return f"Track {self.number}{vinyl}: {time_range} ({duration_str}){title}"
 
 
 class AudioProcessor:
@@ -184,27 +162,16 @@ class AudioProcessor:
         try:
             result = run_ffmpeg(args, capture_output=True, timeout=300)
 
-            # Parse silence periods from stderr
-            silence_starts = []
-            silence_ends = []
+            # Parse silence into Gaps, then derive Track Boundaries — both pure
+            # steps live in track_boundaries; this method only owns the ffmpeg
+            # subprocess and the total-duration probe.
+            gaps = parse_silence_log(result.stderr)
 
-            for line in result.stderr.split("\n"):
-                if "silence_start" in line:
-                    match = re.search(r"silence_start: ([\d.]+)", line)
-                    if match:
-                        silence_starts.append(float(match.group(1)))
-                elif "silence_end" in line:
-                    match = re.search(r"silence_end: ([\d.]+)", line)
-                    if match:
-                        silence_ends.append(float(match.group(1)))
-
-            # Get total duration
             total_duration = self.get_audio_duration(file_path)
             if total_duration is None:
                 raise ValueError("Could not determine audio duration")
 
-            # Calculate track boundaries
-            tracks = self._calculate_tracks(silence_starts, silence_ends, total_duration)
+            tracks = boundaries_from_gaps(gaps, total_duration, self.min_track_length)
 
             if verbose:
                 print(f"\nDetected {len(tracks)} tracks:")
@@ -218,50 +185,6 @@ class AudioProcessor:
         except Exception as e:
             raise RuntimeError(f"Silence detection failed: {e}")
 
-    def _calculate_tracks(
-        self, silence_starts: List[float], silence_ends: List[float], total_duration: float
-    ) -> List[Track]:
-        """
-        Calculate track boundaries from silence periods.
-
-        Args:
-            silence_starts: List of silence start times
-            silence_ends: List of silence end times
-            total_duration: Total audio duration
-
-        Returns:
-            List of Track objects
-        """
-        tracks = []
-        track_num = 1
-
-        # Handle case with no silence detected
-        if not silence_starts:
-            if total_duration >= self.min_track_length:
-                tracks.append(Track(track_num, 0, total_duration))
-            return tracks
-
-        # First track
-        if silence_starts[0] >= self.min_track_length:
-            tracks.append(Track(track_num, 0, silence_starts[0]))
-            track_num += 1
-
-        # Middle tracks
-        for i in range(len(silence_ends) - 1):
-            start = silence_ends[i]
-            end = silence_starts[i + 1] if i + 1 < len(silence_starts) else total_duration
-            if end - start >= self.min_track_length:
-                tracks.append(Track(track_num, start, end))
-                track_num += 1
-
-        # Last track
-        if silence_ends:
-            last_start = silence_ends[-1]
-            if total_duration - last_start >= self.min_track_length:
-                tracks.append(Track(track_num, last_start, total_duration))
-
-        return tracks
-
     def split_tracks_duration_based(
         self, file_path: Path, durations: List[float], verbose=False
     ) -> List[Track]:
@@ -269,23 +192,14 @@ class AudioProcessor:
         Create track splits based on provided durations (for when silence detection fails).
 
         Args:
-            file_path: Path to audio file
+            file_path: Path to audio file (unused; kept for caller compatibility)
             durations: List of track durations from Discogs
             verbose: Print detailed output
 
         Returns:
             List of Track objects
         """
-        tracks = []
-        current_time = 0.0
-        track_num = 1
-
-        for duration in durations:
-            start = current_time
-            end = current_time + duration
-            tracks.append(Track(track_num, start, end))
-            current_time = end
-            track_num += 1
+        tracks = boundaries_from_durations(durations)
 
         if verbose:
             print(f"\nCreated {len(tracks)} duration-based tracks:")
