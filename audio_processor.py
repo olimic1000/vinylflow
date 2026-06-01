@@ -317,48 +317,6 @@ class AudioProcessor:
             print(f"Error extracting track: {e}")
             return False
 
-    def extract_all_tracks(
-        self,
-        input_file: Path,
-        tracks: List[Track],
-        output_dir: Path,
-        output_format: str = "flac",
-        verbose: bool = False,
-    ) -> List[Path]:
-        """
-        Extract all tracks from input file.
-
-        Args:
-            input_file: Source audio file
-            tracks: List of Track objects
-            output_dir: Directory for output files
-            output_format: One of 'flac', 'mp3', 'aiff'
-            verbose: Print detailed output
-
-        Returns:
-            List of successfully created output file paths
-        """
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_files = []
-
-        format_config = OUTPUT_FORMATS.get(output_format, OUTPUT_FORMATS["flac"])
-        ext = format_config["extension"]
-
-        for track in tracks:
-            # Use vinyl number if available, otherwise track number
-            track_id = track.vinyl_number if track.vinyl_number else f"{track.number:02d}"
-            output_file = output_dir / f"temp_{track_id}{ext}"
-
-            if self.extract_track(input_file, track, output_file, output_format, verbose):
-                output_files.append(output_file)
-            else:
-                print(f"Failed to extract track {track.number}")
-                # Clean up partial output
-                if output_file.exists():
-                    output_file.unlink()
-
-        return output_files
-
     def validate_audio_file(self, file_path: Path) -> Tuple[bool, str]:
         """
         Validate that file is a valid audio file.
