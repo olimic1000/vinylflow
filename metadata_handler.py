@@ -390,11 +390,6 @@ class MetadataHandler:
             print(f"Unsupported output format for tagging: {output_format}")
             return False
 
-    # Keep the old name as an alias for backwards compatibility (used by CLI)
-    def tag_flac_file(self, file_path, track, release, cover_data=None):
-        """Backwards-compatible alias for tag_file with FLAC format."""
-        return self._tag_flac(file_path, track, release, cover_data)
-
     def _find_discogs_track(self, track, release):
         """Find the Discogs track matching a vinyl_number."""
         for dt in release.tracks:
