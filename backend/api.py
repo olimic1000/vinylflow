@@ -671,7 +671,7 @@ async def get_audio_file(file_id: str):
     return FileResponse(
         file_path,
         media_type=media_type,
-        headers={"Content-Disposition": f"inline; filename={file_info['filename']}"},
+        headers={"Content-Disposition": f"inline; filename={session.source_filename}"},
     )
 
 

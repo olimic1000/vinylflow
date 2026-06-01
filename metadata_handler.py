@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional
 from io import BytesIO
 
 import requests
@@ -390,11 +390,6 @@ class MetadataHandler:
             print(f"Unsupported output format for tagging: {output_format}")
             return False
 
-    # Keep the old name as an alias for backwards compatibility (used by CLI)
-    def tag_flac_file(self, file_path, track, release, cover_data=None):
-        """Backwards-compatible alias for tag_file with FLAC format."""
-        return self._tag_flac(file_path, track, release, cover_data)
-
     def _find_discogs_track(self, track, release):
         """Find the Discogs track matching a vinyl_number."""
         for dt in release.tracks:
@@ -561,57 +556,3 @@ class MetadataHandler:
 
         title = self.sanitize_filename(discogs_track.title)
         return f"{track.vinyl_number}-{title}{ext}"
-
-
-def compare_track_durations(
-    detected_tracks: List["Track"], discogs_tracks: List[DiscogsTrack], tolerance=5.0
-) -> Dict:
-    """
-    Compare detected tracks with Discogs tracks to validate matching.
-
-    Args:
-        detected_tracks: List of detected Track objects
-        discogs_tracks: List of DiscogsTrack objects from Discogs
-        tolerance: Tolerance in seconds for duration mismatch
-
-    Returns:
-        Dict with 'matches', 'warnings', and 'errors' keys
-    """
-    result = {
-        "matches": [],
-        "warnings": [],
-        "errors": [],
-        "total_detected": len(detected_tracks),
-        "total_discogs": len(discogs_tracks),
-    }
-
-    if len(detected_tracks) != len(discogs_tracks):
-        result["errors"].append(
-            f"Track count mismatch: detected {len(detected_tracks)}, "
-            f"Discogs has {len(discogs_tracks)}"
-        )
-
-    for i, det_track in enumerate(detected_tracks):
-        if i < len(discogs_tracks):
-            discogs_duration = discogs_tracks[i].duration_seconds
-
-            if discogs_duration:
-                diff = abs(det_track.duration - discogs_duration)
-
-                if diff < tolerance:
-                    result["matches"].append(
-                        f"Track {i+1}: Duration match ({det_track.duration:.0f}s)"
-                    )
-                elif diff > tolerance * 2:
-                    if i + 1 < len(discogs_tracks):
-                        next_duration = discogs_tracks[i + 1].duration_seconds
-                        if next_duration:
-                            combined = discogs_duration + next_duration
-                            if abs(det_track.duration - combined) < tolerance:
-                                result["warnings"].append(
-                                    f"Track {i+1} ({det_track.duration:.0f}s) appears to contain "
-                                    f"2 tracks: {discogs_tracks[i].position} + {discogs_tracks[i+1].position} "
-                                    f"(combined: {combined:.0f}s)"
-                                )
-
-    return result
