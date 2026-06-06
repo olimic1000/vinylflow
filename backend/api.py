@@ -254,6 +254,7 @@ class ConfigUpdate(BaseModel):
     min_silence_duration: Optional[float] = None
     min_track_length: Optional[float] = None
     output_dir: Optional[str] = None
+    track_numbering: Optional[str] = None
 
 
 class DiscogsSetupRequest(BaseModel):
@@ -770,6 +771,7 @@ async def process_file_background(request: ProcessRequest):
         flac_compression=config.default_flac_compression,
         restoration_level=request.restoration_level,
         hum_freq=request.hum_freq,
+        track_numbering=config.track_numbering,
     )
 
     loop = asyncio.get_running_loop()
@@ -888,6 +890,7 @@ async def get_config():
         "min_track_length": audio_processor.min_track_length,
         "flac_compression": audio_processor.flac_compression,
         "output_dir": config.default_output_dir,
+        "track_numbering": config.track_numbering,
     }
 
 
@@ -904,6 +907,10 @@ async def update_config(updates: ConfigUpdate):
         output_dir = str(Path(updates.output_dir).expanduser())
         config.default_output_dir = output_dir
         config.save_output_dir(output_dir)
+    if updates.track_numbering is not None:
+        if updates.track_numbering in ("sequential_disc_per_lp", "vinyl"):
+            config.track_numbering = updates.track_numbering
+            config.save_track_numbering(updates.track_numbering)
 
     return await get_config()
 
