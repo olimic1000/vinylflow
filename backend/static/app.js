@@ -802,7 +802,7 @@ function vinylApp() {
                 this.waveform = WaveSurfer.create({
                     container: '#waveform',
                     waveColor: '#93c5fd',
-                    progressColor: '#3b82f6',
+                    progressColor: '#93c5fd',
                     cursorColor: '#1e40af',
                     height: 'auto',
                     normalize: true,
@@ -846,26 +846,10 @@ function vinylApp() {
 
                         e.preventDefault();
 
-                        const waveformWrapper = container.querySelector('[part="wrapper"]') || container.querySelector('div');
-
-                        if (!waveformWrapper) {
-                            console.error('Could not find waveform wrapper');
-                            return;
-                        }
-
-                        const rect = waveformWrapper.getBoundingClientRect();
-                        const x = e.clientX - rect.left + waveformWrapper.scrollLeft;
-                        const totalWidth = waveformWrapper.scrollWidth;
-                        const relativeX = Math.max(0, Math.min(1, x / totalWidth));
+                        const wrapper = this.waveform.getWrapper();
+                        const rect = wrapper.getBoundingClientRect();
+                        const relativeX = Math.max(0, Math.min((e.clientX - rect.left) / rect.width, 1));
                         const time = relativeX * this.waveform.getDuration();
-
-                        console.log('Split calculation:', {
-                            clickX: e.clientX - rect.left,
-                            scrollLeft: waveformWrapper.scrollLeft,
-                            scrollWidth: totalWidth,
-                            relativeX,
-                            time
-                        });
 
                         this.contextMenu.x = e.clientX;
                         this.contextMenu.y = e.clientY;
@@ -907,17 +891,10 @@ function vinylApp() {
                             const trackNumber = parseInt(region.id.replace('track-', ''), 10);
                             if (!isNaN(trackNumber)) {
                                 const track = this.detectedTracks.find(t => t.number === trackNumber);
-                                const container = document.getElementById('waveform');
-                                const waveformWrapper = container?.querySelector('[part="wrapper"]') || container?.querySelector('div');
-                                let time = 0;
-
-                                if (waveformWrapper) {
-                                    const rect = waveformWrapper.getBoundingClientRect();
-                                    const x = e.clientX - rect.left + waveformWrapper.scrollLeft;
-                                    const totalWidth = waveformWrapper.scrollWidth;
-                                    const relativeX = Math.max(0, Math.min(1, x / totalWidth));
-                                    time = relativeX * this.waveform.getDuration();
-                                }
+                                const wrapper = this.waveform.getWrapper();
+                                const rect = wrapper.getBoundingClientRect();
+                                const relativeX = Math.max(0, Math.min((e.clientX - rect.left) / rect.width, 1));
+                                const time = relativeX * this.waveform.getDuration();
 
                                 this.regionContextMenu.x = e.clientX;
                                 this.regionContextMenu.y = e.clientY;
