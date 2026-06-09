@@ -77,6 +77,7 @@ function vinylApp() {
         config: {
             silence_threshold: -40,
             min_silence_duration: 1.5,
+            track_numbering: 'vinyl',
             min_track_length: 30,
             flac_compression: 8,
             output_dir: ''
@@ -910,7 +911,12 @@ function vinylApp() {
                     }
                 });
 
-                await this.waveform.load(`/api/audio/${this.currentFileId}`, [peaksData.peaks]);
+                // Pass duration only when valid — WaveSurfer can then render
+                // immediately from pre-computed peaks without fetching the audio.
+                // If duration is missing or 0 (probe failed at upload), omit it
+                // so WaveSurfer falls back to fetching the file (slower but safe).
+                const knownDuration = peaksData.duration > 0 ? peaksData.duration : undefined;
+                await this.waveform.load(`/api/audio/${this.currentFileId}`, [peaksData.peaks], knownDuration);
 
             } catch (error) {
                 console.error('Waveform initialization failed:', error);
@@ -1003,13 +1009,9 @@ function vinylApp() {
                 ignored: false
             };
 
-            // Renumber tracks after the split
-            for (let i = trackIndex + 1; i < this.detectedTracks.length; i++) {
-                this.detectedTracks[i].number++;
-            }
-
-            // Replace the split track with two new tracks
+            // Replace the split track with two new tracks, then renumber cleanly
             this.detectedTracks.splice(trackIndex, 1, newTrack1, newTrack2);
+            this.renumberTracks();
 
             // Refresh waveform regions
             this.addTrackRegions();
@@ -1038,13 +1040,9 @@ function vinylApp() {
                 return;
             }
 
-            // Remove the track
+            // Remove the track, then renumber cleanly
             this.detectedTracks.splice(trackIndex, 1);
-
-            // Renumber subsequent tracks
-            for (let i = trackIndex; i < this.detectedTracks.length; i++) {
-                this.detectedTracks[i].number = i + 1;
-            }
+            this.renumberTracks();
 
             // Refresh waveform regions
             this.addTrackRegions();
@@ -1095,13 +1093,9 @@ function vinylApp() {
                 ignored: false
             };
 
-            // Renumber tracks after the split
-            for (let i = trackIndex + 1; i < this.detectedTracks.length; i++) {
-                this.detectedTracks[i].number++;
-            }
-
-            // Replace the split track with two new tracks
+            // Replace the split track with two new tracks, then renumber cleanly
             this.detectedTracks.splice(trackIndex, 1, newTrack1, newTrack2);
+            this.renumberTracks();
 
             // Refresh waveform regions
             this.addTrackRegions();
@@ -1127,13 +1121,9 @@ function vinylApp() {
                 return;
             }
 
-            // Remove the track
+            // Remove the track, then renumber cleanly
             this.detectedTracks.splice(trackIndex, 1);
-
-            // Renumber subsequent tracks
-            for (let i = trackIndex; i < this.detectedTracks.length; i++) {
-                this.detectedTracks[i].number = i + 1;
-            }
+            this.renumberTracks();
 
             // Refresh waveform regions
             this.addTrackRegions();
@@ -1143,6 +1133,10 @@ function vinylApp() {
                 this.selectedRelease = null;
                 this.trackCountMismatch = false;
             }
+        },
+
+        renumberTracks() {
+            this.detectedTracks.forEach((track, i) => { track.number = i + 1; });
         },
 
         /**

@@ -17,6 +17,7 @@ class OutputSpec:
     flac_compression: int = 5
     restoration_level: int = 0
     hum_freq: int = 50
+    track_numbering: str = "vinyl"
 
 
 @dataclass(frozen=True)

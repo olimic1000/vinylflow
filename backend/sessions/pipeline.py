@@ -113,7 +113,8 @@ def run(
             )
 
             metadata_handler.tag_file(
-                temp_output, track, release, cover_data, spec.output_format
+                temp_output, track, release, cover_data, spec.output_format,
+                track_numbering=spec.track_numbering,
             )
 
             final_filename = metadata_handler.create_track_filename(

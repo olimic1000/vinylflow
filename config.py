@@ -10,6 +10,13 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Change this constant to flip the default for new installs.
+# "sequential_disc_per_lp" — A+B share disc 1, C+D share disc 2, etc. TRACKNUMBER
+#                            is sequential across both sides of each LP. Single LP
+#                            appears as 1 disc. VINYLPOSITION custom tag preserved.
+# "vinyl"                  — TRACKNUMBER="A1" (legacy behaviour, no DISCNUMBER written).
+DEFAULT_TRACK_NUMBERING = "vinyl"
+
 
 class Config:
     """Configuration manager for VinylFlow."""
@@ -75,6 +82,12 @@ class Config:
         # Temp file management
         self.temp_ttl_hours = float(os.getenv("TEMP_TTL_HOURS", "2"))
 
+        # Track numbering scheme
+        self.track_numbering = (
+            json_settings.get("TRACK_NUMBERING")
+            or os.getenv("TRACK_NUMBERING", DEFAULT_TRACK_NUMBERING)
+        )
+
     def validate(self):
         """
         Validate configuration.
@@ -136,35 +149,18 @@ class Config:
                 print(f"Warning: Failed to load settings.json: {e}")
         return {}
 
-    def save_token(self, token: str, user_agent: str = None) -> bool:
-        """
-        Save Discogs token to settings.json.
-
-        Args:
-            token: Discogs API token
-            user_agent: Optional user agent string
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
+    def _write_settings(self, updates: dict) -> bool:
+        """Merge *updates* into settings.json and write to disk."""
         settings_path = Path(self._settings_path)
         settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Load existing settings or create new
         settings = {}
         if settings_path.exists():
             try:
                 with open(settings_path, 'r') as f:
                     settings = json.load(f)
-            except:
+            except Exception:
                 pass
-
-        # Update token
-        settings['DISCOGS_USER_TOKEN'] = token
-        if user_agent:
-            settings['DISCOGS_USER_AGENT'] = user_agent
-
-        # Write to file
+        settings.update(updates)
         try:
             with open(settings_path, 'w') as f:
                 json.dump(settings, f, indent=2)
@@ -172,37 +168,18 @@ class Config:
         except Exception as e:
             print(f"Failed to save settings: {e}")
             return False
+
+    def save_token(self, token: str, user_agent: str = None) -> bool:
+        updates = {'DISCOGS_USER_TOKEN': token}
+        if user_agent:
+            updates['DISCOGS_USER_AGENT'] = user_agent
+        return self._write_settings(updates)
 
     def save_output_dir(self, output_dir: str) -> bool:
-        """
-        Save default output directory to settings.json.
+        return self._write_settings({'DEFAULT_OUTPUT_DIR': output_dir})
 
-        Args:
-            output_dir: Output directory path
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        settings_path = Path(self._settings_path)
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-        settings = {}
-        if settings_path.exists():
-            try:
-                with open(settings_path, 'r') as f:
-                    settings = json.load(f)
-            except:
-                pass
-
-        settings['DEFAULT_OUTPUT_DIR'] = output_dir
-
-        try:
-            with open(settings_path, 'w') as f:
-                json.dump(settings, f, indent=2)
-            return True
-        except Exception as e:
-            print(f"Failed to save settings: {e}")
-            return False
+    def save_track_numbering(self, scheme: str) -> bool:
+        return self._write_settings({'TRACK_NUMBERING': scheme})
 
     def reload(self):
         """
