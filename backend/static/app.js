@@ -368,11 +368,20 @@ function vinylApp() {
 
             const skipped = dropped.length - files.length;
             if (skipped > 0) {
-                this.uploadNotice = `${skipped} file(s) skipped — only WAV and AIFF are supported`;
-                setTimeout(() => { this.uploadNotice = ''; }, 6000);
+                this.showUploadNotice(`${skipped} file(s) skipped — only WAV and AIFF are supported`);
             }
 
             await this.uploadFiles(files);
+        },
+
+        /**
+         * Show a transient notice under the upload zone (replaces any
+         * previous one so an old timer can't clear a newer message early)
+         */
+        showUploadNotice(message) {
+            this.uploadNotice = message;
+            if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer);
+            this._uploadNoticeTimer = setTimeout(() => { this.uploadNotice = ''; }, 6000);
         },
 
         /**
@@ -425,8 +434,7 @@ function vinylApp() {
                             });
 
                             if (data.files.length === 0) {
-                                this.uploadNotice = 'No files were uploaded — only WAV and AIFF are supported';
-                                setTimeout(() => { this.uploadNotice = ''; }, 6000);
+                                this.showUploadNotice('No files were uploaded — only WAV and AIFF are supported');
                             }
 
                             if (!this.currentFile && data.files.length > 0) {
@@ -857,6 +865,14 @@ function vinylApp() {
                     normalize: true,
                     barWidth: 2,
                     barGap: 1
+                });
+
+                // With MediaElement + provided peaks, load() resolves without
+                // fetching the audio — a later fetch failure only surfaces as
+                // an 'error' event, which must clear the loading spinner.
+                this.waveform.on('error', (err) => {
+                    console.error('Waveform error:', err);
+                    this.waveformLoading = false;
                 });
 
                 this.waveformRegions = this.waveform.registerPlugin(WaveSurfer.Regions.create());

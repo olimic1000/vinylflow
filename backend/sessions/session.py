@@ -48,6 +48,11 @@ class Session:
     mappings: dict[int, str] = field(default_factory=dict)
     last_run: Optional[ProcessingRun] = None
 
+    # Pinned on the first /api/audio request so the same URL never switches
+    # from WAV to MP3 bytes mid-playback (the preconverted MP3 may finish
+    # while a client is already streaming the source).
+    playback_audio: Optional[Path] = None
+
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
 

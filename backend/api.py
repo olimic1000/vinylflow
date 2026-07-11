@@ -326,6 +326,10 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
     Uses lower bitrate (128k) for quick conversion and smaller file size.
     """
     mp3_path = get_session_path(file_id, "full.mp3")
+    # Encode to a temp name and atomically rename on success: ffmpeg fills
+    # the output over tens of seconds, and /api/audio must never see (and
+    # then permanently cache) a half-written file.
+    part_path = get_session_path(file_id, f"full.{uuid.uuid4().hex[:8]}.part")
 
     if not mp3_path.exists():
         try:
@@ -339,15 +343,19 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
                     "libmp3lame",
                     "-b:a",
                     "128k",
-                    str(mp3_path),
+                    "-f",
+                    "mp3",
+                    str(part_path),
                 ],
                 check=True,
                 capture_output=True,
             )
+            os.replace(part_path, mp3_path)
             print(
                 f"Pre-converted {file_id} to MP3 ({mp3_path.stat().st_size // 1024 // 1024}MB)"
             )
         except Exception as e:
+            part_path.unlink(missing_ok=True)
             print(f"MP3 conversion failed for {file_id}: {e}")
 
 
@@ -546,6 +554,9 @@ async def preview_track(
     track_end = end if end is not None else track.end
     track_duration = track_end - track_start
 
+    if track_duration <= 0 or track_start < 0:
+        raise HTTPException(status_code=400, detail="Invalid preview range: end must be after start")
+
     import hashlib
 
     params_hash = hashlib.md5(f"{track_start}_{track_end}".encode()).hexdigest()[:8]
@@ -555,28 +566,38 @@ async def preview_track(
         duration = min(30, track_duration)
 
         # Serve from cache when this exact start/end was already rendered.
+        # Encode to a unique temp name + atomic rename so concurrent or
+        # interrupted encodes never leave a truncated file in the cache.
         if not preview_path.exists():
+            part_path = preview_path.with_name(f"{preview_path.stem}.{uuid.uuid4().hex[:8]}.part")
             # -ss before -i: input-side seek, so encoding a preview near the
             # end of a side no longer decodes everything before it.
-            await asyncio.to_thread(
-                run_ffmpeg,
-                [
-                    "-y",
-                    "-ss",
-                    str(track_start),
-                    "-t",
-                    str(duration),
-                    "-i",
-                    str(file_path),
-                    "-acodec",
-                    "libmp3lame",
-                    "-b:a",
-                    "128k",
-                    str(preview_path),
-                ],
-                check=True,
-                capture_output=True,
-            )
+            try:
+                await asyncio.to_thread(
+                    run_ffmpeg,
+                    [
+                        "-y",
+                        "-ss",
+                        str(track_start),
+                        "-t",
+                        str(duration),
+                        "-i",
+                        str(file_path),
+                        "-acodec",
+                        "libmp3lame",
+                        "-b:a",
+                        "128k",
+                        "-f",
+                        "mp3",
+                        str(part_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                os.replace(part_path, preview_path)
+            except Exception:
+                part_path.unlink(missing_ok=True)
+                raise
 
         return FileResponse(
             preview_path,
@@ -674,14 +695,17 @@ async def get_audio_file(file_id: str):
         raise HTTPException(status_code=404, detail="File not found")
 
     # Prefer the background-preconverted MP3: ~25MB streamed instead of a
-    # multi-hundred-MB WAV. Fall back to the source while conversion runs.
-    mp3_path = get_session_path(file_id, "full.mp3")
-    if mp3_path.exists():
-        file_path = mp3_path
+    # multi-hundred-MB WAV. The choice is pinned on the first request so the
+    # same URL never flips from WAV to MP3 bytes mid-playback.
+    if session.playback_audio is None or not session.playback_audio.exists():
+        mp3_path = get_session_path(file_id, "full.mp3")
+        session.playback_audio = mp3_path if mp3_path.exists() else session.source_audio
+    file_path = session.playback_audio
+
+    if file_path.suffix.lower() == ".mp3":
         media_type = "audio/mpeg"
         filename = Path(session.source_filename).stem + ".mp3"
     else:
-        file_path = session.source_audio
         ext = file_path.suffix.lower()
         media_types = {
             ".wav": "audio/wav",

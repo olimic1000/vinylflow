@@ -91,7 +91,7 @@ def parse_silence_log(stderr: str) -> List[Gap]:
         if "silence_start" in line:
             match = _SILENCE_START_RE.search(line)
             if match:
-                pending_start = float(match.group(1))
+                pending_start = max(0.0, float(match.group(1)))
         elif "silence_end" in line:
             match = _SILENCE_END_RE.search(line)
             if match and pending_start is not None:
