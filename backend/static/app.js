@@ -7,12 +7,17 @@ function vinylApp() {
     return {
         // WebSocket connection
         ws: null,
+        wsPingTimer: null,
 
         // UI State
         dragging: false,
         showSettings: false,
         uploadProgress: 0,
+        uploadFinalizing: false,
+        uploadNotice: '',
+        analyzing: false,
         searchLoading: false,
+        searchNotice: '',
         trackCountMismatch: false,
         autoRetryAttempts: 0,
         maxAutoRetries: 3,
@@ -145,6 +150,13 @@ function vinylApp() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws`;
 
+            // Clear any previous ping timer — reconnects must not stack
+            // one leaked interval per attempt.
+            if (this.wsPingTimer) {
+                clearInterval(this.wsPingTimer);
+                this.wsPingTimer = null;
+            }
+
             this.ws = new WebSocket(wsUrl);
 
             this.ws.onopen = () => {
@@ -171,7 +183,7 @@ function vinylApp() {
                 setTimeout(() => this.connectWebSocket(), 3000);
             };
 
-            setInterval(() => {
+            this.wsPingTimer = setInterval(() => {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.ws.send('ping');
                 }
@@ -351,9 +363,15 @@ function vinylApp() {
          */
         async handleDrop(event) {
             this.dragging = false;
-            const files = Array.from(event.dataTransfer.files).filter(f =>
-                this.isSupportedFile(f.name)
-            );
+            const dropped = Array.from(event.dataTransfer.files);
+            const files = dropped.filter(f => this.isSupportedFile(f.name));
+
+            const skipped = dropped.length - files.length;
+            if (skipped > 0) {
+                this.uploadNotice = `${skipped} file(s) skipped — only WAV and AIFF are supported`;
+                setTimeout(() => { this.uploadNotice = ''; }, 6000);
+            }
+
             await this.uploadFiles(files);
         },
 
@@ -378,16 +396,22 @@ function vinylApp() {
             return new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
 
-                // Track upload progress
+                // Track upload progress. When the last byte is sent the
+                // server still has to write the file and probe its duration,
+                // so switch to a "finalizing" state instead of hiding the bar.
                 xhr.upload.addEventListener('progress', (e) => {
                     if (e.lengthComputable) {
                         this.uploadProgress = (e.loaded / e.total) * 100;
+                        if (e.loaded >= e.total) {
+                            this.uploadFinalizing = true;
+                        }
                     }
                 });
 
                 // Handle completion
                 xhr.addEventListener('load', () => {
                     this.uploadProgress = 100;
+                    this.uploadFinalizing = false;
 
                     if (xhr.status >= 200 && xhr.status < 300) {
                         try {
@@ -400,13 +424,17 @@ function vinylApp() {
                                 });
                             });
 
+                            if (data.files.length === 0) {
+                                this.uploadNotice = 'No files were uploaded — only WAV and AIFF are supported';
+                                setTimeout(() => { this.uploadNotice = ''; }, 6000);
+                            }
+
                             if (!this.currentFile && data.files.length > 0) {
                                 this.selectFile(data.files[0].id);
                             }
 
-                            alert(`Uploaded ${data.files.length} file(s)`);
-
-                            // Reset progress after a short delay
+                            // Reset progress after a short delay — the queue
+                            // panel is the success feedback, no alert needed.
                             setTimeout(() => {
                                 this.uploadProgress = 0;
                             }, 1000);
@@ -431,6 +459,7 @@ function vinylApp() {
                     console.error('Upload failed');
                     alert('Upload failed');
                     this.uploadProgress = 0;
+                    this.uploadFinalizing = false;
                     reject(new Error('Upload failed'));
                 });
 
@@ -449,6 +478,8 @@ function vinylApp() {
             this.detectedTracks = [];
             this.searchResults = [];
             this.selectedRelease = null;
+            this.trackCountMismatch = false;
+            this.searchNotice = '';
             this.successMessage = '';
             this.processingProgress = 0;
             this.processingMessage = '';
@@ -484,8 +515,9 @@ function vinylApp() {
          * Analyze file for silence detection
          */
         async analyzeFile() {
-            if (!this.currentFileId) return;
+            if (!this.currentFileId || this.analyzing) return;
 
+            this.analyzing = true;
             this.processingMessage = 'Analyzing...';
 
             try {
@@ -521,6 +553,8 @@ function vinylApp() {
                 console.error('Analysis failed:', error);
                 alert('Analysis failed: ' + error.message);
                 this.processingMessage = '';
+            } finally {
+                this.analyzing = false;
             }
         },
 
@@ -554,13 +588,15 @@ function vinylApp() {
          * Search Discogs for releases
          */
         async searchDiscogs() {
+            if (this.searchLoading) return;
             if (!this.searchQuery.trim()) {
-                alert('Please enter a search query');
+                this.searchNotice = 'Please enter a search query';
                 return;
             }
 
             this.searchLoading = true;
             this.searchResults = [];
+            this.searchNotice = '';
 
             try {
                 const response = await fetch('/api/search', {
@@ -573,20 +609,21 @@ function vinylApp() {
                 });
                 const data = await response.json();
 
+                // Surface the server's error (missing token, network down)
+                // instead of corrupting searchResults with undefined.
+                if (!response.ok || !Array.isArray(data.results)) {
+                    throw new Error(data.detail || 'Search failed');
+                }
+
                 this.searchResults = data.results;
 
-                // Debug: Check URI field
-                console.log('Search results:', this.searchResults.map(r => ({
-                    title: r.title,
-                    uri: r.uri
-                })));
-
                 if (this.searchResults.length === 0) {
-                    alert('No results found. Try a different search query.');
+                    this.searchNotice = 'No results found. Try a different search query.';
                 }
             } catch (error) {
                 console.error('Search failed:', error);
-                alert('Search failed: ' + error.message);
+                this.searchResults = [];
+                this.searchNotice = 'Search failed: ' + error.message;
             } finally {
                 this.searchLoading = false;
             }
@@ -796,22 +833,6 @@ function vinylApp() {
             this.waveformLoading = true;
 
             try {
-                if (this.waveform) {
-                    this.waveform.destroy();
-                }
-
-                this.waveform = WaveSurfer.create({
-                    container: '#waveform',
-                    waveColor: '#93c5fd',
-                    progressColor: '#93c5fd',
-                    cursorColor: '#1e40af',
-                    height: 'auto',
-                    normalize: true,
-                    backend: 'WebAudio',
-                    barWidth: 2,
-                    barGap: 1
-                });
-
                 if (typeof WaveSurfer === 'undefined') {
                     throw new Error('WaveSurfer library not loaded. Please refresh the page.');
                 }
@@ -819,6 +840,24 @@ function vinylApp() {
                 if (typeof WaveSurfer.Regions === 'undefined') {
                     throw new Error('WaveSurfer Regions plugin not loaded. Please refresh the page.');
                 }
+
+                if (this.waveform) {
+                    this.waveform.destroy();
+                }
+
+                // Default MediaElement backend: renders instantly from the
+                // precomputed peaks and streams audio on demand, instead of
+                // WebAudio which downloads + decodes the whole file up front.
+                this.waveform = WaveSurfer.create({
+                    container: '#waveform',
+                    waveColor: '#93c5fd',
+                    progressColor: '#93c5fd',
+                    cursorColor: '#1e40af',
+                    height: 'auto',
+                    normalize: true,
+                    barWidth: 2,
+                    barGap: 1
+                });
 
                 this.waveformRegions = this.waveform.registerPlugin(WaveSurfer.Regions.create());
 
