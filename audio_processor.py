@@ -56,6 +56,19 @@ def run_ffmpeg(args: list, *, text: bool = True, **kwargs) -> subprocess.Complet
         kwargs.setdefault("errors", "replace")
     return subprocess.run(cmd, **kwargs)
 
+
+_DURATION_HEADER_RE = re.compile(r"Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})")
+
+
+def parse_duration_header(ffmpeg_stderr: str) -> Optional[float]:
+    """Parse total duration in seconds from ffmpeg's stderr header, or None."""
+    match = _DURATION_HEADER_RE.search(ffmpeg_stderr or "")
+    if not match:
+        return None
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
 # Supported input formats
 SUPPORTED_INPUT_EXTENSIONS = {".wav", ".aiff", ".aif"}
 
@@ -114,19 +127,15 @@ class AudioProcessor:
             Duration in seconds, or None if error
         """
         try:
+            # No output target: ffmpeg prints the Duration header and exits
+            # nonzero without decoding the file, so this is O(1) in file size.
             result = run_ffmpeg(
-                ["-i", str(file_path), "-f", "null", "-"],
+                ["-i", str(file_path)],
                 capture_output=True,
                 timeout=30,
             )
 
-            # Parse duration from ffmpeg output
-            match = re.search(r"Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})", result.stderr)
-            if match:
-                hours, minutes, seconds = match.groups()
-                return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-
-            return None
+            return parse_duration_header(result.stderr)
         except Exception as e:
             print(f"Error getting audio duration: {e}")
             return None
@@ -167,7 +176,11 @@ class AudioProcessor:
             # subprocess and the total-duration probe.
             gaps = parse_silence_log(result.stderr)
 
-            total_duration = self.get_audio_duration(file_path)
+            # The silencedetect run's stderr already contains the Duration
+            # header, so avoid a second ffmpeg probe of the same file.
+            total_duration = parse_duration_header(result.stderr)
+            if total_duration is None:
+                total_duration = self.get_audio_duration(file_path)
             if total_duration is None:
                 raise ValueError("Could not determine audio duration")
 
@@ -256,13 +269,16 @@ class AudioProcessor:
 
         format_config = OUTPUT_FORMATS.get(output_format, OUTPUT_FORMATS["flac"])
 
+        # -ss/-t before -i: input-side seek, so ffmpeg jumps straight to the
+        # track instead of decoding everything before it. Sample-accurate for
+        # PCM WAV/AIFF input.
         args = [
-            "-i",
-            str(input_file),
             "-ss",
             str(track.start),
             "-t",
             str(track.duration),
+            "-i",
+            str(input_file),
         ]
 
         # Add codec-specific args

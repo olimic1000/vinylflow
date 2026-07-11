@@ -69,8 +69,10 @@ class Track:
         return f"Track {self.number}{vinyl}: {time_range} ({duration_str}){title}"
 
 
-_SILENCE_START_RE = re.compile(r"silence_start: ([\d.]+)")
-_SILENCE_END_RE = re.compile(r"silence_end: ([\d.]+)")
+# ffmpeg can report a slightly negative silence_start for leading silence
+# (e.g. "silence_start: -0.00768"), so accept a sign and clamp to 0 below.
+_SILENCE_START_RE = re.compile(r"silence_start: (-?[\d.]+)")
+_SILENCE_END_RE = re.compile(r"silence_end: (-?[\d.]+)")
 
 
 def parse_silence_log(stderr: str) -> List[Gap]:

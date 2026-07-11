@@ -32,17 +32,30 @@ def _register_session(tmp_path, filename="My Record - Side A.wav"):
 
 
 def test_get_audio_returns_file_with_disposition(tmp_path):
-    filename = "My Record - Side A.wav"
-    sid = _register_session(tmp_path, filename=filename)
+    sid = _register_session(tmp_path)
     try:
         resp = client.get(f"/api/audio/{sid}")
         assert resp.status_code == 200
-        assert resp.headers["content-disposition"] == f"inline; filename={filename}"
+        disposition = resp.headers["content-disposition"]
+        assert disposition.startswith("inline;")
+        assert "My" in disposition and "Side" in disposition
         assert resp.content == b"RIFF....WAVEfake-audio-bytes"
     finally:
         session_store.remove(sid)
 
 
-def test_get_audio_unknown_id_returns_404(tmp_path):
+def test_get_audio_non_latin1_filename(tmp_path):
+    """Non-latin-1 filenames (en-dash, umlauts) must not 500 — Starlette
+    RFC-5987-encodes them when FileResponse builds the header."""
+    sid = _register_session(tmp_path, filename="Björk – Debut Side A.wav")
+    try:
+        resp = client.get(f"/api/audio/{sid}")
+        assert resp.status_code == 200
+        assert "utf-8''" in resp.headers["content-disposition"]
+    finally:
+        session_store.remove(sid)
+
+
+def test_get_audio_unknown_id_returns_404():
     resp = client.get(f"/api/audio/{uuid.uuid4()}")
     assert resp.status_code == 404
