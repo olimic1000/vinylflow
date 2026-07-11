@@ -856,6 +856,11 @@ function vinylApp() {
                 // Default MediaElement backend: renders instantly from the
                 // precomputed peaks and streams audio on demand, instead of
                 // WebAudio which downloads + decodes the whole file up front.
+                //
+                // height:'auto' fills the #waveform container, which MUST
+                // have a fixed CSS height (see index.html) — a min-height
+                // floor lets the canvas/container feedback loop grow the
+                // waveform forever on fractional-DPI Windows displays (#63).
                 this.waveform = WaveSurfer.create({
                     container: '#waveform',
                     waveColor: '#93c5fd',

@@ -1,0 +1,63 @@
+name: Build macOS Intel Release Asset
+
+# Intel Macs cannot run the arm64 build ("Bad CPU type in executable", #64).
+# This builds a separate x86_64 asset on GitHub's Intel macOS runner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to update (e.g. v0.2.0-beta8)"
+        required: true
+        default: "v0.2.0-beta8"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    # macos-15-intel is GitHub's x86_64 runner (macos-13 was retired Dec 2025)
+    runs-on: macos-15-intel
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install FFmpeg
+        run: |
+          brew install ffmpeg
+          ffmpeg -version
+          file "$(which ffmpeg)"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build macOS app
+        run: |
+          pyinstaller --clean -y VinylFlow.spec
+
+      - name: Verify architecture
+        run: |
+          file dist/VinylFlow.app/Contents/MacOS/VinylFlow
+          file dist/VinylFlow.app/Contents/MacOS/VinylFlow | grep -q x86_64
+
+      - name: Package unsigned macOS Intel app
+        run: |
+          rm -f VinylFlow-macos-intel-unsigned.zip
+          ditto -c -k --keepParent dist/VinylFlow.app VinylFlow-macos-intel-unsigned.zip
+          ls -la VinylFlow-macos-intel-unsigned.zip
+
+      - name: Replace release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.tag }}" VinylFlow-macos-intel-unsigned.zip --clobber
+          gh release view "${{ inputs.tag }}" --json assets --jq '.assets[] | .name + " " + (.size|tostring)'
