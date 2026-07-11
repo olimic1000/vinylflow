@@ -126,15 +126,20 @@
             padding: 16px;
         }
 
-        /* Base waveform height (mobile-first) */
+        /* Base waveform height (mobile-first).
+           Must be a FIXED height, not min-height: WaveSurfer's height:'auto'
+           canvas fills the container, and a min-height floor lets fractional
+           DPI rounding (Windows 125%/150% scaling) grow container and canvas
+           in an endless feedback loop (#63). */
         #waveform {
-            min-height: 200px;
+            height: 200px;
+            overflow-y: hidden;
         }
 
         /* Larger waveform on desktop screens */
         @media (min-width: 768px) {
             #waveform {
-                min-height: 350px;
+                height: 350px;
             }
         }
 
