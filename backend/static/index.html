@@ -287,6 +287,13 @@
                     </button>
                 </div>
 
+                <button
+                    @click="setupRequired = false"
+                    class="w-full mt-3 text-sm text-secondary hover:underline"
+                >
+                    Skip for now — you can add the token later in Settings
+                </button>
+
                 <p class="text-xs text-muted text-center mt-4">
                     Your token is stored securely on your machine.
                 </p>
@@ -307,7 +314,7 @@
         </div>
 
         <!-- Settings Modal -->
-        <div x-show="showSettings" x-cloak class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div x-show="showSettings" x-cloak @keydown.escape.window="showSettings = false" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div @click.away="showSettings = false" class="bg-card rounded-lg p-6 max-w-md w-full mx-4">
                 <h2 class="text-2xl font-bold text-primary mb-4">Settings</h2>
                 <div class="space-y-4">
@@ -376,6 +383,7 @@
         <!-- Context Menu for Waveform Splits -->
         <div x-show="contextMenu.show"
              x-cloak
+             @keydown.escape.window="contextMenu.show = false"
              @click.away="if (!$event.ctrlKey) contextMenu.show = false"
              class="fixed bg-card rounded-lg shadow-lg border z-50 py-1"
              style="border-color: #8A8A86;"
@@ -390,6 +398,7 @@
         <!-- Context Menu for Region Actions -->
         <div x-show="regionContextMenu.show"
              x-cloak
+             @keydown.escape.window="regionContextMenu.show = false"
              @click.away="if (!$event.ctrlKey) regionContextMenu.show = false"
              class="fixed bg-card rounded-lg shadow-lg border z-50 py-1"
              style="border-color: #8A8A86;"
@@ -426,13 +435,19 @@
                     </div>
 
                     <!-- Upload Progress Bar -->
-                    <div x-show="uploadProgress > 0 && uploadProgress < 100" class="mt-3">
+                    <div x-show="(uploadProgress > 0 && uploadProgress < 100) || uploadFinalizing" class="mt-3">
                         <div class="w-full bg-page rounded-full h-2 overflow-hidden">
                             <div class="progress-bar progress-bar-primary h-2 rounded-full" :style="`width: ${uploadProgress}%`"></div>
                         </div>
                         <p class="text-xs text-secondary mt-1 text-center">
-                            Uploading... <span x-text="Math.round(uploadProgress)"></span>%
+                            <span x-show="!uploadFinalizing">Uploading... <span x-text="Math.round(uploadProgress)"></span>%</span>
+                            <span x-show="uploadFinalizing">Finalizing — saving file and reading duration…</span>
                         </p>
+                    </div>
+
+                    <!-- Upload Notice (skipped/unsupported files) -->
+                    <div x-show="uploadNotice" x-cloak class="mt-3 p-2 rounded-lg text-sm text-primary" style="background-color: rgba(229, 161, 0, 0.15);">
+                        <span x-text="uploadNotice"></span>
                     </div>
                 </div>
 
@@ -480,15 +495,23 @@
 
                         <!-- Analyze Button -->
                         <template x-if="!detectedTracks.length && currentFile">
-                            <button @click="analyzeFile()" class="mt-3 px-4 py-2 btn-primary rounded-lg font-semibold text-sm">
-                                🔍 Analyze & Detect Tracks
+                            <button @click="analyzeFile()" :disabled="analyzing" class="mt-3 px-4 py-2 btn-primary rounded-lg font-semibold text-sm" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                                <span x-show="!analyzing">🔍 Analyze & Detect Tracks</span>
+                                <span x-show="analyzing" class="flex items-center gap-2">
+                                    <div class="spinner"></div>
+                                    Detecting tracks…
+                                </span>
                             </button>
                         </template>
 
                         <!-- Re-Analyze Button -->
                         <template x-if="detectedTracks.length > 0 && !selectedRelease">
-                            <button @click="reanalyzeFile()" class="mt-3 px-4 py-2 btn-primary rounded-lg font-semibold text-sm">
-                                🔄 Re-Analyze Tracks
+                            <button @click="reanalyzeFile()" :disabled="analyzing" class="mt-3 px-4 py-2 btn-primary rounded-lg font-semibold text-sm" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                                <span x-show="!analyzing">🔄 Re-Analyze Tracks</span>
+                                <span x-show="analyzing" class="flex items-center gap-2">
+                                    <div class="spinner"></div>
+                                    Detecting tracks…
+                                </span>
                             </button>
                         </template>
                     </div>
@@ -576,13 +599,18 @@
                         <h3 class="text-lg font-semibold text-primary mb-4">🔍 Search Discogs</h3>
                         <div class="flex gap-2 mb-4">
                             <input type="text" x-model="searchQuery" @keyup.enter="searchDiscogs()" placeholder="Enter artist or album name..." class="flex-1 px-4 py-2 border focus-primary rounded-lg" style="border-color: #8A8A86;">
-                            <button @click="searchDiscogs()" class="px-6 py-2 btn-primary rounded-lg font-semibold">Search</button>
+                            <button @click="searchDiscogs()" :disabled="searchLoading" class="px-6 py-2 btn-primary rounded-lg font-semibold" :class="{'opacity-60 cursor-not-allowed': searchLoading}">Search</button>
                         </div>
 
                         <!-- Loading Animation -->
                         <div x-show="searchLoading" class="flex items-center justify-center gap-3 py-8">
                             <div class="spinner"></div>
                             <span class="text-secondary">Searching Discogs...</span>
+                        </div>
+
+                        <!-- Search Notice (no results / errors) -->
+                        <div x-show="searchNotice && !searchLoading" x-cloak class="p-3 rounded-lg text-sm text-primary" style="background-color: rgba(229, 161, 0, 0.15);">
+                            <span x-text="searchNotice"></span>
                         </div>
 
                         <div x-show="searchResults.length > 0 && !searchLoading" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mt-4">
@@ -618,9 +646,12 @@
                                         Detected <span class="font-semibold" x-text="detectedTracks.filter(t => !t.ignored).length"></span> tracks,
                                         but Discogs shows <span class="font-semibold" x-text="selectedRelease?.tracks.length"></span> tracks.
                                     </p>
-                                    <p class="text-xs text-muted">
+                                    <p class="text-xs text-muted mb-2">
                                         💡 Scroll up to the waveform and right-click to add splits, or right-click a track region to ignore it.
                                     </p>
+                                    <button @click="offerDurationBasedSplitting()" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold">
+                                        ✂️ Try duration-based splitting
+                                    </button>
                                 </div>
                             </div>
                         </div>

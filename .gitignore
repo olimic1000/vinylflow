@@ -13,3 +13,4 @@ venv/
 .venv/
 output/
 config/settings.json
+.gstack/

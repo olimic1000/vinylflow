@@ -326,6 +326,10 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
     Uses lower bitrate (128k) for quick conversion and smaller file size.
     """
     mp3_path = get_session_path(file_id, "full.mp3")
+    # Encode to a temp name and atomically rename on success: ffmpeg fills
+    # the output over tens of seconds, and /api/audio must never see (and
+    # then permanently cache) a half-written file.
+    part_path = get_session_path(file_id, f"full.{uuid.uuid4().hex[:8]}.part")
 
     if not mp3_path.exists():
         try:
@@ -339,15 +343,19 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
                     "libmp3lame",
                     "-b:a",
                     "128k",
-                    str(mp3_path),
+                    "-f",
+                    "mp3",
+                    str(part_path),
                 ],
                 check=True,
                 capture_output=True,
             )
+            os.replace(part_path, mp3_path)
             print(
                 f"Pre-converted {file_id} to MP3 ({mp3_path.stat().st_size // 1024 // 1024}MB)"
             )
         except Exception as e:
+            part_path.unlink(missing_ok=True)
             print(f"MP3 conversion failed for {file_id}: {e}")
 
 
@@ -372,17 +380,18 @@ async def upload_files(files: List[UploadFile] = File(...)):
         session_dir.mkdir(parents=True, exist_ok=True)
         file_path = session_dir / f"source{file_ext}"
 
-        # Save uploaded file
+        # Save uploaded file in chunks — never buffer a whole multi-hundred-MB
+        # recording in memory.
         with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+            while chunk := await file.read(1024 * 1024):
+                buffer.write(chunk)
 
         # Get file metadata
         file_size = file_path.stat().st_size
 
-        # Get duration using audio processor
+        # Get duration using audio processor (off the event loop)
         try:
-            duration = audio_processor.get_audio_duration(file_path)
+            duration = await asyncio.to_thread(audio_processor.get_audio_duration, file_path)
             if duration is None:
                 duration = 0
         except Exception:
@@ -429,7 +438,11 @@ async def analyze_file(request: AnalyzeRequest):
     )
 
     try:
-        tracks = audio_processor.detect_silence(file_path, verbose=False)
+        # detect_silence is a full-file ffmpeg decode — run it off the event
+        # loop so WebSocket pings and other requests keep flowing.
+        tracks = await asyncio.to_thread(
+            audio_processor.detect_silence, file_path, verbose=False
+        )
 
         tracks_data = [
             {"number": i + 1, "start": track.start, "end": track.end, "duration": track.duration}
@@ -541,6 +554,9 @@ async def preview_track(
     track_end = end if end is not None else track.end
     track_duration = track_end - track_start
 
+    if track_duration <= 0 or track_start < 0:
+        raise HTTPException(status_code=400, detail="Invalid preview range: end must be after start")
+
     import hashlib
 
     params_hash = hashlib.md5(f"{track_start}_{track_end}".encode()).hexdigest()[:8]
@@ -549,24 +565,39 @@ async def preview_track(
     try:
         duration = min(30, track_duration)
 
-        run_ffmpeg(
-            [
-                "-y",
-                "-i",
-                str(file_path),
-                "-ss",
-                str(track_start),
-                "-t",
-                str(duration),
-                "-acodec",
-                "libmp3lame",
-                "-b:a",
-                "128k",
-                str(preview_path),
-            ],
-            check=True,
-            capture_output=True,
-        )
+        # Serve from cache when this exact start/end was already rendered.
+        # Encode to a unique temp name + atomic rename so concurrent or
+        # interrupted encodes never leave a truncated file in the cache.
+        if not preview_path.exists():
+            part_path = preview_path.with_name(f"{preview_path.stem}.{uuid.uuid4().hex[:8]}.part")
+            # -ss before -i: input-side seek, so encoding a preview near the
+            # end of a side no longer decodes everything before it.
+            try:
+                await asyncio.to_thread(
+                    run_ffmpeg,
+                    [
+                        "-y",
+                        "-ss",
+                        str(track_start),
+                        "-t",
+                        str(duration),
+                        "-i",
+                        str(file_path),
+                        "-acodec",
+                        "libmp3lame",
+                        "-b:a",
+                        "128k",
+                        "-f",
+                        "mp3",
+                        str(part_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                os.replace(part_path, preview_path)
+            except Exception:
+                part_path.unlink(missing_ok=True)
+                raise
 
         return FileResponse(
             preview_path,
@@ -597,7 +628,9 @@ async def get_waveform_peaks(file_id: str):
 
     try:
         # text=False — we want raw PCM bytes on stdout, not utf-8 text.
-        result = run_ffmpeg(
+        # Full-file decode, so run it off the event loop.
+        result = await asyncio.to_thread(
+            run_ffmpeg,
             [
                 "-i",
                 str(file_path),
@@ -615,18 +648,21 @@ async def get_waveform_peaks(file_id: str):
             capture_output=True,
             check=True,
         )
-        audio_data = np.frombuffer(result.stdout, dtype=np.int16)
+        # int32 before abs: abs(-32768) overflows back to -32768 in int16.
+        audio_data = np.frombuffer(result.stdout, dtype=np.int16).astype(np.int32)
 
         target_peaks = 3000
         samples_per_peak = max(1, len(audio_data) // target_peaks)
 
+        full = (len(audio_data) // samples_per_peak) * samples_per_peak
         peaks = []
-        for i in range(0, len(audio_data), samples_per_peak):
-            chunk = audio_data[i : i + samples_per_peak]
-            if len(chunk) > 0:
-                peak_value = np.max(np.abs(chunk))
-                normalized = peak_value / 32768.0
-                peaks.append(normalized)
+        if full:
+            peaks = (
+                np.abs(audio_data[:full]).reshape(-1, samples_per_peak).max(axis=1)
+                / 32768.0
+            ).tolist()
+        if full < len(audio_data):
+            peaks.append(float(np.abs(audio_data[full:]).max() / 32768.0))
 
         if len(peaks) == 0:
             peaks = [0.0]
@@ -658,21 +694,34 @@ async def get_audio_file(file_id: str):
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    file_path = session.source_audio
+    # Prefer the background-preconverted MP3: ~25MB streamed instead of a
+    # multi-hundred-MB WAV. The choice is pinned on the first request so the
+    # same URL never flips from WAV to MP3 bytes mid-playback.
+    if session.playback_audio is None or not session.playback_audio.exists():
+        mp3_path = get_session_path(file_id, "full.mp3")
+        session.playback_audio = mp3_path if mp3_path.exists() else session.source_audio
+    file_path = session.playback_audio
 
-    # Determine media type from extension
-    ext = file_path.suffix.lower()
-    media_types = {
-        ".wav": "audio/wav",
-        ".aiff": "audio/aiff",
-        ".aif": "audio/aiff",
-    }
-    media_type = media_types.get(ext, "audio/wav")
+    if file_path.suffix.lower() == ".mp3":
+        media_type = "audio/mpeg"
+        filename = Path(session.source_filename).stem + ".mp3"
+    else:
+        ext = file_path.suffix.lower()
+        media_types = {
+            ".wav": "audio/wav",
+            ".aiff": "audio/aiff",
+            ".aif": "audio/aiff",
+        }
+        media_type = media_types.get(ext, "audio/wav")
+        filename = session.source_filename
 
+    # filename= lets Starlette RFC-5987-encode non-latin-1 characters
+    # (e.g. "Björk – Debut") — a hand-built header crashes on them.
     return FileResponse(
         file_path,
         media_type=media_type,
-        headers={"Content-Disposition": f"inline; filename={session.source_filename}"},
+        filename=filename,
+        content_disposition_type="inline",
     )
 
 
@@ -680,7 +729,11 @@ async def get_audio_file(file_id: str):
 async def search_discogs(request: SearchRequest):
     """Search Discogs for releases."""
     try:
-        releases = metadata_handler.search_releases(request.query, max_results=request.max_results)
+        # Discogs does 1+N HTTP round-trips with rate-limit sleeps — keep
+        # that off the event loop.
+        releases = await asyncio.to_thread(
+            metadata_handler.search_releases, request.query, max_results=request.max_results
+        )
 
         results = []
         for idx, release in releases:
@@ -925,7 +978,7 @@ async def get_status():
     # If configured, try to get username
     if token_exists:
         try:
-            success, message = config.test_discogs_connection()
+            success, message = await asyncio.to_thread(config.test_discogs_connection)
             if success and ": " in message:
                 username = message.split(": ")[-1]
                 response["discogs_username"] = username

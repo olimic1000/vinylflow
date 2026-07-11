@@ -6,6 +6,7 @@ Manages release searches, track mapping, and file tagging for FLAC, MP3, and AIF
 """
 
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -221,6 +222,7 @@ class MetadataHandler:
         self.client = discogs_client.Client(user_agent, user_token=discogs_token)
         self.last_request_time = 0
         self.min_request_interval = 1.0  # Rate limiting: max 1 req/sec
+        self._rate_limit_lock = threading.Lock()
 
     def reinitialize(self, discogs_token: str, user_agent: str):
         """
@@ -237,12 +239,18 @@ class MetadataHandler:
         print(f"MetadataHandler reinitialized with new token")
 
     def _rate_limit(self):
-        """Enforce rate limiting between requests."""
-        now = time.time()
-        elapsed = now - self.last_request_time
-        if elapsed < self.min_request_interval:
-            time.sleep(self.min_request_interval - elapsed)
-        self.last_request_time = time.time()
+        """Enforce rate limiting between requests.
+
+        Lock-guarded: search runs on a worker thread (asyncio.to_thread) and
+        can race the processing pipeline's Discogs fetches — an unguarded
+        read-sleep-write would let bursts through.
+        """
+        with self._rate_limit_lock:
+            now = time.time()
+            elapsed = now - self.last_request_time
+            if elapsed < self.min_request_interval:
+                time.sleep(self.min_request_interval - elapsed)
+            self.last_request_time = time.time()
 
     def clean_filename(self, filename: str) -> str:
         """
