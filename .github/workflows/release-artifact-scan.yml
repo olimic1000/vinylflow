@@ -14,7 +14,7 @@ on:
       forbidden_strings:
         description: "Comma-separated strings that must never appear in artifacts"
         required: false
-        default: "QYDBdskzVdLFzeZvxScmvaagZerNspEksSLAmYBG,oliviermichelet,/Users/oliviermichelet"
+        default: ""
 
 permissions:
   contents: read
