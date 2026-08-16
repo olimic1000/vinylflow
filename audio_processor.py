@@ -18,6 +18,7 @@ from typing import List, Tuple, Optional
 # track_boundaries, no import cycle).
 from track_boundaries import (
     Track,
+    boundaries_for_track_count,
     boundaries_from_durations,
     boundaries_from_gaps,
     parse_silence_log,
@@ -157,32 +158,10 @@ class AudioProcessor:
                 f"Threshold: {self.silence_threshold}dB, Min duration: {self.min_silence_duration}s"
             )
 
-        # Run ffmpeg silence detection
-        args = [
-            "-i",
-            str(file_path),
-            "-af",
-            f"silencedetect=noise={self.silence_threshold}dB:duration={self.min_silence_duration}",
-            "-f",
-            "null",
-            "-",
-        ]
-
         try:
-            result = run_ffmpeg(args, capture_output=True, timeout=300)
-
-            # Parse silence into Gaps, then derive Track Boundaries — both pure
-            # steps live in track_boundaries; this method only owns the ffmpeg
-            # subprocess and the total-duration probe.
-            gaps = parse_silence_log(result.stderr)
-
-            # The silencedetect run's stderr already contains the Duration
-            # header, so avoid a second ffmpeg probe of the same file.
-            total_duration = parse_duration_header(result.stderr)
-            if total_duration is None:
-                total_duration = self.get_audio_duration(file_path)
-            if total_duration is None:
-                raise ValueError("Could not determine audio duration")
+            gaps, total_duration = self._scan_gaps(
+                file_path, self.silence_threshold, self.min_silence_duration
+            )
 
             tracks = boundaries_from_gaps(gaps, total_duration, self.min_track_length)
 
@@ -197,6 +176,85 @@ class AudioProcessor:
             raise RuntimeError("Silence detection timed out (>5 minutes)")
         except Exception as e:
             raise RuntimeError(f"Silence detection failed: {e}")
+
+    def _scan_gaps(self, file_path: Path, threshold: float, min_duration: float):
+        """Run one ffmpeg silencedetect pass and return (gaps, total_duration).
+
+        Owns the ffmpeg subprocess; parsing Gaps and computing Track
+        Boundaries stay in the pure ``track_boundaries`` module.
+        """
+        args = [
+            "-i",
+            str(file_path),
+            "-af",
+            f"silencedetect=noise={threshold}dB:duration={min_duration}",
+            "-f",
+            "null",
+            "-",
+        ]
+
+        result = run_ffmpeg(args, capture_output=True, timeout=300)
+
+        gaps = parse_silence_log(result.stderr)
+
+        # The silencedetect run's stderr already contains the Duration
+        # header, so avoid a second ffmpeg probe of the same file.
+        total_duration = parse_duration_header(result.stderr)
+        if total_duration is None:
+            total_duration = self.get_audio_duration(file_path)
+        if total_duration is None:
+            raise ValueError("Could not determine audio duration")
+
+        return gaps, total_duration
+
+    # Smart Rescan scan ladder.  Each pass is a full-file ffmpeg decode, so
+    # the first pass is permissive enough (-30dB, 0.3s) to surface nearly
+    # every real inter-track gap as a candidate in one decode — picking the
+    # right ones happens in pure Python (boundaries_for_track_count), not in
+    # more ffmpeg runs.  Later passes escalate for very noisy records whose
+    # surface noise sits above the previous threshold.
+    SMART_RESCAN_LADDER = [(-30.0, 0.3), (-25.0, 0.25), (-20.0, 0.2)]
+
+    def detect_tracks_for_count(self, file_path: Path, target_count: int):
+        """Find the split that yields exactly ``target_count`` tracks.
+
+        Args:
+            file_path: Path to audio file
+            target_count: How many tracks the recording should contain
+
+        Returns:
+            (tracks, scan_info) where scan_info holds the settings of the
+            pass that produced the result and ``matched`` (True when the
+            track count equals ``target_count``).  When no pass matches
+            exactly, the closest result across all passes is returned.
+        """
+        best_tracks = None
+        best_info = None
+
+        try:
+            for threshold, min_duration in self.SMART_RESCAN_LADDER:
+                gaps, total_duration = self._scan_gaps(file_path, threshold, min_duration)
+                tracks = boundaries_for_track_count(
+                    gaps, total_duration, self.min_track_length, target_count
+                )
+                info = {
+                    "silence_threshold": threshold,
+                    "min_silence_duration": min_duration,
+                    "matched": len(tracks) == target_count,
+                }
+                if info["matched"]:
+                    return tracks, info
+                if best_tracks is None or abs(len(tracks) - target_count) < abs(
+                    len(best_tracks) - target_count
+                ):
+                    best_tracks, best_info = tracks, info
+
+            return best_tracks, best_info
+
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Silence detection timed out (>5 minutes)")
+        except Exception as e:
+            raise RuntimeError(f"Smart rescan failed: {e}")
 
     def split_tracks_duration_based(
         self, file_path: Path, durations: List[float], verbose=False

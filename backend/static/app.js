@@ -62,6 +62,10 @@ function vinylApp() {
         trackMappingReversed: false,
         customMapping: [],
 
+        // Smart Rescan
+        expectedTracks: null,
+        rescanNotice: '',
+
         // Processing
         isProcessing: false,
         processingProgress: 0,
@@ -526,6 +530,7 @@ function vinylApp() {
             if (!this.currentFileId || this.analyzing) return;
 
             this.analyzing = true;
+            this.rescanNotice = '';
             this.processingMessage = 'Analyzing...';
 
             try {
@@ -590,6 +595,80 @@ function vinylApp() {
 
             this.destroyWaveform();
             await this.analyzeFile();
+        },
+
+        /**
+         * Smart Rescan: ask the backend to sweep detection settings until it
+         * finds the expected number of tracks.  Unlike reanalyzeFile(), this
+         * keeps the Discogs search/selection intact so it works as a quick
+         * retry from the track-count-mismatch warning too.
+         */
+        async smartRescan(target) {
+            target = parseInt(target, 10);
+            if (!this.currentFileId || this.analyzing) return;
+            if (!target || target < 1 || target > 99) {
+                this.rescanNotice = 'Enter how many songs the recording contains (1–99) first.';
+                return;
+            }
+
+            this.analyzing = true;
+            this.rescanNotice = '';
+            this.processingMessage = `Rescanning for ${target} tracks...`;
+            this.currentPlayingTrack = null;
+
+            if (this.$refs.audioPlayer) {
+                this.$refs.audioPlayer.pause();
+                this.$refs.audioPlayer.currentTime = 0;
+            }
+
+            try {
+                const response = await fetch('/api/rescan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_id: this.currentFileId,
+                        expected_tracks: target
+                    })
+                });
+                const data = await response.json();
+
+                if (!response.ok || !data.tracks) {
+                    throw new Error(data.detail || 'Smart rescan failed');
+                }
+
+                this.detectedTracks = data.tracks.map(track => ({
+                    ...track,
+                    editing: false,
+                    ignored: false
+                }));
+                this.processingMessage = '';
+
+                const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
+                if (file) {
+                    file.status = 'analyzed';
+                }
+
+                // Boundary edits from the old analysis no longer apply.
+                if (this.selectedRelease) {
+                    this.trackMappingReversed = false;
+                    this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
+                    this.trackCountMismatch =
+                        this.detectedTracks.length !== this.selectedRelease.tracks.length;
+                }
+
+                this.destroyWaveform();
+                await this.initWaveform();
+
+                this.rescanNotice = data.matched
+                    ? `✅ Found exactly ${data.tracks.length} tracks.`
+                    : `⚠️ Couldn't find exactly ${target} tracks — closest result is ${data.tracks.length}. Right-click the waveform to add or remove splits manually.`;
+            } catch (error) {
+                console.error('Smart rescan failed:', error);
+                this.rescanNotice = '❌ Smart rescan failed: ' + error.message;
+                this.processingMessage = '';
+            } finally {
+                this.analyzing = false;
+            }
         },
 
         /**
