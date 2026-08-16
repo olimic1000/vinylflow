@@ -6,6 +6,8 @@ pure functions over plain data turn audio analysis into Track Boundaries:
 - ``parse_silence_log``       ffmpeg silencedetect stderr -> list[Gap]
 - ``boundaries_from_gaps``    Gaps + total duration       -> list[Track]
 - ``boundaries_from_durations``  Discogs track durations  -> list[Track]
+- ``boundaries_for_track_count``  permissive-scan Gaps + a target Track
+  count -> list[Track] (Smart Rescan: pick the likeliest separator Gaps)
 
 A **Gap** is a ``(start, end)`` span of detected silence.  A Track occupies
 the audio *between* consecutive Gaps.  The final Gap may be **open**
@@ -146,6 +148,62 @@ def boundaries_from_gaps(
         tracks.append(Track(num, last.end, total_duration))
 
     return tracks
+
+
+def boundaries_for_track_count(
+    gaps: List[Gap],
+    total_duration: float,
+    min_track_length: float,
+    target_count: int,
+) -> List[Track]:
+    """Pick the Gaps most likely to be real inter-track gaps so the result
+    has ``target_count`` Tracks (best effort).
+
+    Intended for a *permissive* silence scan whose Gaps are a superset of
+    the real inter-track gaps (quiet musical passages show up too).  Real
+    vinyl track gaps are the longest silences on a side, so candidates are
+    ranked by duration and exactly ``target_count - 1`` separators are
+    chosen greedily, skipping any that would leave a span shorter than
+    ``min_track_length`` next to an already-chosen Gap.
+
+    Edge Gaps — silence at the very start of the side, silence running to
+    (or near) EOF, and open Gaps — are always kept: they trim lead-in and
+    lead-out rather than separate two Tracks, so they cost nothing toward
+    the separator budget.
+
+    Returns whatever ``boundaries_from_gaps`` yields for the chosen Gaps,
+    which may hold fewer than ``target_count`` Tracks when not enough
+    feasible separators exist; it never holds more.
+    """
+    if target_count < 1:
+        return []
+
+    def _is_edge(gap: Gap) -> bool:
+        if gap.start < min_track_length:
+            return True  # leading silence: trims the lead-in
+        if gap.end is None or total_duration - gap.end < min_track_length:
+            return True  # trailing / open silence: trims the lead-out
+        return False
+
+    chosen = [g for g in gaps if _is_edge(g)]
+    candidates = [g for g in gaps if not _is_edge(g)]
+    # Longest silences first; start time breaks ties deterministically.
+    candidates.sort(key=lambda g: (-(g.end - g.start), g.start))
+
+    separators = 0
+    for gap in candidates:
+        if separators == target_count - 1:
+            break
+        # The chosen Gap nearest on each side bounds the spans this Gap
+        # would create; both spans must be long enough to survive as Tracks.
+        left = max((g.end for g in chosen if g.start < gap.start and g.end is not None), default=0.0)
+        right = min((g.start for g in chosen if g.start > gap.start), default=total_duration)
+        if gap.start - left >= min_track_length and right - gap.end >= min_track_length:
+            chosen.append(gap)
+            separators += 1
+
+    chosen.sort(key=lambda g: g.start)
+    return boundaries_from_gaps(chosen, total_duration, min_track_length)
 
 
 def boundaries_from_durations(durations: List[float]) -> List[Track]:

@@ -221,6 +221,11 @@ class DurationBasedAnalyzeRequest(BaseModel):
     discogs_durations: List[float]
 
 
+class RescanRequest(BaseModel):
+    file_id: str
+    expected_tracks: int
+
+
 class SearchRequest(BaseModel):
     query: str
     max_results: int = 5
@@ -468,6 +473,69 @@ async def analyze_file(request: AnalyzeRequest):
                 "type": "error",
                 "file_id": request.file_id,
                 "message": f"Silence detection failed: {str(e)}",
+                "recoverable": True,
+            }
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/rescan")
+async def rescan_file(request: RescanRequest):
+    """
+    Smart Rescan: sweep silence-detection settings automatically until the
+    analysis yields the expected number of tracks.  Falls back to the
+    closest result when no setting matches exactly.
+    """
+    if not 1 <= request.expected_tracks <= 99:
+        raise HTTPException(status_code=422, detail="expected_tracks must be between 1 and 99")
+
+    session = session_store.get(request.file_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_path = session.source_audio
+
+    await broadcast_message(
+        {
+            "type": "progress",
+            "file_id": request.file_id,
+            "step": "detecting",
+            "progress": 0.1,
+            "message": f"Rescanning for {request.expected_tracks} tracks...",
+        }
+    )
+
+    try:
+        # Same full-file ffmpeg decode as /api/analyze (possibly several) —
+        # keep it off the event loop.
+        tracks, scan_info = await asyncio.to_thread(
+            audio_processor.detect_tracks_for_count, file_path, request.expected_tracks
+        )
+
+        tracks_data = [
+            {"number": i + 1, "start": track.start, "end": track.end, "duration": track.duration}
+            for i, track in enumerate(tracks)
+        ]
+
+        session.set_boundaries(tracks)
+
+        await broadcast_message(
+            {
+                "type": "step_complete",
+                "file_id": request.file_id,
+                "step": "detection",
+                "message": f"Smart rescan detected {len(tracks)} tracks",
+            }
+        )
+
+        return {"tracks": tracks_data, "matched": scan_info["matched"], "scan": scan_info}
+
+    except Exception as e:
+        await broadcast_message(
+            {
+                "type": "error",
+                "file_id": request.file_id,
+                "message": f"Smart rescan failed: {str(e)}",
                 "recoverable": True,
             }
         )

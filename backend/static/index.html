@@ -519,6 +519,24 @@
                                 </span>
                             </button>
                         </template>
+
+                        <!-- Smart Rescan: retry detection until it finds the expected track count -->
+                        <template x-if="detectedTracks.length > 0">
+                            <div class="mt-3 pt-3 border-t" style="border-color: #F0EFEB;">
+                                <p class="text-xs text-secondary mb-2">Wrong number of tracks? Enter how many songs the recording has and Smart Rescan will adjust detection automatically.</p>
+                                <div class="flex items-center gap-2">
+                                    <input type="number" min="1" max="99" x-model="expectedTracks" placeholder="e.g. 6" class="w-20 px-3 py-2 border focus-primary rounded-lg text-sm" style="border-color: #8A8A86;" @keyup.enter="smartRescan(expectedTracks)">
+                                    <button @click="smartRescan(expectedTracks)" :disabled="analyzing" class="px-4 py-2 btn-primary rounded-lg font-semibold text-sm" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                                        <span x-show="!analyzing">🎯 Smart Rescan</span>
+                                        <span x-show="analyzing" class="flex items-center gap-2">
+                                            <div class="spinner"></div>
+                                            Rescanning…
+                                        </span>
+                                    </button>
+                                </div>
+                                <p x-show="rescanNotice" x-cloak class="mt-2 text-sm text-primary p-2 rounded-lg" style="background-color: rgba(229, 161, 0, 0.15);" x-text="rescanNotice"></p>
+                            </div>
+                        </template>
                     </div>
                 </div>
             </div>
@@ -654,9 +672,19 @@
                                     <p class="text-xs text-muted mb-2">
                                         💡 Scroll up to the waveform and right-click to add splits, or right-click a track region to ignore it.
                                     </p>
-                                    <button @click="offerDurationBasedSplitting()" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold">
-                                        ✂️ Try duration-based splitting
-                                    </button>
+                                    <div class="flex flex-wrap gap-2">
+                                        <button @click="smartRescan(selectedRelease.tracks.length)" :disabled="analyzing" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                                            <span x-show="!analyzing" x-text="`🎯 Smart rescan for ${selectedRelease?.tracks.length} tracks`"></span>
+                                            <span x-show="analyzing" class="flex items-center gap-2">
+                                                <div class="spinner"></div>
+                                                Rescanning…
+                                            </span>
+                                        </button>
+                                        <button @click="offerDurationBasedSplitting()" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold">
+                                            ✂️ Try duration-based splitting
+                                        </button>
+                                    </div>
+                                    <p x-show="rescanNotice" x-cloak class="mt-2 text-sm text-primary" x-text="rescanNotice"></p>
                                 </div>
                             </div>
                         </div>
