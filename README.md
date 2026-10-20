@@ -87,6 +87,12 @@ cd vinylflow
 
 4. **Open your browser** and go to **http://localhost:8000**
 
+### Accessing from other devices (LAN)
+
+By default the port is published on `127.0.0.1` only, so VinylFlow is reachable just from the computer running it. To open it from a phone or another computer, add `BIND_ADDRESS=0.0.0.0` to your `.env` and run `docker compose up -d` again, then browse to `http://<your-computer's-IP>:8000`.
+
+**Risk:** VinylFlow has no authentication, and the API can change the output folder and write files there. Anyone who can reach the port can use it, so only enable this on a trusted network.
+
 ## 3. First-Run Setup
 
 When you open VinylFlow for the first time, you'll see a welcome screen that guides you through setup in seconds:

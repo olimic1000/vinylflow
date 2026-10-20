@@ -22,5 +22,8 @@ COPY . .
 # Create output directory
 RUN mkdir -p /app/output /app/temp_uploads
 
+# Bind 0.0.0.0 *inside* the container: required for Docker port publishing to work.
+# Host exposure is controlled by the port mapping in docker-compose.yml
+# (127.0.0.1 by default; BIND_ADDRESS=0.0.0.0 opts in to LAN access).
 # Use Railway's PORT environment variable
 CMD sh -c "python -m uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000}"

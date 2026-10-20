@@ -9,7 +9,7 @@ Desktop app to digitize vinyl records: upload a WAV/AIFF recording of a vinyl si
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Alpine.js + Tailwind CSS + WaveSurfer.js (no build step, CDN) |
+| Frontend | Alpine.js + Tailwind CSS + WaveSurfer.js (no build step; libraries vendored in `backend/static/vendor/`, no CDN) |
 | Backend | FastAPI + uvicorn (Python) |
 | Desktop shell | pywebview (WKWebView on macOS, WebView2 on Windows) |
 | Audio processing | FFmpeg (via subprocess) + Mutagen (tagging) + Pillow (cover art) |
@@ -143,7 +143,7 @@ These rules are **critical** — violating them breaks the bundled app silently.
 
 ## Frontend Notes (app.js / index.html)
 
-- **No build step** — Alpine.js loaded from CDN, no npm/webpack.
+- **No build step, fully offline** — Alpine.js, Tailwind (v3 Play script), WaveSurfer + regions are vendored, version-pinned, in `backend/static/vendor/` (versions, SHA-256, update steps in its README). `tests/test_vendor_offline.py` fails if index.html loads anything external or a hash drifts. Don't add CDN tags.
 - All UI state lives in one Alpine.js `x-data` object (see `app.js`).
 - **WaveSurfer.js** handles waveform rendering with draggable region markers for track boundaries.
 - WebSocket (`/ws`) receives real-time progress updates during processing.
@@ -162,10 +162,10 @@ Also: guard `@click.away` with `!$event.ctrlKey` so Ctrl+click (which triggers `
 
 | Mode | Command | Notes |
 |------|---------|-------|
-| Docker | `docker compose up` | Recommended for self-hosting |
+| Docker | `docker compose up` | Recommended for self-hosting. Published on `127.0.0.1` only; LAN access is opt-in via `BIND_ADDRESS=0.0.0.0` in `.env` (no auth, so trusted networks only) |
 | Desktop (bundled) | `VinylFlow.app` / `VinylFlow.exe` | PyInstaller build |
-| Local dev | `python desktop_launcher.py` | Opens browser or native window |
-| Backend only | `uvicorn backend.api:app --reload` | For API development |
+| Local dev | `python desktop_launcher.py` | Opens browser or native window (binds 127.0.0.1) |
+| Backend only | `uvicorn backend.api:app --reload` | For API development; `python -m backend.api` binds `HOST` (default 127.0.0.1) |
 
 ---
 
