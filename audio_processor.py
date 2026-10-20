@@ -70,6 +70,31 @@ def parse_duration_header(ffmpeg_stderr: str) -> Optional[float]:
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
+_STREAM_AUDIO_RE = re.compile(r"Stream #\S+.*?Audio:\s*([^\n]*)")
+_PCM_CODEC_RE = re.compile(r"\bpcm_([suf])(\d+)(?:le|be)\b")
+_BIT_ANNOTATION_RE = re.compile(r"\((\d+) bit\)")
+
+
+def parse_source_bit_depth(ffmpeg_stderr: str) -> Optional[int]:
+    """Parse the first audio stream's bit depth from ffmpeg's stderr header.
+
+    Reads an explicit ``(24 bit)`` annotation first (ffmpeg uses it for 24-bit
+    audio held in 32-bit words), then the ``pcm_*`` codec name; float counts as
+    32.  Returns None if the stream line can't be parsed.
+    """
+    match = _STREAM_AUDIO_RE.search(ffmpeg_stderr or "")
+    if not match:
+        return None
+    line = match.group(1)
+    annotation = _BIT_ANNOTATION_RE.search(line)
+    if annotation:
+        return int(annotation.group(1))
+    codec = _PCM_CODEC_RE.search(line)
+    if codec:
+        return 32 if codec.group(1) == "f" else int(codec.group(2))
+    return None
+
+
 # Supported input formats
 SUPPORTED_INPUT_EXTENSIONS = {".wav", ".aiff", ".aif"}
 
@@ -139,6 +164,15 @@ class AudioProcessor:
             return parse_duration_header(result.stderr)
         except Exception as e:
             print(f"Error getting audio duration: {e}")
+            return None
+
+    def get_source_bit_depth(self, file_path: Path) -> Optional[int]:
+        """Bit depth of the source's first audio stream, or None if unknown."""
+        try:
+            result = run_ffmpeg(["-i", str(file_path)], capture_output=True, timeout=30)
+            return parse_source_bit_depth(result.stderr)
+        except Exception as e:
+            print(f"Error getting source bit depth: {e}")
             return None
 
     def detect_silence(self, file_path: Path, verbose=False) -> List[Track]:
@@ -340,7 +374,14 @@ class AudioProcessor:
         ]
 
         # Add codec-specific args
-        args.extend(format_config["codec_args"])
+        codec_args = format_config["codec_args"]
+        if output_format == "aiff":
+            # Only a source known to be <= 16-bit stays 16-bit; wider or
+            # unknown depths use 24-bit so nothing is truncated.
+            depth = self.get_source_bit_depth(input_file)
+            if depth is None or depth > 16:
+                codec_args = ["-c:a", "pcm_s24be"]
+        args.extend(codec_args)
 
         # Add FLAC compression level if applicable
         if output_format == "flac":
