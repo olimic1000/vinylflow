@@ -59,3 +59,26 @@ def test_get_audio_non_latin1_filename(tmp_path):
 def test_get_audio_unknown_id_returns_404():
     resp = client.get(f"/api/audio/{uuid.uuid4()}")
     assert resp.status_code == 404
+
+
+def test_preview_with_explicit_range_needs_no_stored_boundary(tmp_path, monkeypatch):
+    """Manual splits create tracks the backend has no boundary for; a
+    preview with explicit start/end must still render instead of 404."""
+    import backend.api as api
+
+    def fake_ffmpeg(args, **kwargs):
+        out = api.Path(args[-1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"ID3fake-mp3")
+
+    monkeypatch.setattr(api, "UPLOAD_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(api, "run_ffmpeg", fake_ffmpeg)
+    sid = _register_session(tmp_path)
+    try:
+        resp = client.get(f"/api/preview/{sid}/5", params={"start": 10.0, "end": 20.0})
+        assert resp.status_code == 200
+        assert resp.content == b"ID3fake-mp3"
+        # Without a range, an unknown track number is still a 404.
+        assert client.get(f"/api/preview/{sid}/5").status_code == 404
+    finally:
+        session_store.remove(sid)

@@ -612,14 +612,17 @@ async def preview_track(
         raise HTTPException(status_code=404, detail="File not found")
 
     boundaries = session.boundaries
-    if track_number < 1 or track_number > len(boundaries):
-        raise HTTPException(status_code=404, detail="Track not found")
-
-    track = boundaries[track_number - 1]
     file_path = session.source_audio
 
-    track_start = start if start is not None else track.start
-    track_end = end if end is not None else track.end
+    if start is not None and end is not None:
+        # Explicit range (e.g. a manual split): no stored boundary needed.
+        track_start, track_end = start, end
+    else:
+        if track_number < 1 or track_number > len(boundaries):
+            raise HTTPException(status_code=404, detail="Track not found")
+        track = boundaries[track_number - 1]
+        track_start = start if start is not None else track.start
+        track_end = end if end is not None else track.end
     track_duration = track_end - track_start
 
     if track_duration <= 0 or track_start < 0:
