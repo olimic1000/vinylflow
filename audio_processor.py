@@ -70,15 +70,6 @@ def parse_duration_header(ffmpeg_stderr: str) -> Optional[float]:
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
-_SAMPLE_RATE_RE = re.compile(r"Audio:.*?,\s*(\d+) Hz")
-
-
-def parse_sample_rate(ffmpeg_stderr: str) -> Optional[int]:
-    """Parse the first audio stream's sample rate from ffmpeg's stderr header, or None."""
-    match = _SAMPLE_RATE_RE.search(ffmpeg_stderr or "")
-    return int(match.group(1)) if match else None
-
-
 # Supported input formats
 SUPPORTED_INPUT_EXTENSIONS = {".wav", ".aiff", ".aif"}
 
@@ -148,15 +139,6 @@ class AudioProcessor:
             return parse_duration_header(result.stderr)
         except Exception as e:
             print(f"Error getting audio duration: {e}")
-            return None
-
-    def get_sample_rate(self, file_path: Path) -> Optional[int]:
-        """Sample rate of the source's first audio stream, or None if unknown."""
-        try:
-            result = run_ffmpeg(["-i", str(file_path)], capture_output=True, timeout=30)
-            return parse_sample_rate(result.stderr)
-        except Exception as e:
-            print(f"Error getting sample rate: {e}")
             return None
 
     def detect_silence(self, file_path: Path, verbose=False) -> List[Track]:
@@ -312,7 +294,9 @@ class AudioProcessor:
 
         # highpass=f=15: removes inaudible turntable motor rumble (below 15 Hz) without touching bass
         # adeclick=t=3:b=3: conservative click/pop removal (threshold 3 vs default 2, less likely to catch drum transients)
-        filters = ["highpass=f=15", "adeclick=t=3:b=3", "loudnorm=I=-14:LRA=11:TP=-1"]
+        # No loudnorm: it levelled every track to the same loudness (losing the
+        # album's balance) and resampled the output to 192 kHz.
+        filters = ["highpass=f=15", "adeclick=t=3:b=3"]
         return ", ".join(filters)
 
     def extract_track(
@@ -367,11 +351,6 @@ class AudioProcessor:
         # Add audio restoration filter chain if requested
         af_chain = self._build_restoration_filters(restoration_level, hum_freq)
         if af_chain:
-            # loudnorm resamples its output to 192 kHz; go back to the source
-            # rate (if it can't be probed, keep ffmpeg's behaviour).
-            sample_rate = self.get_sample_rate(input_file)
-            if sample_rate:
-                af_chain += f", aresample={sample_rate}"
             args.extend(["-af", af_chain])
 
         args.extend([
