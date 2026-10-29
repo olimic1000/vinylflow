@@ -32,7 +32,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config
-from audio_processor import AudioProcessor, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg
+from audio_processor import (
+    AudioProcessor, ENVELOPE_FRAME_S, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg,
+)
+from track_boundaries import music_span
 from metadata_handler import MetadataHandler
 from backend.sessions import (
     OutputSpec,
@@ -168,6 +171,8 @@ def cleanup_session(file_id: str) -> bool:
         print(f"Cleanup failed for {file_id}: {e}")
         session_store.remove(file_id)
         return False
+    finally:
+        _envelope_tasks.pop(file_id, None)
 
 
 # Background cleanup task
@@ -181,6 +186,7 @@ async def cleanup_old_files():
             # Drop stale Sessions (the store skips PROCESSING entries),
             # then remove their on-disk source folders.
             for sid in session_store.reap_stale(ttl_hours=ttl):
+                _envelope_tasks.pop(sid, None)
                 session_dir = get_session_path(sid)
                 if session_dir.exists():
                     shutil.rmtree(session_dir, ignore_errors=True)
@@ -364,6 +370,81 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
             print(f"MP3 conversion failed for {file_id}: {e}")
 
 
+# Energy envelope (per-frame RMS dBFS), computed once per Session in the
+# background at upload and cached as envelope.npy in the session dir.  The
+# task's result is the array itself, so endpoints just await it instead of
+# re-decoding.  file_id -> Task[np.ndarray]
+_envelope_tasks: dict = {}
+
+
+def _load_or_compute_envelope(file_id: str, file_path: Path):
+    """Blocking: load envelope.npy if cached, else decode and cache it."""
+    import numpy as np
+
+    cache_path = get_session_path(file_id, "envelope.npy")
+    if cache_path.exists():
+        try:
+            return np.load(cache_path)
+        except Exception:
+            cache_path.unlink(missing_ok=True)  # corrupt cache: recompute
+
+    db = audio_processor.compute_envelope(file_path)
+
+    # Write via a temp file + atomic rename so a reader never sees a
+    # half-written cache.  Caching is best-effort (the session dir may have
+    # been removed while we were decoding).
+    part_path = get_session_path(file_id, f"envelope.{uuid.uuid4().hex[:8]}.part")
+    try:
+        with open(part_path, "wb") as f:
+            np.save(f, db)
+        os.replace(part_path, cache_path)
+    except OSError:
+        part_path.unlink(missing_ok=True)
+    return db
+
+
+async def _run_envelope(file_id: str, file_path: Path):
+    db = await asyncio.to_thread(_load_or_compute_envelope, file_id, file_path)
+    start, end = music_span(db, ENVELOPE_FRAME_S)
+    await broadcast_message(
+        {
+            "type": "scan_complete",
+            "file_id": file_id,
+            "music_start": start,
+            "music_end": end,
+            "music_duration": max(0.0, end - start),
+        }
+    )
+    return db
+
+
+def start_envelope(file_id: str, file_path: Path) -> "asyncio.Task":
+    """Start (or join) the envelope computation for a Session."""
+    task = _envelope_tasks.get(file_id)
+    if task is None:
+        task = asyncio.create_task(_run_envelope(file_id, file_path))
+        _envelope_tasks[file_id] = task
+
+        def _done(t: "asyncio.Task") -> None:
+            # Failed scans must not poison later requests: drop the task so
+            # the next caller retries.
+            if t.cancelled() or t.exception() is not None:
+                if t.exception() is not None:
+                    print(f"Envelope scan failed for {file_id}: {t.exception()}")
+                if _envelope_tasks.get(file_id) is t:
+                    _envelope_tasks.pop(file_id, None)
+
+        task.add_done_callback(_done)
+    return task
+
+
+async def get_envelope(session):
+    """Awaitable accessor: in-flight task -> cache on disk -> compute now."""
+    task = start_envelope(session.id, session.source_audio)
+    # shield: a cancelled request must not cancel the shared background scan.
+    return await asyncio.shield(task)
+
+
 @app.post("/api/upload")
 async def upload_files(files: List[UploadFile] = File(...)):
     """
@@ -412,6 +493,8 @@ async def upload_files(files: List[UploadFile] = File(...)):
 
         # Start MP3 conversion in background (for fast waveform loading)
         asyncio.create_task(preconvert_to_mp3(file_id, file_path))
+        # ...and the energy envelope (music span + instant silence rescans).
+        start_envelope(file_id, file_path)
 
         uploaded.append(
             {"id": file_id, "filename": file.filename, "size": file_size, "duration": duration}
@@ -493,8 +576,6 @@ async def rescan_file(request: RescanRequest):
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    file_path = session.source_audio
-
     await broadcast_message(
         {
             "type": "progress",
@@ -506,10 +587,11 @@ async def rescan_file(request: RescanRequest):
     )
 
     try:
-        # Same full-file ffmpeg decode as /api/analyze (possibly several) —
-        # keep it off the event loop.
+        # Ladder sweep runs in memory over the cached envelope (awaiting the
+        # background scan if it is still decoding) — no per-rung ffmpeg run.
+        db = await get_envelope(session)
         tracks, scan_info = await asyncio.to_thread(
-            audio_processor.detect_tracks_for_count, file_path, request.expected_tracks
+            audio_processor.tracks_for_count_from_envelope, db, request.expected_tracks
         )
 
         tracks_data = [
@@ -540,6 +622,31 @@ async def rescan_file(request: RescanRequest):
             }
         )
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/scan/{file_id}")
+async def get_scan(file_id: str):
+    """Music span (lead-in and run-out trimmed) from the background envelope
+    scan; never blocks on it: ``{"ready": false}`` while it is still decoding."""
+    session = session_store.get(file_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    task = _envelope_tasks.get(file_id)
+    if task is None and get_session_path(file_id, "envelope.npy").exists():
+        db = await get_envelope(session)  # cached on disk: quick load
+    elif task is not None and task.done() and not task.cancelled() and task.exception() is None:
+        db = task.result()
+    else:
+        return {"ready": False}
+
+    start, end = music_span(db, ENVELOPE_FRAME_S)
+    return {
+        "ready": True,
+        "music_start": start,
+        "music_end": end,
+        "music_duration": max(0.0, end - start),
+    }
 
 
 @app.post("/api/analyze-duration-based")
