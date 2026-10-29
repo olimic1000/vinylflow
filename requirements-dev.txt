@@ -4,3 +4,5 @@
 -r requirements.txt
 
 pytest>=8.0.0
+# fastapi.testclient (used by tests/test_audio_endpoint.py) requires httpx
+httpx>=0.27.0
