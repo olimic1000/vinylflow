@@ -195,7 +195,7 @@ Also: guard `@click.away` with `!$event.ctrlKey` so Ctrl+click (which triggers `
 ## Audio Formats
 
 - **Input:** `.wav`, `.aiff`, `.aif` — minimum 60 seconds
-- **Output:** FLAC (configurable compression 0–8), MP3 (320 kbps), AIFF (PCM 16-bit big-endian)
+- **Output:** FLAC (configurable compression 0–8), MP3 (320 kbps), AIFF (PCM big-endian, keeps source bit depth: 16-bit sources stay 16-bit, wider or unknown depths export as 24-bit)
 - **Tagging:** Mutagen handles all three formats; cover art embedded as bytes
 
 ---
