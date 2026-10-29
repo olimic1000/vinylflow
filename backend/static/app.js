@@ -868,6 +868,9 @@ function vinylApp() {
             audioPlayer.src = previewUrl;
             audioPlayer.load();
             audioPlayer.play().catch(err => {
+                // AbortError: a newer Play/Stop click interrupted this one
+                // before it started. Not a real failure.
+                if (err.name === 'AbortError') return;
                 console.error('Playback failed:', err);
                 alert('Failed to play preview');
             });
