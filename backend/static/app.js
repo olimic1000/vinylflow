@@ -859,7 +859,9 @@ function vinylApp() {
             const track = this.detectedTracks.find(t => t.number === trackNumber);
 
             let previewUrl = `/api/preview/${this.currentFileId}/${trackNumber}`;
-            if (track && track.editing) {
+            // Always send the range: after a split/merge/delete the backend's
+            // stored boundaries are stale, so the track number alone is wrong.
+            if (track) {
                 previewUrl += `?start=${track.start}&end=${track.end}`;
             }
 
