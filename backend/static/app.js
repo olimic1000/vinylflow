@@ -1078,15 +1078,6 @@ function vinylApp() {
                 console.error('Error clearing regions:', e);
             }
 
-            const colors = [
-                'rgba(59, 130, 246, 0.3)',
-                'rgba(16, 185, 129, 0.3)',
-                'rgba(245, 158, 11, 0.3)',
-                'rgba(139, 92, 246, 0.3)',
-                'rgba(236, 72, 153, 0.3)',
-                'rgba(239, 68, 68, 0.3)',
-            ];
-
             this.detectedTracks.forEach((track, idx) => {
                 try {
                     const clampedStart = Math.min(track.start, totalDuration);
@@ -1097,7 +1088,7 @@ function vinylApp() {
                     this.waveformRegions.addRegion({
                         start: clampedStart,
                         end: clampedEnd,
-                        color: colors[idx % colors.length],
+                        color: this.getTrackColor(idx, track.ignored),
                         drag: true,
                         resize: true,
                         id: `track-${track.number}`,
@@ -1294,25 +1285,24 @@ function vinylApp() {
             if (this.waveformRegions) {
                 const region = this.waveformRegions.getRegions().find(r => r.id === `track-${track.number}`);
                 if (region) {
-                    const newColor = track.ignored
-                        ? 'rgba(239, 68, 68, 0.2)'
-                        : this.getTrackColor(track.number - 1);
-                    region.setOptions({ color: newColor });
+                    region.setOptions({ color: this.getTrackColor(track.number - 1, track.ignored) });
                 }
             }
         },
 
         /**
-         * Get color for track by index
+         * Get region color for track by index (grey when ignored).
+         * Red is deliberately not in the palette so it never reads as ignored.
          */
-        getTrackColor(idx) {
+        getTrackColor(idx, ignored = false) {
+            if (ignored) return 'rgba(107, 114, 128, 0.3)';
             const colors = [
                 'rgba(59, 130, 246, 0.3)',
                 'rgba(16, 185, 129, 0.3)',
                 'rgba(245, 158, 11, 0.3)',
                 'rgba(139, 92, 246, 0.3)',
                 'rgba(236, 72, 153, 0.3)',
-                'rgba(239, 68, 68, 0.3)',
+                'rgba(6, 182, 212, 0.3)',
             ];
             return colors[idx % colors.length];
         },
