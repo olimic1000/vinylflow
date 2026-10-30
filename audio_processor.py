@@ -95,6 +95,55 @@ def parse_source_bit_depth(ffmpeg_stderr: str) -> Optional[int]:
     return None
 
 
+_SAMPLE_RATE_RE = re.compile(r"Audio:.*?,\s*(\d+) Hz")
+
+
+def parse_sample_rate(ffmpeg_stderr: str) -> Optional[int]:
+    """Sample rate of the first audio stream from ffmpeg's header dump."""
+    match = _SAMPLE_RATE_RE.search(ffmpeg_stderr or "")
+    return int(match.group(1)) if match else None
+
+
+# Filtered cuts are decoded with this much extra audio on each side so the
+# filters' start-up transients (highpass settling, adeclick's first window) land
+# outside the part that is kept.
+FILTER_PAD_S = 1.0
+
+
+def padded_window(
+    start: float,
+    end: float,
+    total_duration: float,
+    sample_rate: int,
+    pad_s: float = FILTER_PAD_S,
+) -> Tuple[float, float, int, int]:
+    """Plan a padded read of ``[start, end]``.
+
+    Returns ``(seek_s, read_dur_s, trim_start_sample, trim_end_sample)``: read
+    ``read_dur_s`` seconds from ``seek_s`` (``max(0, start-pad)`` to
+    ``min(total, end+pad)``), filter, then keep samples
+    ``[trim_start_sample, trim_end_sample)`` of the read.  The read start is
+    snapped to a whole sample, so the kept length is exactly
+    ``round(end*sr) - round(start*sr)`` and sample-aligned with an unpadded cut.
+    """
+    s0 = int(round(start * sample_rate))
+    s1 = int(round(end * sample_rate))
+    r0 = max(0, s0 - int(round(pad_s * sample_rate)))
+    seek_s = r0 / sample_rate
+    read_end = min(float(total_duration), end + pad_s)
+    read_dur = max(read_end - seek_s, 0.0)
+    return seek_s, read_dur, s0 - r0, s1 - r0
+
+
+def trim_filter(trim_start: int, trim_end: int) -> str:
+    """Keep samples ``[trim_start, trim_end)`` and restart timestamps at 0."""
+    return f"atrim=start_sample={trim_start}:end_sample={trim_end},asetpts=PTS-STARTPTS"
+
+
+def seek_args(seek_s: float, read_dur: float) -> List[str]:
+    return ["-ss", f"{seek_s:.9f}", "-t", f"{read_dur:.9f}"]
+
+
 # Supported input formats
 SUPPORTED_INPUT_EXTENSIONS = {".wav", ".aiff", ".aif"}
 
@@ -141,6 +190,35 @@ class AudioProcessor:
         self.min_silence_duration = min_silence_duration
         self.min_track_length = min_track_length
         self.flac_compression = flac_compression
+        # (path, mtime_ns, size) -> (duration, sample rate)
+        self._probe_cache = {}
+
+    def probe_info(self, file_path: Path) -> Tuple[Optional[float], Optional[int]]:
+        """(duration seconds, sample rate Hz), cached per source file."""
+        try:
+            st = Path(file_path).stat()
+            key = (str(file_path), st.st_mtime_ns, st.st_size)
+        except OSError:
+            key = None
+        if key is not None and key in self._probe_cache:
+            return self._probe_cache[key]
+        try:
+            result = run_ffmpeg(["-i", str(file_path)], capture_output=True, timeout=30)
+            info = (parse_duration_header(result.stderr), parse_sample_rate(result.stderr))
+        except Exception as e:
+            print(f"Error probing audio: {e}")
+            return None, None
+        if key is not None and info[0] is not None and info[1]:
+            self._probe_cache[key] = info
+        return info
+
+    def padded_cut(self, file_path: Path, start: float, end: float):
+        """``padded_window`` for a cut of ``file_path`` or None if the source
+        can't be probed (callers then fall back to an unpadded cut)."""
+        duration, rate = self.probe_info(file_path)
+        if not duration or not rate:
+            return None
+        return padded_window(start, end, duration, rate)
 
     def get_audio_duration(self, file_path: Path) -> Optional[float]:
         """
@@ -366,14 +444,23 @@ class AudioProcessor:
         # -ss/-t before -i: input-side seek, so ffmpeg jumps straight to the
         # track instead of decoding everything before it. Sample-accurate for
         # PCM WAV/AIFF input.
-        args = [
-            "-ss",
-            str(track.start),
-            "-t",
-            str(track.duration),
-            "-i",
-            str(input_file),
-        ]
+        af_chain = self._build_restoration_filters(restoration_level, hum_freq)
+        # Filtered cuts are read with pre/post-roll and trimmed sample-exactly
+        # after the filters; unfiltered cuts stay untouched.
+        window = self.padded_cut(input_file, track.start, track.end) if af_chain else None
+        if window:
+            seek_s, read_dur, trim_start, trim_end = window
+            args = seek_args(seek_s, read_dur) + ["-i", str(input_file)]
+            af_chain = f"{af_chain}, {trim_filter(trim_start, trim_end)}"
+        else:
+            args = [
+                "-ss",
+                str(track.start),
+                "-t",
+                str(track.duration),
+                "-i",
+                str(input_file),
+            ]
 
         # Add codec-specific args
         codec_args = format_config["codec_args"]
@@ -390,7 +477,6 @@ class AudioProcessor:
             args.extend(["-compression_level", str(self.flac_compression)])
 
         # Add audio restoration filter chain if requested
-        af_chain = self._build_restoration_filters(restoration_level, hum_freq)
         if af_chain:
             args.extend(["-af", af_chain])
 
