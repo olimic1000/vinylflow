@@ -315,3 +315,143 @@ def test_detect_silence_wires_parse_and_boundaries():
     assert [(t.start, t.end) for t in tracks] == [(0.0, 180.0), (182.0, 360.0)]
     # The old _calculate_tracks would have produced (182.0, 400.0) here.
     assert all(t.end <= 360.0 for t in tracks)
+
+
+# ---------------------------------------------------------------------------
+# Envelope-based detection (synthetic numpy envelopes, 10 ms frames)
+# ---------------------------------------------------------------------------
+
+import numpy as np
+
+from track_boundaries import (
+    envelope_from_pcm,
+    gaps_from_envelope,
+    music_span,
+)
+
+FRAME = 0.01
+LOUD = -15.0
+QUIET = -60.0
+
+
+def make_env(segments):
+    """Build an envelope from [(seconds, level_db), ...]."""
+    return np.concatenate(
+        [np.full(int(round(sec / FRAME)), level, dtype=np.float32) for sec, level in segments]
+    )
+
+
+def test_envelope_from_pcm_levels():
+    full = np.full(800, 16384, dtype=np.int16)  # half scale -> -6.02 dBFS
+    silent = np.zeros(800, dtype=np.int16)
+    db = envelope_from_pcm(np.concatenate([full, silent]), 80)
+    assert len(db) == 20
+    assert abs(db[0] - (-6.02)) < 0.05
+    assert db[-1] == -120.0
+
+
+def test_gaps_from_envelope_basic_and_min_duration():
+    env = make_env([(5, LOUD), (2, QUIET), (5, LOUD), (0.2, QUIET), (5, LOUD)])
+    gaps = gaps_from_envelope(env, FRAME, -40.0, 0.5)
+    assert len(gaps) == 1
+    assert abs(gaps[0].start - 5.0) < 0.02 and abs(gaps[0].end - 7.0) < 0.02
+
+
+def test_gaps_from_envelope_open_gap_at_eof_and_leading_silence():
+    env = make_env([(3, QUIET), (5, LOUD), (4, QUIET)])
+    gaps = gaps_from_envelope(env, FRAME, -40.0, 1.0)
+    assert gaps[0].start == 0.0 and abs(gaps[0].end - 3.0) < 0.02
+    assert gaps[1].end is None and abs(gaps[1].start - 8.0) < 0.02
+
+
+def test_gaps_from_envelope_short_trailing_run_ignored():
+    env = make_env([(5, LOUD), (0.3, QUIET)])
+    assert gaps_from_envelope(env, FRAME, -40.0, 1.0) == []
+
+
+def test_music_span_trims_lead_in_and_run_out():
+    env = make_env([(8, QUIET), (30, LOUD), (10, QUIET)])
+    start, end = music_span(env, FRAME)
+    assert abs(start - 8.0) < 0.05
+    assert abs(end - 38.0) < 0.05
+
+
+def test_music_span_ignores_click_in_lead_in():
+    env = make_env([(3, QUIET), (0.08, -5.0), (5, QUIET), (30, LOUD), (6, QUIET)])
+    start, end = music_span(env, FRAME)
+    assert abs(start - 8.08) < 0.05
+    assert abs(end - 38.08) < 0.05
+
+
+def test_music_span_survives_brief_dips_in_music():
+    env = make_env([(2, QUIET), (10, LOUD), (0.05, QUIET), (10, LOUD), (2, QUIET)])
+    start, end = music_span(env, FRAME)
+    assert abs(start - 2.0) < 0.05
+    assert abs(end - 22.05) < 0.05
+
+
+def test_music_span_no_music_returns_whole_file():
+    env = make_env([(20, QUIET)])
+    assert music_span(env, FRAME) == (0.0, 20.0)
+
+
+def test_music_span_all_music():
+    env = make_env([(20, LOUD)])
+    start, end = music_span(env, FRAME)
+    assert start == 0.0 and abs(end - 20.0) < 0.02
+
+
+
+
+# --- refine_cuts -----------------------------------------------------------
+
+from track_boundaries import Track, refine_cuts
+
+FADE = -35.0  # between -40 and -30
+
+
+def test_refine_keeps_fade_out_tail():
+    env = make_env([(10, LOUD), (2, FADE), (3, QUIET), (10, LOUD), (3, QUIET)])
+    out = refine_cuts(env, FRAME, [Track(1, 0.0, 10.0), Track(2, 15.0, 25.0)], -40.0)
+    assert abs(out[0].end - 12.0) < 0.02
+    assert out[1].start == 15.0 and abs(out[1].end - 25.0) < 0.02
+    assert abs(out[0].duration - 12.0) < 0.02
+
+
+def test_refine_keeps_fade_in():
+    env = make_env([(3, QUIET), (2, FADE), (10, LOUD), (3, QUIET)])
+    out = refine_cuts(env, FRAME, [Track(1, 5.0, 15.0)], -40.0)
+    assert abs(out[0].start - 3.0) < 0.02
+    assert abs(out[0].end - 15.0) < 0.02
+
+
+def test_refine_neighbours_never_overlap():
+    # Gap region stays above the threshold the whole way: tracks meet midway.
+    env = make_env([(10, LOUD), (4, FADE), (10, LOUD)])
+    out = refine_cuts(env, FRAME, [Track(1, 0.0, 10.0), Track(2, 14.0, 24.0)], -40.0)
+    assert out[0].end == out[1].start
+    assert abs(out[0].end - 12.0) < 0.02
+    assert out[0].start == 0.0 and abs(out[1].end - 24.0) < 0.02
+
+
+def test_refine_isolated_click_not_absorbed():
+    env = make_env([(2, QUIET), (0.05, -5.0), (3, QUIET), (10, LOUD), (3, QUIET), (0.05, -5.0), (2, QUIET)])
+    start = 5.05
+    out = refine_cuts(env, FRAME, [Track(1, start, start + 10.0)], -40.0)
+    assert abs(out[0].start - start) < 0.02
+    assert abs(out[0].end - (start + 10.0)) < 0.02
+
+
+def test_refine_respects_file_edges_and_count():
+    env = make_env([(10, FADE)])
+    tracks = [Track(1, 2.0, 5.0), Track(2, 6.0, 8.0)]
+    out = refine_cuts(env, FRAME, tracks, -40.0)
+    assert [t.number for t in out] == [1, 2]
+    assert out[0].start == 0.0
+    assert abs(out[-1].end - 10.0) < 0.02
+    assert out[0].end <= out[1].start
+
+
+def test_refine_empty():
+    assert refine_cuts(make_env([(5, LOUD)]), FRAME, [], -40.0) == []
+

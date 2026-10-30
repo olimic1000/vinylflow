@@ -21,8 +21,15 @@ from track_boundaries import (
     boundaries_for_track_count,
     boundaries_from_durations,
     boundaries_from_gaps,
+    envelope_from_pcm,
+    gaps_from_envelope,
     parse_silence_log,
+    refine_cuts,
 )
+
+# Energy envelope: one mono decode at a low sample rate, RMS per 10 ms frame.
+ENVELOPE_SAMPLE_RATE = 8000
+ENVELOPE_FRAME_S = 0.01
 
 
 def _ffmpeg() -> str:
@@ -289,6 +296,71 @@ class AudioProcessor:
             raise RuntimeError("Silence detection timed out (>5 minutes)")
         except Exception as e:
             raise RuntimeError(f"Smart rescan failed: {e}")
+
+    def compute_envelope(self, file_path: Path):
+        """Decode ``file_path`` once and return its per-frame RMS dBFS envelope.
+
+        Mono, 8 kHz, 10 ms frames (``ENVELOPE_FRAME_S``).  Every silence
+        question (gaps at any threshold, music span) is then answered in
+        memory from this array.
+        """
+        import numpy as np
+
+        result = run_ffmpeg(
+            [
+                "-i",
+                str(file_path),
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "-ac",
+                "1",
+                "-ar",
+                str(ENVELOPE_SAMPLE_RATE),
+                "-",
+            ],
+            text=False,
+            capture_output=True,
+            check=True,
+        )
+        samples = np.frombuffer(result.stdout, dtype=np.int16)
+        return envelope_from_pcm(samples, int(ENVELOPE_SAMPLE_RATE * ENVELOPE_FRAME_S))
+
+    def refine_tracks(self, db, tracks):
+        """Widen envelope-derived tracks over audio still above the user's
+        silence threshold, so quiet fades aren't clipped by permissive
+        detection thresholds."""
+        return refine_cuts(db, ENVELOPE_FRAME_S, tracks, self.silence_threshold)
+
+    def tracks_for_count_from_envelope(self, db, target_count: int):
+        """Smart Rescan over a cached envelope: same ladder as
+        ``detect_tracks_for_count`` but with no ffmpeg decode per rung.
+
+        Returns ``(tracks, scan_info)`` like ``detect_tracks_for_count``.
+        """
+        total_duration = len(db) * ENVELOPE_FRAME_S
+        best_tracks = None
+        best_info = None
+
+        for threshold, min_duration in self.SMART_RESCAN_LADDER:
+            gaps = gaps_from_envelope(db, ENVELOPE_FRAME_S, threshold, min_duration)
+            tracks = boundaries_for_track_count(
+                gaps, total_duration, self.min_track_length, target_count
+            )
+            info = {
+                "silence_threshold": threshold,
+                "min_silence_duration": min_duration,
+                "matched": len(tracks) == target_count,
+            }
+            if info["matched"]:
+                return self.refine_tracks(db, tracks), info
+            if best_tracks is None or abs(len(tracks) - target_count) < abs(
+                len(best_tracks) - target_count
+            ):
+                best_tracks, best_info = tracks, info
+
+        return self.refine_tracks(db, best_tracks), best_info
 
     def split_tracks_duration_based(
         self, file_path: Path, durations: List[float], verbose=False
