@@ -8,6 +8,7 @@ Manages release searches, track mapping, and file tagging for FLAC, MP3, and AIF
 import re
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -223,6 +224,10 @@ class MetadataHandler:
         self.last_request_time = 0
         self.min_request_interval = 1.0  # Rate limiting: max 1 req/sec
         self._rate_limit_lock = threading.Lock()
+        self._release_cache: "OrderedDict[int, DiscogsRelease]" = OrderedDict()
+        self._release_cache_lock = threading.Lock()
+
+    RELEASE_CACHE_SIZE = 128
 
     def reinitialize(self, discogs_token: str, user_agent: str):
         """
@@ -236,6 +241,8 @@ class MetadataHandler:
         self.discogs_user_agent = user_agent
         self.client = discogs_client.Client(user_agent, user_token=discogs_token)
         self.last_request_time = 0
+        with self._release_cache_lock:
+            self._release_cache.clear()
         print(f"MetadataHandler reinitialized with new token")
 
     def _rate_limit(self):
@@ -294,13 +301,11 @@ class MetadataHandler:
                 if i > max_results:
                     break
 
-                try:
-                    self._rate_limit()
-                    release = self.client.release(result.id)
-                    releases.append((i, DiscogsRelease(release)))
-                except Exception as e:
-                    print(f"Warning: Failed to fetch release {result.id}: {e}")
-                    continue
+                # Through the cache, so exporting a release found here needs no
+                # second fetch (get_release_by_id logs a failed fetch).
+                release = self.get_release_by_id(result.id)
+                if release is not None:
+                    releases.append((i, release))
 
             return releases
 
@@ -310,7 +315,7 @@ class MetadataHandler:
 
     def get_release_by_id(self, release_id: int) -> Optional[DiscogsRelease]:
         """
-        Get release by Discogs ID.
+        Get release by Discogs ID (served from a bounded in-memory cache).
 
         Args:
             release_id: Discogs release ID
@@ -318,13 +323,26 @@ class MetadataHandler:
         Returns:
             DiscogsRelease or None
         """
+        key = int(release_id)
+        with self._release_cache_lock:
+            cached = self._release_cache.get(key)
+            if cached is not None:
+                self._release_cache.move_to_end(key)
+                return cached
+
         try:
             self._rate_limit()
-            release = self.client.release(release_id)
-            return DiscogsRelease(release)
+            release = DiscogsRelease(self.client.release(key))
         except Exception as e:
             print(f"Failed to fetch release {release_id}: {e}")
             return None
+
+        with self._release_cache_lock:
+            self._release_cache[key] = release
+            self._release_cache.move_to_end(key)
+            while len(self._release_cache) > self.RELEASE_CACHE_SIZE:
+                self._release_cache.popitem(last=False)
+        return release
 
     def download_cover_art(self, url: str, output_path: Path, max_size=1400) -> bool:
         """
