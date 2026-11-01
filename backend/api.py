@@ -796,6 +796,24 @@ async def get_audio_file(file_id: str):
     )
 
 
+def _serialize_release(release) -> dict:
+    """Full release payload shared by /api/search and /api/release/{id}."""
+    return {
+        "id": release.id,
+        "artist": release.artist,
+        "title": release.title,
+        "year": release.year,
+        "label": release.label,
+        "format": release.format,
+        "cover_url": release.cover_url,
+        "uri": release.uri,
+        "tracks": [
+            {"position": t.position, "title": t.title, "duration": t.duration_str}
+            for t in release.tracks
+        ],
+    }
+
+
 @app.post("/api/search")
 async def search_discogs(request: SearchRequest):
     """Search Discogs for releases."""
@@ -805,30 +823,19 @@ async def search_discogs(request: SearchRequest):
         releases = await asyncio.to_thread(
             metadata_handler.search_releases, request.query, max_results=request.max_results
         )
-
-        results = []
-        for idx, release in releases:
-            results.append(
-                {
-                    "id": release.id,
-                    "artist": release.artist,
-                    "title": release.title,
-                    "year": release.year,
-                    "label": release.label,
-                    "format": release.format,
-                    "cover_url": release.cover_url,
-                    "uri": release.uri,
-                    "tracks": [
-                        {"position": t.position, "title": t.title, "duration": t.duration_str}
-                        for t in release.tracks
-                    ],
-                }
-            )
-
-        return {"results": results}
+        return {"results": [_serialize_release(release) for _, release in releases]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/release/{release_id}")
+async def get_release(release_id: int):
+    """Full release details including tracklist (server-side cached)."""
+    release = await asyncio.to_thread(metadata_handler.get_release_by_id, release_id)
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release not found or Discogs unavailable")
+    return _serialize_release(release)
 
 
 @app.post("/api/process")
