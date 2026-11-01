@@ -54,7 +54,7 @@ class TagSet:
 class DiscogsTrack:
     """Represents a track from Discogs release."""
 
-    def __init__(self, position: str, title: str, duration: str = ""):
+    def __init__(self, position: str, title: str, duration: str = "", parts: Optional[List[dict]] = None):
         """
         Initialize Discogs track.
 
@@ -62,8 +62,11 @@ class DiscogsTrack:
             position: Vinyl position (e.g., "A1", "B2")
             title: Track title
             duration: Track duration (e.g., "5:24")
+            parts: For an umbrella track (a Discogs index track such as a suite),
+                its sub-tracks as ``{position, title, duration}``
         """
         self.position = position
+        self.parts = list(parts or [])
         self.title = title
         self.duration_str = duration
         self.duration_seconds = self._parse_duration(duration)
@@ -140,33 +143,48 @@ class DiscogsRelease:
         sequential_tracks = []
 
         for track in tracklist:
+            # type_ and sub_tracks exist only in the raw payload (discogs_client's
+            # Track has no attributes for them); plain fakes may set attributes.
+            raw = getattr(track, "data", None)
+            raw = raw if isinstance(raw, dict) else {}
+            kind = raw.get("type_", getattr(track, "type_", "")) or ""
             position = getattr(track, "position", "")
             title = getattr(track, "title", "Unknown")
             duration = getattr(track, "duration", "")
+            parts = None
 
             # Skip Discogs side-heading entries (type_='heading').
-            if getattr(track, "type_", "") == "heading":
+            if kind == "heading":
                 continue
+
+            # An index track (a suite, e.g. "Feel The Benefit" over B4-B6) has no
+            # position itself; its parts are sub_tracks. Keep it as one umbrella
+            # track at its first part's position, lasting as long as all parts.
+            if kind == "index":
+                umbrella = self._umbrella(raw, getattr(track, "sub_tracks", None), title, duration)
+                if umbrella is None:
+                    continue
+                position, duration, parts = umbrella
 
             # Handle vinyl positions — letter(s) followed by digits, with an optional
             # sub-track suffix such as ".1" or "-2" (e.g. "B6.1", "B6.2").
             if position and re.match(r"^[A-Z]+\d+", position):
-                tracks.append(DiscogsTrack(position, title, duration))
+                tracks.append(DiscogsTrack(position, title, duration, parts))
             # Handle repeated letters (A, AA, AAA -> A1, A2, A3)
             elif position and re.match(r"^([A-Z])\1*$", position):
                 letter = position[0]
                 count = len(position)
                 vinyl_pos = f"{letter}{count}"
-                tracks.append(DiscogsTrack(vinyl_pos, title, duration))
+                tracks.append(DiscogsTrack(vinyl_pos, title, duration, parts))
             # Handle sequential numbers (1, 2, 3, 4)
             elif position and re.match(r"^\d+$", position):
-                sequential_tracks.append((int(position), title, duration))
+                sequential_tracks.append((int(position), title, duration, parts))
             # Empty position — only treat as sequential when NO standard-position tracks
             # have been found yet.  If vinyl-position tracks already exist, an empty
             # position almost certainly means a side-heading (e.g. "Shaolin Sword"),
             # not an actual track.
             elif not position and title and title.lower() not in ["tracklist", "notes"]:
-                sequential_tracks.append((len(sequential_tracks) + 1, title, duration))
+                sequential_tracks.append((len(sequential_tracks) + 1, title, duration, parts))
 
         # Only convert sequential-number tracks to vinyl positions when the tracklist
         # has NO standard letter-position tracks at all.  This prevents side headings
@@ -176,9 +194,9 @@ class DiscogsRelease:
             sequential_tracks.sort(key=lambda x: x[0])
             total = len(sequential_tracks)
             half = (total + 1) // 2
-            for idx, (num, title, duration) in enumerate(sequential_tracks, 1):
+            for idx, (num, title, duration, parts) in enumerate(sequential_tracks, 1):
                 vinyl_pos = f"A{idx}" if idx <= half else f"B{idx - half}"
-                tracks.append(DiscogsTrack(vinyl_pos, title, duration))
+                tracks.append(DiscogsTrack(vinyl_pos, title, duration, parts))
 
         # Sort by letter prefix then by leading integer, so positions like "B6.1" and
         # "B6.2" land after "B5" rather than before "B1".
@@ -193,6 +211,29 @@ class DiscogsRelease:
             tracks.sort(key=_pos_sort_key)
 
         return tracks
+
+    @staticmethod
+    def _umbrella(raw: dict, sub_attr, title: str, duration: str):
+        """(position, duration, parts) for an index track, or None without usable parts."""
+        subs = raw.get("sub_tracks") if raw else None
+        if subs is None and sub_attr:
+            subs = [getattr(t, "data", None) or {"position": getattr(t, "position", ""),
+                    "title": getattr(t, "title", ""), "duration": getattr(t, "duration", "")} for t in sub_attr]
+        parts = [{"position": str(t.get("position") or ""), "title": str(t.get("title") or ""),
+                  "duration": str(t.get("duration") or "")} for t in subs or [] if isinstance(t, dict)]
+        positioned = [p for p in parts if p["position"]]
+        if not positioned:
+            return None
+        # "B4a" / "B4.1" parts share the base "B4"; "B4", "B5", "B6" start at "B4".
+        m = re.match(r"^([A-Z]+\d+|\d+)", positioned[0]["position"])
+        position = m.group(1) if m else positioned[0]["position"]
+        if not duration:
+            secs = [DiscogsTrack._parse_duration(None, p["duration"]) for p in parts]
+            if secs and all(secs):
+                total = int(sum(secs))
+                duration = f"{total // 60}:{total % 60:02d}" if total < 3600 else \
+                    f"{total // 3600}:{total % 3600 // 60:02d}:{total % 60:02d}"
+        return position, duration, parts
 
     def display_summary(self) -> str:
         """Get formatted summary for display."""

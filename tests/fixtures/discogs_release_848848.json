@@ -1,0 +1,176 @@
+{
+ "id": 848848,
+ "title": "Deceptive Bends",
+ "year": 1977,
+ "genres": [
+  "Rock"
+ ],
+ "styles": [
+  "Pop Rock"
+ ],
+ "master_id": 30521,
+ "tracklist": [
+  {
+   "position": "A1",
+   "type_": "track",
+   "title": "Good Morning Judge",
+   "duration": "2:54"
+  },
+  {
+   "position": "A2",
+   "type_": "track",
+   "title": "The Things We Do For Love",
+   "duration": "3:32"
+  },
+  {
+   "position": "A3",
+   "type_": "track",
+   "title": "Marriage Bureau Rendezvous",
+   "duration": "3:47"
+  },
+  {
+   "position": "A4",
+   "type_": "track",
+   "title": "People In Love",
+   "duration": "3:54"
+  },
+  {
+   "position": "A5",
+   "type_": "track",
+   "title": "Modern Man Blues",
+   "duration": "5:43"
+  },
+  {
+   "position": "B1",
+   "type_": "track",
+   "title": "Honeymoon With B Troop",
+   "duration": "2:44"
+  },
+  {
+   "position": "B2",
+   "type_": "track",
+   "title": "I Bought A Flat Guitar Tutor",
+   "duration": "1:45"
+  },
+  {
+   "position": "B3",
+   "type_": "track",
+   "title": "You've Got A Cold",
+   "duration": "3:42"
+  },
+  {
+   "position": "",
+   "type_": "index",
+   "title": "Feel The Benefit",
+   "duration": "",
+   "sub_tracks": [
+    {
+     "position": "B4",
+     "type_": "track",
+     "title": "Reminisce And Speculation",
+     "duration": "4:20"
+    },
+    {
+     "position": "B5",
+     "type_": "track",
+     "title": "A Latin Break",
+     "duration": "2:44"
+    },
+    {
+     "position": "B6",
+     "type_": "track",
+     "title": "Feel The Benefit",
+     "duration": "4:30"
+    }
+   ]
+  }
+ ],
+ "artists": [
+  {
+   "name": "10cc",
+   "anv": "",
+   "join": "",
+   "role": "",
+   "tracks": "",
+   "id": 39775
+  }
+ ],
+ "extraartists": [
+  {
+   "name": "Tony Spath",
+   "anv": "",
+   "join": "",
+   "role": "Engineer [Assistant]",
+   "tracks": "",
+   "id": 262938
+  },
+  {
+   "name": "Eric Stewart",
+   "anv": "",
+   "join": "",
+   "role": "Engineer, Mixed By",
+   "tracks": "",
+   "id": 266951
+  },
+  {
+   "name": "Melvyn Abrahams",
+   "anv": "Melys",
+   "join": "",
+   "role": "Lacquer Cut By",
+   "tracks": "",
+   "id": 540878
+  },
+  {
+   "name": "10cc",
+   "anv": "",
+   "join": "",
+   "role": "Producer",
+   "tracks": "",
+   "id": 39775
+  },
+  {
+   "name": "Hipgnosis (2)",
+   "anv": "",
+   "join": "",
+   "role": "Sleeve, Photography",
+   "tracks": "",
+   "id": 1826972
+  },
+  {
+   "name": "Eric Stewart",
+   "anv": "",
+   "join": "",
+   "role": "Written-By",
+   "tracks": "",
+   "id": 266951
+  },
+  {
+   "name": "Graham Gouldman",
+   "anv": "",
+   "join": "",
+   "role": "Written-By",
+   "tracks": "",
+   "id": 269171
+  }
+ ],
+ "labels": [
+  {
+   "name": "Mercury",
+   "catno": "SRM-1-3702",
+   "id": 39357
+  }
+ ],
+ "formats": [
+  {
+   "name": "Vinyl",
+   "qty": "1",
+   "descriptions": [
+    "LP",
+    "Album",
+    "Stereo"
+   ]
+  }
+ ],
+ "images": [],
+ "_note": "Trimmed Discogs API payload for release 848848 (Discogs release data is CC0). Fetched once 2026-10-21 with the user's permission; tests use it offline."
+}
