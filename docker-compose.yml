@@ -3,7 +3,8 @@ services:
     build: .
     container_name: vinylflow
     ports:
-      - "${PORT:-8000}:8000"
+      # Localhost only by default; set BIND_ADDRESS=0.0.0.0 in .env for LAN access (no auth!)
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8000}:8000"
     environment:
       # Discogs API Configuration
       - DISCOGS_USER_TOKEN=${DISCOGS_USER_TOKEN}
