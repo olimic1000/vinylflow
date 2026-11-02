@@ -159,7 +159,7 @@ def test_apply_vorbis_omits_label_when_none():
     assert audio.pictures == []
 
 
-def test_apply_vorbis_writes_empty_date_when_year_missing():
+def test_apply_vorbis_omits_date_when_year_missing():
     handler = make_handler()
     audio = FakeFlacAudio()
     tags = TagSet(
@@ -169,7 +169,7 @@ def test_apply_vorbis_writes_empty_date_when_year_missing():
 
     handler._apply_vorbis(audio, tags)
 
-    assert audio.values["DATE"] == ""
+    assert "DATE" not in audio.values
 
 
 class FakeId3Audio:
