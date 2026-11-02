@@ -34,6 +34,7 @@ VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tra
 - **Multiple output formats** — FLAC (lossless), MP3 (320kbps), or AIFF (lossless)
 - **Multiple input formats** — WAV and AIFF recordings supported
 - **Vinyl-style numbering** — proper A1, A2, B1, B2 track notation
+- **Rich tags** — multi-artist credits keep Discogs' join strings ("Simon & Garfunkel") without disambiguation suffixes ("Nirvana (2)" → "Nirvana", also in folder names), album artist is always set, compilations carry per-track artists and the compilation flag, and unknown values are left out instead of written empty
 - **Cover art** — downloads and embeds album artwork automatically
 - **Interactive waveform editor** — drag regions to fine-tune track boundaries
 - **Batch queue** — process multiple records with real-time progress

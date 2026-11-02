@@ -18,9 +18,11 @@ import requests
 import discogs_client
 from mutagen.flac import FLAC, Picture
 from mutagen.mp3 import MP3
-from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TPOS, TPUB, COMM, APIC, TXXX
+from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TCMP, TDRC, TRCK, TPOS, TPUB, COMM, APIC, TXXX
 from mutagen.aiff import AIFF
 from PIL import Image
+
+from release_credits import VARIOUS_ARTISTS, is_various, join_artist_names
 
 
 @dataclass(frozen=True)
@@ -50,12 +52,14 @@ class TagSet:
     cover_data: Optional[bytes] = None
     disc_number: Optional[str] = None
     vinyl_position: Optional[str] = None
+    album_artist: Optional[str] = None
+    compilation: bool = False
 
 
 class DiscogsTrack:
     """Represents a track from Discogs release."""
 
-    def __init__(self, position: str, title: str, duration: str = "", parts: Optional[List[dict]] = None):
+    def __init__(self, position: str, title: str, duration: str = "", parts: Optional[List[dict]] = None, artist: str = ""):
         """
         Initialize Discogs track.
 
@@ -65,8 +69,10 @@ class DiscogsTrack:
             duration: Track duration (e.g., "5:24")
             parts: For an umbrella track (a Discogs index track such as a suite),
                 its sub-tracks as ``{position, title, duration}``
+            artist: The track's own artist(s) when Discogs lists them (compilations)
         """
         self.position = position
+        self.artist = artist
         self.parts = list(parts or [])
         self.title = title
         self.duration_str = duration
@@ -115,13 +121,10 @@ class DiscogsRelease:
 
         # Get artists
         artists = getattr(release, "artists", [])
-        self.artist = artists[0].name if artists else "Unknown Artist"
+        self.artist = join_artist_names(artists) or "Unknown Artist"
 
         # Handle various artists
-        if self.artist.lower() in ["various", "various artists"]:
-            self.various_artists = True
-        else:
-            self.various_artists = False
+        self.various_artists = is_various(self.artist)
 
         # Get label
         labels = getattr(release, "labels", [])
@@ -152,6 +155,7 @@ class DiscogsRelease:
             position = getattr(track, "position", "")
             title = getattr(track, "title", "Unknown")
             duration = getattr(track, "duration", "")
+            track_artist = join_artist_names(getattr(track, "artists", None) or [])
             parts = None
 
             # Skip Discogs side-heading entries (type_='heading').
@@ -170,22 +174,22 @@ class DiscogsRelease:
             # Handle vinyl positions — letter(s) followed by digits, with an optional
             # sub-track suffix such as ".1" or "-2" (e.g. "B6.1", "B6.2").
             if position and re.match(r"^[A-Z]+\d+", position):
-                tracks.append(DiscogsTrack(position, title, duration, parts))
+                tracks.append(DiscogsTrack(position, title, duration, parts, track_artist))
             # Handle repeated letters (A, AA, AAA -> A1, A2, A3)
             elif position and re.match(r"^([A-Z])\1*$", position):
                 letter = position[0]
                 count = len(position)
                 vinyl_pos = f"{letter}{count}"
-                tracks.append(DiscogsTrack(vinyl_pos, title, duration, parts))
+                tracks.append(DiscogsTrack(vinyl_pos, title, duration, parts, track_artist))
             # Handle sequential numbers (1, 2, 3, 4)
             elif position and re.match(r"^\d+$", position):
-                sequential_tracks.append((int(position), title, duration, parts))
+                sequential_tracks.append((int(position), title, duration, parts, track_artist))
             # Empty position — only treat as sequential when NO standard-position tracks
             # have been found yet.  If vinyl-position tracks already exist, an empty
             # position almost certainly means a side-heading (e.g. "Shaolin Sword"),
             # not an actual track.
             elif not position and title and title.lower() not in ["tracklist", "notes"]:
-                sequential_tracks.append((len(sequential_tracks) + 1, title, duration, parts))
+                sequential_tracks.append((len(sequential_tracks) + 1, title, duration, parts, track_artist))
 
         # Only convert sequential-number tracks to vinyl positions when the tracklist
         # has NO standard letter-position tracks at all.  This prevents side headings
@@ -195,9 +199,9 @@ class DiscogsRelease:
             sequential_tracks.sort(key=lambda x: x[0])
             total = len(sequential_tracks)
             half = (total + 1) // 2
-            for idx, (num, title, duration, parts) in enumerate(sequential_tracks, 1):
+            for idx, (num, title, duration, parts, track_artist) in enumerate(sequential_tracks, 1):
                 vinyl_pos = f"A{idx}" if idx <= half else f"B{idx - half}"
-                tracks.append(DiscogsTrack(vinyl_pos, title, duration, parts))
+                tracks.append(DiscogsTrack(vinyl_pos, title, duration, parts, track_artist))
 
         # Sort by letter prefix then by leading integer, so positions like "B6.1" and
         # "B6.2" land after "B5" rather than before "B1".
@@ -542,8 +546,15 @@ class MetadataHandler:
         else:
             disc_str, track_str = None, track.vinyl_number
 
+        # Compilations: each track carries its own artist; the release artist
+        # ("Various") is only the fallback and ALBUMARTIST says "Various Artists".
+        various = getattr(release, "various_artists", False)
+        artist = release.artist
+        if various:
+            artist = getattr(discogs_track, "artist", "") or release.artist
+
         return TagSet(
-            artist=release.artist,
+            artist=artist,
             album=release.title,
             title=discogs_track.title,
             track_number=track_str,
@@ -553,11 +564,15 @@ class MetadataHandler:
             cover_data=cover_data,
             disc_number=disc_str,
             vinyl_position=track.vinyl_number if disc_str is not None else None,
+            album_artist=VARIOUS_ARTISTS if various else release.artist,
+            compilation=various,
         )
 
     def _apply_vorbis(self, audio: FLAC, tags: TagSet) -> None:
         """Write a TagSet to a FLAC file using Vorbis comments."""
         audio["ARTIST"] = tags.artist
+        if tags.album_artist:
+            audio["ALBUMARTIST"] = tags.album_artist
         audio["ALBUM"] = tags.album
         audio["TITLE"] = tags.title
         audio["TRACKNUMBER"] = tags.track_number
@@ -565,7 +580,10 @@ class MetadataHandler:
             audio["DISCNUMBER"] = tags.disc_number
         if tags.vinyl_position is not None:
             audio["VINYLPOSITION"] = tags.vinyl_position
-        audio["DATE"] = str(tags.year) if tags.year else ""
+        if tags.compilation:
+            audio["COMPILATION"] = "1"
+        if tags.year:
+            audio["DATE"] = str(tags.year)
         if tags.label:
             audio["LABEL"] = tags.label
         audio["DISCOGS_RELEASE_ID"] = str(tags.release_id)
@@ -583,7 +601,11 @@ class MetadataHandler:
         audio.tags["TIT2"] = TIT2(encoding=3, text=tags.title)
         audio.tags["TPE1"] = TPE1(encoding=3, text=tags.artist)
         audio.tags["TALB"] = TALB(encoding=3, text=tags.album)
+        if tags.album_artist:
+            audio.tags["TPE2"] = TPE2(encoding=3, text=tags.album_artist)
         audio.tags["TRCK"] = TRCK(encoding=3, text=tags.track_number)
+        if tags.compilation:
+            audio.tags["TCMP"] = TCMP(encoding=3, text="1")
         if tags.disc_number is not None:
             audio.tags["TPOS"] = TPOS(encoding=3, text=tags.disc_number)
         if tags.vinyl_position is not None:
