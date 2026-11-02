@@ -12,6 +12,63 @@
     <style>
         [x-cloak] { display: none !important; }
 
+        /* Toasts (see notify() in app.js). Colours checked for WCAG AA:
+           text #1E1E1E on #FAF9F6/#FFF6DD/#FDEDEB >= 14.6:1; icon + accent
+           colours >= 4.9:1 on their backgrounds; action link #8A5F00 >= 4.9:1. */
+        .toast-stack {
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: min(380px, calc(100vw - 32px));
+            pointer-events: none;
+        }
+        .toast {
+            pointer-events: auto;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            background-color: #FAF9F6;
+            color: #1E1E1E;
+            border: 1px solid #8A8A86;
+            border-left-width: 4px;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+            font-size: 0.875rem;
+        }
+        .toast-icon { font-weight: 700; line-height: 1.25rem; flex-shrink: 0; }
+        .toast-info { border-left-color: #5C5C58; }
+        .toast-info .toast-icon { color: #5C5C58; }
+        .toast-success { border-left-color: #0B6B4A; }
+        .toast-success .toast-icon { color: #0B6B4A; }
+        .toast-warning { border-left-color: #8A5F00; background-color: #FFF6DD; }
+        .toast-warning .toast-icon { color: #8A5F00; }
+        .toast-error { border-left-color: #A32A1F; background-color: #FDEDEB; }
+        .toast-error .toast-icon { color: #A32A1F; }
+        .toast-action {
+            font-weight: 600;
+            color: #8A5F00;
+            text-decoration: underline;
+            white-space: nowrap;
+        }
+        .toast-close {
+            color: #5C5C58;
+            line-height: 1;
+            font-size: 1.1rem;
+            padding: 0 2px;
+        }
+        .toast-close:hover { color: #1E1E1E; }
+        .toast-action:hover { color: #5C4000; }
+        .toast-action:focus-visible, .toast-close:focus-visible {
+            outline: 2px solid #1E1E1E;
+            outline-offset: 2px;
+            border-radius: 2px;
+        }
+
         /* Typography */
         @font-face {
             font-family: 'Mirano Extended';
@@ -211,6 +268,22 @@
 </head>
 <body class="bg-page">
     <div x-data="vinylApp()" x-init="init()" class="min-h-screen">
+        <!-- Toasts: stacked bottom-right; info/success auto-dismiss, warnings/errors stay.
+             The icon and the hidden type word keep the type from relying on colour alone. -->
+        <div class="toast-stack" role="region" aria-label="Notifications">
+            <template x-for="toast in toasts" :key="toast.id">
+                <div class="toast" :class="'toast-' + toast.type"
+                     :role="toast.role" :aria-live="toast.role === 'alert' ? 'assertive' : 'polite'" aria-atomic="true"
+                     @mouseenter="pauseToast(toast.id)" @mouseleave="resumeToast(toast.id)"
+                     @focusin="pauseToast(toast.id)" @focusout="resumeToast(toast.id)">
+                    <span class="toast-icon" aria-hidden="true" x-text="toastIcon(toast.type)"></span>
+                    <p class="flex-1 min-w-0 break-words"><span class="sr-only" x-text="toast.type + ': '"></span><span x-text="toast.message"></span></p>
+                    <button x-show="toast.action" x-cloak type="button" class="toast-action" @click="runToastAction(toast.id)" x-text="toast.action?.label"></button>
+                    <button type="button" class="toast-close" aria-label="Dismiss notification" @click="dismissToast(toast.id)">&times;</button>
+                </div>
+            </template>
+        </div>
+
         <!-- Header -->
         <header class="bg-header shadow-sm">
             <div class="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
