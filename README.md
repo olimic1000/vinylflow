@@ -89,7 +89,7 @@ cd vinylflow
 
 ### Accessing from other devices (LAN)
 
-By default the port is published on `127.0.0.1` only, so VinylFlow is reachable just from the computer running it. To open it from a phone or another computer, add `BIND_ADDRESS=0.0.0.0` to your `.env` and run `docker compose up -d` again, then browse to `http://<your-computer's-IP>:8000`.
+By default the port is published on `127.0.0.1` only, so VinylFlow is reachable just from the computer running it. To open it from a phone or another computer, add `BIND_ADDRESS=0.0.0.0` to your `.env` and run `docker compose up -d` again, then browse to `http://<your-computer's-IP>:8000`. To reach it by a hostname instead of an IP, also add `VINYLFLOW_ALLOWED_HOSTS=<name>` (e.g. `nas.local`) to your `.env`.
 
 **Risk:** VinylFlow has no authentication, and the API can change the output folder and write files there. Anyone who can reach the port can use it, so only enable this on a trusted network.
 
