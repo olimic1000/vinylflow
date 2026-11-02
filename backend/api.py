@@ -21,7 +21,7 @@ import logging
 from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
+from backend.security import SameOriginMiddleware
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -46,16 +46,9 @@ from backend.sessions import (
 # Initialize FastAPI app
 app = FastAPI(title="VinylFlow API", version="1.0.0")
 
-# Enable CORS
-# Note: allow_origins=["*"] is fine for local/self-hosted use.
-# If exposing publicly, restrict this to your specific domain.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The UI is same-origin, so no CORS: `*` let any website drive this local API.
+# Reject foreign Host/Origin instead (DNS rebinding, cross-site form posts and WebSockets).
+app.add_middleware(SameOriginMiddleware)
 
 # Global state management.  ``session_store`` owns every Session;
 # ``websocket_connections`` is the list of subscribers for progress
