@@ -7,7 +7,6 @@ carry attributes, which must keep working.  No Discogs calls anywhere.
 """
 
 import shutil
-import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +14,7 @@ from mutagen.aiff import AIFF
 from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
 
-from audio_processor import OUTPUT_FORMATS
+from audio_processor import OUTPUT_FORMATS, run_ffmpeg
 from metadata_handler import DiscogsRelease, MetadataHandler
 
 
@@ -163,8 +162,9 @@ needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg
 
 def silent_file(tmp_path, fmt):
     path = tmp_path / f"t{OUTPUT_FORMATS[fmt]['extension']}"
-    subprocess.run(
-        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "0.2", str(path)],
+    run_ffmpeg(
+        ["-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "0.2", str(path)],
+        capture_output=True,
         check=True,
     )
     return path
