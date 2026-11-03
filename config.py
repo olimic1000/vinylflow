@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 #                            and disc totals. Single LP appears as 1 disc.
 #                            VINYLPOSITION custom tag preserved.
 # "vinyl"                  — TRACKNUMBER="A1" (legacy behaviour, no DISCNUMBER or totals written).
-DEFAULT_TRACK_NUMBERING = "vinyl"
+DEFAULT_TRACK_NUMBERING = "sequential_disc_per_lp"
 
 
 class Config:

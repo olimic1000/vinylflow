@@ -13,6 +13,8 @@ from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
 
 from audio_processor import OUTPUT_FORMATS
+from backend.sessions.events import OutputSpec
+from config import DEFAULT_TRACK_NUMBERING
 from metadata_handler import DiscogsRelease, MetadataHandler
 
 SEQ = "sequential_disc_per_lp"
@@ -156,3 +158,8 @@ def test_id3_vinyl_scheme_has_plain_track_and_no_disc(tmp_path):
     assert handler().tag_file(path, FakeTrack("B1"), two_lp_release(), None, "mp3", "vinyl")
     tags = MP3(path).tags
     assert str(tags["TRCK"]) == "B1" and "TPOS" not in tags
+
+
+def test_sequential_is_the_default():
+    assert DEFAULT_TRACK_NUMBERING == SEQ
+    assert OutputSpec(output_format="flac", output_dir=".").track_numbering == SEQ

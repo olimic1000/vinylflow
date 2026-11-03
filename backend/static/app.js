@@ -97,7 +97,7 @@ function vinylApp() {
         config: {
             silence_threshold: -40,
             min_silence_duration: 1.5,
-            track_numbering: 'vinyl',
+            track_numbering: 'sequential_disc_per_lp',
             min_track_length: 30,
             flac_compression: 8,
             output_dir: ''
