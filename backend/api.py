@@ -14,6 +14,7 @@ from subprocess import CalledProcessError
 from typing import List, Optional
 import asyncio
 import json
+import math
 from datetime import datetime, timedelta
 
 import logging
@@ -35,7 +36,12 @@ from config import TRACK_NUMBERING_SCHEMES, Config
 from audio_processor import (
     AudioProcessor, ENVELOPE_FRAME_S, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg,
 )
-from track_boundaries import music_span
+from track_boundaries import (
+    boundaries_from_expected_durations,
+    gaps_from_envelope,
+    guided_by_alignment,
+    music_span,
+)
 from metadata_handler import MetadataHandler
 from backend.sessions import (
     OutputSpec,
@@ -249,6 +255,15 @@ class DurationBasedAnalyzeRequest(BaseModel):
 class RescanRequest(BaseModel):
     file_id: str
     expected_tracks: int
+
+
+class GuidedAnalyzeRequest(BaseModel):
+    file_id: str
+    expected_tracks: int
+    # One entry per expected track; null for tracks Discogs has no length for.
+    durations: Optional[List[Optional[float]]] = None
+    # Internal track counts before Discogs side transitions (A -> B, B -> C, ...).
+    side_breaks: Optional[List[int]] = None
 
 
 class SearchRequest(BaseModel):
@@ -703,6 +718,110 @@ async def get_scan(file_id: str):
         "music_end": end,
         "music_duration": max(0.0, end - start),
     }
+
+
+@app.post("/api/analyze-guided")
+async def analyze_guided(request: GuidedAnalyzeRequest):
+    """
+    Place exactly ``expected_tracks`` boundaries using the cached envelope and
+    the Discogs lengths.  Best-match alignment runs first (a length that is
+    unknown costs nothing); the gap/scale model is the fallback when every
+    length is known, and count-based detection (the Smart Rescan ladder) when
+    no length is known or neither model can place the tracks.
+    """
+    if not 1 <= request.expected_tracks <= 99:
+        raise HTTPException(status_code=422, detail="expected_tracks must be between 1 and 99")
+
+    side_breaks = request.side_breaks or []
+    if side_breaks != sorted(set(side_breaks)) or any(
+        not 1 <= index < request.expected_tracks for index in side_breaks
+    ):
+        raise HTTPException(status_code=422, detail="side_breaks must be sorted unique internal track indices")
+
+    session = session_store.get(request.file_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    durations = request.durations
+    sized = durations is not None and len(durations) == request.expected_tracks
+    # Zero, negative and non-finite lengths (JSON 1e400 parses as inf) count as unknown.
+    known = [d if d is not None and math.isfinite(d) and d > 0 else None for d in durations] if sized else []
+    all_known = sized and all(d is not None for d in known)
+    try_align = sized and request.expected_tracks >= 2 and any(d is not None for d in known)
+
+    try:
+        db = await get_envelope(session)
+
+        def _compute():
+            music_start, music_end = music_span(db, ENVELOPE_FRAME_S)
+            result = None
+            if try_align:
+                try:
+                    result = guided_by_alignment(
+                        db, ENVELOPE_FRAME_S, music_start, music_end,
+                        [float(d) if d is not None else None for d in known],
+                        side_breaks=side_breaks,
+                    )
+                except Exception:
+                    logger.warning("Best-match alignment failed; using fallback", exc_info=True)
+            if result is None and all_known:
+                gaps = gaps_from_envelope(
+                    db,
+                    ENVELOPE_FRAME_S,
+                    audio_processor.SMART_RESCAN_LADDER[0][0],
+                    audio_processor.SMART_RESCAN_LADDER[0][1],
+                )
+                result = boundaries_from_expected_durations(
+                    gaps, music_start, music_end, [float(d) for d in known],
+                    side_breaks=side_breaks,
+                )
+            if result is not None:
+                # Aligned cuts touch, so for them only the outer edges widen; the gap/scale
+                # model's snapped cuts can widen into their gaps.
+                refined = audio_processor.refine_tracks(db, result.tracks)
+                return refined, True, result, music_start, music_end
+            tracks, info = audio_processor.tracks_for_count_from_envelope(
+                db, request.expected_tracks
+            )
+            return tracks, info["matched"], None, music_start, music_end
+
+        tracks, matched, guided, music_start, music_end = await asyncio.to_thread(_compute)
+        session.set_boundaries(tracks)
+
+        boundaries = []
+        if guided is not None:
+            boundaries = [
+                {
+                    "index": b.index,
+                    "expected": b.expected,
+                    "snapped": b.snapped,
+                    "position": b.position,
+                    "gap": {"start": b.gap.start, "end": b.gap.end} if b.gap else None,
+                }
+                for b in guided.boundaries
+            ]
+
+        return {
+            "tracks": [
+                {"number": i + 1, "start": t.start, "end": t.end, "duration": t.duration}
+                for i, t in enumerate(tracks)
+            ],
+            "method": "durations" if guided is not None else "count",
+            "matched": matched,
+            "boundaries": boundaries,
+            "scale": guided.scale if guided else None,
+            "scale_clamped": guided.scale_clamped if guided else None,
+            "model": guided.model if guided else None,
+            "gap_s": guided.gap_s if guided else None,
+            "music_start": music_start,
+            "music_end": music_end,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Guided analysis failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/analyze-duration-based")
