@@ -451,6 +451,19 @@
                         </p>
                     </div>
 
+                    <!-- Get from Audacity: pull the open project over mod-script-pipe -->
+                    <div x-show="audacitySupported" x-cloak class="mt-3 flex items-center gap-3 flex-wrap">
+                        <button @click="importFromAudacity()" :disabled="audacityBusy" class="px-4 py-2 btn-primary rounded-lg font-semibold text-sm" :class="{'opacity-60 cursor-not-allowed': audacityBusy}" title="Uses the recording open in Audacity. Labels you added there become the track splits.">
+                            <span x-show="!audacityBusy">📥 Get from Audacity</span>
+                            <span x-show="audacityBusy" class="flex items-center gap-2">
+                                <div class="spinner"></div>
+                                Talking to Audacity…
+                            </span>
+                        </button>
+                        <span class="text-xs text-secondary">Recorded in Audacity? Bring the open project straight in.</span>
+                    </div>
+                    <p x-show="audacityNotice" x-cloak class="mt-2 text-sm text-primary p-2 rounded-lg" style="background-color: rgba(229, 161, 0, 0.15);" x-text="audacityNotice"></p>
+
                     <!-- Upload Notice (skipped/unsupported files) -->
                     <div x-show="uploadNotice" x-cloak class="mt-3 p-2 rounded-lg text-sm text-primary" style="background-color: rgba(229, 161, 0, 0.15);">
                         <span x-text="uploadNotice"></span>
@@ -563,7 +576,9 @@
                         <button @click="stopWaveform()" :disabled="!waveform" class="px-4 py-2 btn-danger rounded-lg">⏹️ Stop</button>
                         <button @click="zoomIn()" :disabled="!waveform" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;">🔍 +</button>
                         <button @click="zoomOut()" :disabled="!waveform" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;">🔍 -</button>
-                        <button @click="exportAudacityLabels()" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;" title="Save these splits as a label file for Audacity (File → Import → Labels)">📄 Export to Audacity</button>
+                        <button @click="exportAudacityLabels()" :disabled="audacityBusy" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;"
+                            :title="currentFile?.fromAudacity ? 'Put these splits into the Audacity project as a “VinylFlow” label track' : 'Save these splits as a label file for Audacity (File → Import → Labels)'"
+                            x-text="currentFile?.fromAudacity ? '📤 Send to Audacity' : '📄 Export to Audacity'"></button>
                     </div>
                 </div>
             </div>

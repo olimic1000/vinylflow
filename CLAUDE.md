@@ -68,6 +68,8 @@ audio_processor.py  metadata_handler.py  config.py    Discogs API
 5. For each track: ffmpeg extract → convert to format → tag → rename
 6. Broadcast completion via WebSocket
 
+**Audacity link** (`audacity_bridge.py`): drives a running Audacity over mod-script-pipe (named pipes; the user enables it in Audacity's Preferences → Modules). One shared connection behind a lock, re-checked before reuse. `Export2` writes in the format last picked in Audacity's export dialog whatever the filename says, so the export is renamed to match its header (often `.aiff`). `SelectAll:` exports nothing on Audacity 3.7 — use an explicit `Select: Start=0 End=… Track=0 TrackCount=…`.
+
 **Upload session storage:**
 - Source file: `VINYLFLOW_UPLOAD_DIR/{file_id}/source.{ext}`
 - Output: `DEFAULT_OUTPUT_DIR/{Artist} - {Album}/{position}-{title}.{fmt}`
@@ -81,6 +83,11 @@ audio_processor.py  metadata_handler.py  config.py    Discogs API
 | POST | `/api/upload` | Upload WAV/AIFF, create session UUID, queue MP3 preview |
 | POST | `/api/analyze` | Silence detection → track boundaries |
 | POST | `/api/analyze-duration-based` | Fallback: tracks from Discogs durations |
+| POST | `/api/import-labels` | Track boundaries from an Audacity label file |
+| POST | `/api/export-labels` | Format boundaries as an Audacity label file |
+| GET | `/api/audacity/status` | Whether Audacity is reachable at all (false in Docker) |
+| POST | `/api/audacity/import` | Export the open Audacity project into a new session (labels → boundaries, else silence detection) |
+| POST | `/api/audacity/labels` | Write boundaries into Audacity as a "VinylFlow" label track |
 | GET | `/api/preview/{file_id}/{track_number}` | Generate 30s MP3 preview |
 | GET | `/api/waveform-peaks/{file_id}` | Waveform data for WaveSurfer |
 | GET | `/api/audio/{file_id}` | Serve audio for playback |

@@ -35,6 +35,8 @@ from config import Config
 from audio_processor import AudioProcessor, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg
 from metadata_handler import MetadataHandler
 from audacity_labels import LabelFileError, labels_from_tracks, tracks_from_labels
+import audacity_bridge
+from audacity_bridge import AudacityCommandError, AudacityUnavailable
 from backend.sessions import (
     OutputSpec,
     ProgressEvent,
@@ -338,6 +340,19 @@ async def get_output_formats():
     }
 
 
+# In-flight MP3 preconversions, so /api/audio can wait for one instead of
+# pinning playback to the source file (AIFF won't play in Chromium/WebView2).
+_preconvert_tasks: dict = {}
+# Long enough for a full side at ffmpeg's usual 50x+ realtime MP3 encode.
+PLAYBACK_PRECONVERT_WAIT = 60.0
+
+
+def start_preconvert(file_id: str, file_path: Path) -> None:
+    task = asyncio.create_task(preconvert_to_mp3(file_id, file_path))
+    _preconvert_tasks[file_id] = task
+    task.add_done_callback(lambda _t: _preconvert_tasks.pop(file_id, None))
+
+
 async def preconvert_to_mp3(file_id: str, file_path: Path):
     """
     Convert audio to MP3 in background for faster waveform loading.
@@ -424,7 +439,7 @@ async def upload_files(files: List[UploadFile] = File(...)):
         )
 
         # Start MP3 conversion in background (for fast waveform loading)
-        asyncio.create_task(preconvert_to_mp3(file_id, file_path))
+        start_preconvert(file_id, file_path)
 
         uploaded.append(
             {"id": file_id, "filename": file.filename, "size": file_size, "duration": duration}
@@ -666,6 +681,130 @@ async def export_labels(request: ExportLabelsRequest):
     return {"labels": labels_from_tracks(rows)}
 
 
+def _audacity_http_error(error: Exception) -> HTTPException:
+    if isinstance(error, AudacityUnavailable):
+        return HTTPException(status_code=503, detail=str(error))
+    return HTTPException(status_code=502, detail=str(error))
+
+
+def _require_audacity_reachable() -> None:
+    if audacity_bridge.running_in_container():
+        raise HTTPException(
+            status_code=400,
+            detail="VinylFlow is running in Docker, so it can't reach Audacity. "
+            "Use Export Labels in Audacity and Import Audacity labels here instead.",
+        )
+
+
+def _safe_source_name(name: str, suffix: str) -> str:
+    cleaned = "".join(c for c in name if c not in '/\\:*?"<>|').strip() or "Audacity recording"
+    return f"{cleaned}{suffix}"
+
+
+@app.get("/api/audacity/status")
+async def audacity_status():
+    """Whether this VinylFlow can talk to Audacity at all (not in Docker)."""
+    return {"supported": not audacity_bridge.running_in_container()}
+
+
+@app.post("/api/audacity/import")
+async def import_from_audacity():
+    """
+    Pull the recording open in Audacity into a new Session.
+
+    Audacity exports the project's audio straight into the session folder.
+    If the project has labels, they become the Track Boundaries (a label
+    track named "VinylFlow" wins over any others); otherwise silence
+    detection runs, as with an upload.
+    """
+    _require_audacity_reachable()
+
+    file_id = str(uuid.uuid4())
+    session_dir = get_session_path(file_id)
+    target = session_dir / "source.wav"
+
+    def _fetch():
+        with audacity_bridge.connection() as pipe:
+            return audacity_bridge.fetch_recording(pipe, target)
+
+    try:
+        recording = await asyncio.to_thread(_fetch)
+    except (AudacityUnavailable, AudacityCommandError) as e:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        raise _audacity_http_error(e)
+    target = recording.path
+
+    try:
+        duration = await asyncio.to_thread(audio_processor.get_audio_duration, target)
+    except Exception:
+        duration = None
+    duration = float(duration or recording.duration)
+
+    session = session_store.create(
+        session_id=file_id,
+        source_audio=target,
+        source_filename=_safe_source_name(recording.name, target.suffix),
+        source_duration=duration,
+        source_size=target.stat().st_size,
+    )
+    start_preconvert(file_id, target)
+
+    tracks, names, source = [], [], "detected"
+    if recording.labels:
+        try:
+            tracks, names = tracks_from_labels(
+                labels_from_tracks(recording.labels),
+                duration,
+                min_track_length=config.default_min_track_length,
+            )
+            source = "labels"
+        except LabelFileError:
+            tracks = []  # labels all outside the audio — detect instead
+    if not tracks:
+        try:
+            tracks = await asyncio.to_thread(audio_processor.detect_silence, target, verbose=False)
+        except Exception as e:
+            logger.error(f"Silence detection on Audacity import failed: {e}", exc_info=True)
+            tracks = []
+        names = [""] * len(tracks)
+    session.set_boundaries(tracks)
+
+    return {
+        "file": _serialize_uploaded(session),
+        "source": source,
+        "label_track": recording.label_source if source == "labels" else "",
+        "tracks": [
+            {
+                "number": i + 1,
+                "start": track.start,
+                "end": track.end,
+                "duration": track.duration,
+                "label": name,
+            }
+            for i, (track, name) in enumerate(zip(tracks, names))
+        ],
+    }
+
+
+@app.post("/api/audacity/labels")
+async def send_labels_to_audacity(request: ExportLabelsRequest):
+    """Write track boundaries into the open Audacity project as a "VinylFlow" label track."""
+    _require_audacity_reachable()
+    if not request.tracks:
+        raise HTTPException(status_code=422, detail="No tracks to send")
+    rows = [(t.start, t.end, t.name or "") for t in request.tracks]
+
+    def _write():
+        with audacity_bridge.connection() as pipe:
+            return audacity_bridge.write_labels(pipe, rows)
+
+    try:
+        count = await asyncio.to_thread(_write)
+    except (AudacityUnavailable, AudacityCommandError) as e:
+        raise _audacity_http_error(e)
+    return {"labels": count, "track": audacity_bridge.VINYLFLOW_LABEL_TRACK}
+
+
 @app.get("/api/preview/{file_id}/{track_number}")
 async def preview_track(
     file_id: str, track_number: int, start: Optional[float] = None, end: Optional[float] = None
@@ -839,6 +978,13 @@ async def get_audio_file(file_id: str):
     # same URL never flips from WAV to MP3 bytes mid-playback.
     if session.playback_audio is None or not session.playback_audio.exists():
         mp3_path = get_session_path(file_id, "full.mp3")
+        pending = _preconvert_tasks.get(file_id)
+        if pending is not None and not mp3_path.exists():
+            # shield: a timed-out wait must not cancel the conversion itself.
+            try:
+                await asyncio.wait_for(asyncio.shield(pending), PLAYBACK_PRECONVERT_WAIT)
+            except asyncio.TimeoutError:
+                pass
         session.playback_audio = mp3_path if mp3_path.exists() else session.source_audio
     file_path = session.playback_audio
 

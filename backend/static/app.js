@@ -69,6 +69,11 @@ function vinylApp() {
         // Audacity label files
         labelsNotice: '',
 
+        // Live link to a running Audacity (mod-script-pipe)
+        audacitySupported: false,
+        audacityBusy: false,
+        audacityNotice: '',
+
         // Processing
         isProcessing: false,
         processingProgress: 0,
@@ -123,6 +128,7 @@ function vinylApp() {
             await this.loadConfig();
             await this.loadFormats();
             await this.checkStatus();
+            await this.checkAudacitySupport();
             this.connectWebSocket();
 
             this.$watch('currentFile', (file) => {
@@ -642,6 +648,75 @@ function vinylApp() {
         },
 
         /**
+         * Whether this VinylFlow can reach Audacity at all (not in Docker).
+         */
+        async checkAudacitySupport() {
+            try {
+                const response = await fetch('/api/audacity/status');
+                const data = await response.json();
+                this.audacitySupported = !!data.supported;
+            } catch (error) {
+                this.audacitySupported = false;
+            }
+        },
+
+        /**
+         * Pull the recording open in Audacity into VinylFlow. Labels in the
+         * project become the track splits; without labels, silence detection
+         * runs as it does for an upload.
+         */
+        async importFromAudacity() {
+            if (this.audacityBusy) return;
+            this.audacityBusy = true;
+            this.audacityNotice = '';
+
+            try {
+                const response = await fetch('/api/audacity/import', { method: 'POST' });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Could not get the recording from Audacity');
+                }
+
+                this.uploadedFiles.push({
+                    ...data.file,
+                    status: 'analyzed',
+                    fromAudacity: true
+                });
+                this.selectFile(data.file.id);
+
+                this.detectedTracks = data.tracks.map(track => ({
+                    ...track,
+                    editing: false,
+                    ignored: false
+                }));
+
+                if (data.source === 'labels') {
+                    this.labelsNotice = `✅ Got ${data.file.filename} from Audacity, split by its labels (${data.label_track}).`;
+                } else if (data.tracks.length > 0) {
+                    this.labelsNotice = `✅ Got ${data.file.filename} from Audacity and found ${data.tracks.length} tracks. Use “Send to Audacity” to see the splits there.`;
+                } else {
+                    this.labelsNotice = `⚠️ Got ${data.file.filename} from Audacity, but found no tracks. Try Smart Rescan, or add labels in Audacity and get it again.`;
+                }
+
+                // Audacity's part is done: free the buttons before the
+                // waveform load and Discogs search, which can take a while.
+                this.audacityBusy = false;
+
+                if (this.detectedTracks.length > 0) {
+                    await this.initWaveform();
+                    if (this.searchQuery) {
+                        await this.searchDiscogs();
+                    }
+                }
+            } catch (error) {
+                console.error('Audacity import failed:', error);
+                this.audacityNotice = '❌ ' + error.message;
+            } finally {
+                this.audacityBusy = false;
+            }
+        },
+
+        /**
          * Label text for a track in an exported label file: "A1 Title" once a
          * release is matched, otherwise the imported label or "Track N".
          */
@@ -653,6 +728,37 @@ function vinylApp() {
                 }
             }
             return track.label || `Track ${track.number}`;
+        },
+
+        /**
+         * Write splits into the open Audacity project as a "VinylFlow" label
+         * track. Returns { done: false, note } when Audacity can't be
+         * reached, so the caller can fall back to saving a label file.
+         */
+        async sendLabelsToAudacity(rows) {
+            this.audacityBusy = true;
+            try {
+                const response = await fetch('/api/audacity/labels', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tracks: rows })
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    this.labelsNotice = `✅ Sent ${data.labels} splits to Audacity as the “${data.track}” label track. Adjust them there, then Get from Audacity again.`;
+                    return { done: true };
+                }
+                if (response.status === 503) {
+                    return { done: false, note: `⚠️ ${data.detail} Saved a label file instead. ` };
+                }
+                throw new Error(data.detail || 'Sending to Audacity failed');
+            } catch (error) {
+                console.error('Send to Audacity failed:', error);
+                alert('Send to Audacity failed: ' + error.message);
+                return { done: true };  // a real error, not "unreachable": don't also download
+            } finally {
+                this.audacityBusy = false;
+            }
         },
 
         /**
@@ -669,6 +775,16 @@ function vinylApp() {
             if (rows.length === 0) {
                 alert('No tracks to export.');
                 return;
+            }
+
+            // A recording that came from Audacity gets its splits written
+            // straight back into the same project. Any other recording gets a
+            // label file, since the open Audacity project may not match it.
+            let fallbackNote = '';
+            if (this.currentFile?.fromAudacity && this.audacitySupported) {
+                const result = await this.sendLabelsToAudacity(rows);
+                if (result.done) return;
+                fallbackNote = result.note;
             }
 
             try {
@@ -688,7 +804,7 @@ function vinylApp() {
                 if (window.pywebview && window.pywebview.api && window.pywebview.api.save_text_file) {
                     const saved = await window.pywebview.api.save_text_file(filename, data.labels);
                     if (saved) {
-                        this.labelsNotice = `✅ Saved labels to ${saved}. In Audacity: File → Import → Labels.`;
+                        this.labelsNotice = fallbackNote + `✅ Saved labels to ${saved}. In Audacity: File → Import → Labels.`;
                     }
                     return;
                 }
@@ -702,7 +818,7 @@ function vinylApp() {
                 link.click();
                 link.remove();
                 setTimeout(() => URL.revokeObjectURL(url), 1000);
-                this.labelsNotice = '✅ Labels downloaded. In Audacity: File → Import → Labels.';
+                this.labelsNotice = fallbackNote + '✅ Labels downloaded. In Audacity: File → Import → Labels.';
             } catch (error) {
                 console.error('Label export failed:', error);
                 alert('Label export failed: ' + error.message);

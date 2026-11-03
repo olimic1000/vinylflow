@@ -82,3 +82,35 @@ def test_preview_with_explicit_range_needs_no_stored_boundary(tmp_path, monkeypa
         assert client.get(f"/api/preview/{sid}/5").status_code == 404
     finally:
         session_store.remove(sid)
+
+
+def test_get_audio_waits_for_inflight_mp3_instead_of_pinning_source(tmp_path, monkeypatch):
+    """Right after an import the waveform asks for audio before the MP3
+    preconversion has finished.  Serving (and pinning) the AIFF source then
+    leaves Chromium/WebView2 with audio it can't decode, so /api/audio waits
+    for the in-flight conversion."""
+    import asyncio
+
+    import backend.api as api
+
+    sid = _register_session(tmp_path, filename="From Audacity.aiff")
+    mp3_path = api.get_session_path(sid, "full.mp3")
+
+    async def slow_preconvert(file_id, file_path):
+        await asyncio.sleep(0.2)
+        mp3_path.parent.mkdir(parents=True, exist_ok=True)
+        mp3_path.write_bytes(b"ID3fake-mp3")
+
+    monkeypatch.setattr(api, "preconvert_to_mp3", slow_preconvert)
+
+    async def scenario():
+        api.start_preconvert(sid, tmp_path / "source.wav")
+        return await api.get_audio_file(sid)
+
+    try:
+        resp = asyncio.run(scenario())
+        assert resp.media_type == "audio/mpeg"
+        assert session_store.get(sid).playback_audio == mp3_path
+    finally:
+        session_store.remove(sid)
+        api.cleanup_session(sid)
