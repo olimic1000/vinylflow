@@ -200,6 +200,7 @@ Also: guard `@click.away` with `!$event.ctrlKey` so Ctrl+click (which triggers `
 - **Output:** FLAC (configurable compression 0–8), MP3 (320 kbps), AIFF (PCM big-endian, keeps source bit depth: 16-bit sources stay 16-bit, wider or unknown depths export as 24-bit)
 - **Tagging:** Mutagen handles all three formats; cover art embedded as bytes
 - **Numbering:** `sequential_disc_per_lp` writes DISCNUMBER + TRACKNUMBER with `TRACKTOTAL`/`DISCTOTAL` (ID3 `n/total` in TRCK/TPOS). Numbering follows the release tracklist, so a side exported on its own continues after side A; a skipped track leaves a gap. DISCTOTAL = the highest LP the release reaches. `vinyl` writes no totals.
+- **Default numbering** is `sequential_disc_per_lp` (`config.DEFAULT_TRACK_NUMBERING`, `OutputSpec`, the frontend `config` default); the `vinyl` scheme stays selectable in Settings.
 
 ---
 

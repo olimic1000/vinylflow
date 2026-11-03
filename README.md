@@ -271,8 +271,8 @@ DEFAULT_FLAC_COMPRESSION=8
 **Config Priority**: `config/settings.json` (UI-editable) → `.env` (manual) → environment variables (Docker)
 
 **Track Numbering**: Configurable via Settings (⚙️) or by setting `TRACK_NUMBERING` in `config/settings.json`:
-- `vinyl` *(default)* — writes the vinyl position (e.g. `A1`, `B2`) directly as `TRACKNUMBER`. Preserves vinyl notation but some players (Jellyfin, Roon) may mis-sort tracks.
-- `sequential_disc_per_lp` — writes integer `DISCNUMBER` (A+B = disc 1, C+D = disc 2) and sequential `TRACKNUMBER` across both sides of each LP, with track/disc totals (`TRACKTOTAL`/`DISCTOTAL`, or `n/total` in ID3) and the original vinyl position preserved in a `VINYLPOSITION` tag. Numbering follows the release's tracklist, so a side exported on its own continues after side A and a skipped track leaves a gap. Single LPs appear as one disc; 2-LP sets appear as two. Recommended for correct playback order in media servers.
+- `vinyl` — writes the vinyl position (e.g. `A1`, `B2`) directly as `TRACKNUMBER`. Preserves vinyl notation but some players (Jellyfin, Roon) may mis-sort tracks.
+- `sequential_disc_per_lp` *(default)* — writes integer `DISCNUMBER` (A+B = disc 1, C+D = disc 2) and sequential `TRACKNUMBER` across both sides of each LP, with track/disc totals (`TRACKTOTAL`/`DISCTOTAL`, or `n/total` in ID3) and the original vinyl position preserved in a `VINYLPOSITION` tag. Numbering follows the release's tracklist, so a side exported on its own continues after side A and a skipped track leaves a gap. Single LPs appear as one disc; 2-LP sets appear as two. Recommended for correct playback order in media servers.
 
 ### Silence Detection Tips
 
