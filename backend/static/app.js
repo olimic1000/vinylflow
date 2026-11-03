@@ -3,6 +3,11 @@
  * Alpine.js application for managing vinyl digitization workflow
  */
 
+// Toast stack cap: past it the oldest toast without an action makes room (an Undo is never evicted)
+const MAX_TOASTS = 5;
+// How long an Undo toast stays (ms)
+const UNDO_TOAST_MS = 8000;
+
 function vinylApp() {
     return {
         // WebSocket connection
@@ -86,7 +91,7 @@ function vinylApp() {
         toasts: [],
         _toastSeq: 0,
         _toastTimers: {},
-        pendingRemovals: {},   // fileId -> { file, index, wasCurrent, snapshot, committed, toastId }
+        pendingRemovals: {},   // fileId -> { file, order, wasCurrent, snapshot, search, committed, toastId }
 
         // Config
         config: {
@@ -502,7 +507,9 @@ function vinylApp() {
          *  - type: 'info' | 'success' (auto-dismiss after 5 s) | 'warning' | 'error' (sticky)
          *  - timeout: ms override (0 = sticky)
          *  - action: button on the toast; clicking runs fn and closes the toast
-         *  - onClose(reason): reason is 'timeout' | 'dismiss' | 'action' (used by undo flows)
+         *  - onClose(reason): reason is 'timeout' | 'dismiss' | 'action' | 'commit' | 'evict'
+         *    (used by undo flows; 'commit' = a pending removal was committed early,
+         *    'evict' = pushed out by the stack cap, which never happens to a toast with an action)
          * Hovering or focusing a toast pauses its timer.  Returns the toast id.
          */
         notify(message, opts = {}) {
@@ -522,12 +529,15 @@ function vinylApp() {
             this.toasts.push({
                 id, message, type,
                 action: opts.action || null,
-                onClose: opts.onClose || null,
-                // Errors and warnings interrupt a screen reader; the rest wait politely
-                role: sticky ? 'alert' : 'status'
+                onClose: opts.onClose || null
             });
-            // Keep the stack short; the oldest toast makes room
-            while (this.toasts.length > 5) this.dismissToast(this.toasts[0].id, 'dismiss');
+            // Keep the stack short: the oldest other toast without an action makes room.  Toasts
+            // with an action (Undo) are never evicted, so the stack may grow past the cap.
+            while (this.toasts.length > MAX_TOASTS) {
+                const oldest = this.toasts.find(t => !t.action && t.id !== id);
+                if (!oldest) break;
+                this.dismissToast(oldest.id, 'evict');
+            }
             this._armToast(id, timeout);
             return id;
         },
@@ -593,17 +603,48 @@ function vinylApp() {
             return this.notify(detail ? `${prefix}: ${detail}` : prefix, { type: 'error' });
         },
 
+        /** Why an edit Undo for `fileId` can't run now, or '' when it can. */
+        undoBlockedReason(fileId) {
+            if (this.currentFileId !== fileId) return 'Switch back to that file to undo.';
+            if (this.analyzing) return 'Wait for track detection to finish, then undo.';
+            if (this.isProcessing) return "Can't undo while an export is running.";
+            return '';
+        },
+
         /**
-         * Copy of the track-editing state that Undo flows restore.  Tracks are
-         * cloned (they are edited in place); the release and search results
-         * are replaced, never mutated, so references are enough.
+         * Undo toast.  Its button first checks undoBlockedReason(fileId); a refusal is a
+         * warning toast and leaves the state alone.  guard: false skips that check (file
+         * removal must stay undoable while another file is open).
+         */
+        notifyUndo(message, undo, { fileId = null, guard = true, type = 'info', timeout = UNDO_TOAST_MS, onClose } = {}) {
+            return this.notify(message, {
+                type, timeout, onClose,
+                action: {
+                    label: 'Undo',
+                    fn: () => {
+                        const blocked = guard ? this.undoBlockedReason(fileId) : '';
+                        if (blocked) {
+                            this.notify(blocked, { type: 'warning', timeout: 6000 });
+                            return;
+                        }
+                        undo();
+                    }
+                }
+            });
+        },
+
+        /**
+         * Copy of the track-editing state that Undo flows restore: tracks,
+         * release and mapping.  Tracks are cloned (they are edited in place);
+         * the release is replaced, never mutated, so a reference is enough.
+         * Search results are not part of it (see snapshotSearch): a search made
+         * after an edit must survive that edit's Undo.  snapshotEdits,
+         * restoreEdits and clearEditState cover the same fields.
          */
         snapshotEdits() {
             return {
                 detectedTracks: this.detectedTracks.map(track => ({ ...track })),
                 selectedRelease: this.selectedRelease,
-                searchResults: this.searchResults,
-                searchQuery: this.searchQuery,
                 trackCountMismatch: this.trackCountMismatch,
                 trackMappingReversed: this.trackMappingReversed,
                 customMapping: [...this.customMapping]
@@ -614,12 +655,29 @@ function vinylApp() {
         restoreEdits(snapshot) {
             this.detectedTracks = snapshot.detectedTracks.map(track => ({ ...track }));
             this.selectedRelease = snapshot.selectedRelease;
-            this.searchResults = snapshot.searchResults;
-            this.searchQuery = snapshot.searchQuery;
             this.trackCountMismatch = snapshot.trackCountMismatch;
             this.trackMappingReversed = snapshot.trackMappingReversed;
             this.customMapping = [...snapshot.customMapping];
             this.addTrackRegions();
+        },
+
+        /** Reset the fields snapshotEdits() covers (no tracks, no release, no mapping) */
+        clearEditState() {
+            this.detectedTracks = [];
+            this.selectedRelease = null;
+            this.trackCountMismatch = false;
+            this.trackMappingReversed = false;
+            this.customMapping = [];
+        },
+
+        /** Search results and query, for the flows that clear them (re-analyze, removing the open file) */
+        snapshotSearch() {
+            return { results: this.searchResults, query: this.searchQuery };
+        },
+
+        restoreSearch(saved) {
+            this.searchResults = saved.results;
+            this.searchQuery = saved.query;
         },
 
         /**
@@ -655,15 +713,19 @@ function vinylApp() {
 
             const file = this.uploadedFiles[index];
             const isCurrent = this.currentFileId === fileId;
-            if (isCurrent && (this.analyzing || this.isProcessing)) {
+            // The file's own status covers an export left running while another file is open;
+            // the open file is also refused while its export request is still being sent.
+            if (file.status === 'processing' || (isCurrent && (this.analyzing || this.isProcessing))) {
                 this.notify('Wait for the current analysis or export to finish before removing this file.', { type: 'warning', timeout: 5000 });
                 return;
             }
 
             const entry = {
-                file, index,
+                file,
+                order: this.uploadedFiles.map(f => f.id),   // queue order before this removal, for Undo
                 wasCurrent: isCurrent,
                 snapshot: isCurrent ? this.snapshotEdits() : null,
+                search: isCurrent ? this.snapshotSearch() : null,
                 committed: false,
                 toastId: null
             };
@@ -674,17 +736,14 @@ function vinylApp() {
                 this.destroyWaveform();
                 this.currentFileId = null;
                 this.currentFile = null;
-                this.detectedTracks = [];
+                this.clearEditState();
                 this.searchResults = [];
-                this.selectedRelease = null;
-                this.trackCountMismatch = false;
             }
 
-            entry.toastId = this.notify(`Removed "${file.filename}" from the queue.`, {
-                type: 'info',
+            entry.toastId = this.notifyUndo(`Removed "${file.filename}" from the queue.`, () => this.undoRemoveFile(fileId), {
+                guard: false,
                 timeout: undoMs,
-                action: { label: 'Undo', fn: () => this.undoRemoveFile(fileId) },
-                // Any close other than Undo (timeout, X button, stack overflow) makes it final
+                // Any close other than Undo (timeout, X button, page unload) makes it final
                 onClose: (reason) => { if (reason !== 'action') this.commitRemoval(fileId); }
             });
         },
@@ -697,9 +756,7 @@ function vinylApp() {
             delete remaining[fileId];
             this.pendingRemovals = remaining;
 
-            const files = [...this.uploadedFiles];
-            files.splice(Math.min(entry.index, files.length), 0, entry.file);
-            this.uploadedFiles = files;
+            this.reinsertFile(entry.file, entry.order);
 
             // Re-select it only if nothing else was opened in the meantime
             if (entry.wasCurrent && !this.currentFileId) {
@@ -711,8 +768,33 @@ function vinylApp() {
                 this.currentFileId = fileId;
                 this.currentFile = entry.file;
                 this.restoreEdits(entry.snapshot);
+                this.restoreSearch(entry.search);
                 await this.initWaveform();
             }
+        },
+
+        /**
+         * Put a removed file back where it was in `order` (the queue's ids before its
+         * removal): before the first later file still queued, else after the nearest
+         * earlier one, else at the end.  Removals and Undos may interleave in any order.
+         */
+        reinsertFile(file, order) {
+            const files = this.uploadedFiles.filter(f => f.id !== file.id);
+            const at = order.indexOf(file.id);
+            const position = id => files.findIndex(f => f.id === id);
+            let index = -1;
+            if (at !== -1) {
+                for (const id of order.slice(at + 1)) {
+                    index = position(id);
+                    if (index !== -1) break;
+                }
+                for (const id of index === -1 ? order.slice(0, at).reverse() : []) {
+                    const before = position(id);
+                    if (before !== -1) { index = before + 1; break; }
+                }
+            }
+            files.splice(index === -1 ? files.length : index, 0, file);
+            this.uploadedFiles = files;
         },
 
         /** Really delete a soft-removed file on the server */
@@ -731,7 +813,7 @@ function vinylApp() {
                 // reflects reality, and say so.
                 console.error('Failed to remove file:', error);
                 if (!this.uploadedFiles.some(f => f.id === fileId)) {
-                    this.uploadedFiles = [...this.uploadedFiles, entry.file];
+                    this.reinsertFile(entry.file, entry.order);
                 }
                 this.notifyError(`Could not remove "${entry.file.filename}"`, error);
             } finally {
@@ -803,13 +885,11 @@ function vinylApp() {
 
             const fileId = this.currentFileId;
             const snapshot = this.snapshotEdits();
+            const search = this.snapshotSearch();   // the re-analysis searches again; only its Undo puts these back
 
-            this.detectedTracks = [];
-            this.selectedRelease = null;
+            this.clearEditState();
             this.searchResults = [];
             this.currentPlayingTrack = null;
-            this.trackMappingReversed = false;
-            this.customMapping = [];
 
             if (this.$refs.audioPlayer) {
                 this.$refs.audioPlayer.pause();
@@ -823,30 +903,25 @@ function vinylApp() {
             if (this.detectedTracks.length === 0 && snapshot.detectedTracks.length > 0) {
                 // Analysis failed (analyzeFile already showed the error). Nobody
                 // confirmed the reset, so put the previous boundaries back.
-                await this.restoreSnapshotWithWaveform(fileId, snapshot, 'the re-analysis');
+                await this.restoreSnapshotWithWaveform(snapshot, search);
                 return;
             }
             if (this.detectedTracks.length > 0) {
-                this.notify('Re-analyzed. Boundaries and release were reset.', {
-                    type: 'info',
-                    timeout: 8000,
-                    action: { label: 'Undo', fn: () => this.restoreSnapshotWithWaveform(fileId, snapshot, 'the re-analysis') }
-                });
+                this.notifyUndo('Re-analyzed. Boundaries and release were reset.',
+                    () => this.restoreSnapshotWithWaveform(snapshot, search), { fileId });
             }
         },
 
         /**
          * Undo of a flow that replaced the whole analysis (re-analyze,
-         * duration-based splitting).  Refuses if another file is open now.
+         * duration-based splitting); its Undo toast checks undoBlockedReason first.
+         * `search` (a snapshotSearch() copy) is put back too when the flow cleared it.
          */
-        async restoreSnapshotWithWaveform(fileId, snapshot, what) {
-            if (this.currentFileId !== fileId || this.analyzing) {
-                this.notify(`Switch back to that file to undo ${what}.`, { type: 'warning', timeout: 6000 });
-                return;
-            }
+        async restoreSnapshotWithWaveform(snapshot, search = null) {
             this.currentPlayingTrack = null;
             this.destroyWaveform();
             this.restoreEdits(snapshot);   // regions are redrawn by initWaveform below
+            if (search) this.restoreSearch(search);
             await this.$nextTick();
             await this.initWaveform();
         },
@@ -1070,11 +1145,8 @@ function vinylApp() {
                 // Reinitialize waveform
                 await this.initWaveform();
 
-                this.notify(`Created ${this.detectedTracks.length} tracks from the Discogs lengths. Review the boundaries before exporting.`, {
-                    type: 'success',
-                    timeout: 8000,
-                    action: { label: 'Undo', fn: () => this.restoreSnapshotWithWaveform(fileId, snapshot, 'duration-based splitting') }
-                });
+                this.notifyUndo(`Created ${this.detectedTracks.length} tracks from the Discogs lengths. Review the boundaries before exporting.`,
+                    () => this.restoreSnapshotWithWaveform(snapshot), { fileId, type: 'success' });
 
             } catch (error) {
                 console.error('Duration-based analysis failed:', error);
@@ -1502,21 +1574,7 @@ function vinylApp() {
                 this.trackCountMismatch = false;
             }
 
-            this.notify(`Deleted track ${trackNumber}.`, {
-                type: 'info',
-                timeout: 8000,
-                action: {
-                    label: 'Undo',
-                    fn: () => {
-                        // Tracks of another file are open now: restoring would clobber them
-                        if (this.currentFileId !== fileId) {
-                            this.notify('Switch back to that file to undo the deletion.', { type: 'warning', timeout: 6000 });
-                            return;
-                        }
-                        this.restoreEdits(snapshot);
-                    }
-                }
-            });
+            this.notifyUndo(`Deleted track ${trackNumber}.`, () => this.restoreEdits(snapshot), { fileId });
         },
 
         renumberTracks() {
@@ -1646,11 +1704,16 @@ function vinylApp() {
                 duration: track.duration
             }));
 
+            // Marked before the request: removeFile checks the file's own status, and another
+            // file may be opened while the server is still answering.
+            const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
+            const previousStatus = file?.status;
             try {
                 this.isProcessing = true;
                 this.processingProgress = 0.1;
                 this.processingMessage = 'Starting...';
                 this.lastProgressAt = Date.now();
+                if (file) file.status = 'processing';
 
                 const response = await fetch('/api/process', {
                     method: 'POST',
@@ -1673,13 +1736,9 @@ function vinylApp() {
                 console.log('Processing started:', data);
                 this.currentJobId = data.job_id;
                 this.startProcessPolling(data.job_id);
-
-                const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
-                if (file) {
-                    file.status = 'processing';
-                }
             } catch (error) {
                 console.error('Processing failed:', error);
+                if (file && file.status === 'processing') file.status = previousStatus;
                 this.stopProcessPolling();
                 this.isProcessing = false;
                 this.processingProgress = 0;

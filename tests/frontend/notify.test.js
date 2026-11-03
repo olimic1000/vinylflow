@@ -16,7 +16,8 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const e = a.notify('broken', { type: 'error' });
     assert.deepStrictEqual(a.toasts.map(t => t.message), ['one', 'two', 'careful', 'broken']);
     assert.deepStrictEqual(a.toasts.map(t => t.type), ['info', 'success', 'warning', 'error']);
-    assert.deepStrictEqual(a.toasts.map(t => t.role), ['status', 'status', 'alert', 'alert']);
+    // Announcement lives on the persistent .toast-stack live region (see the markup check below), not per toast
+    assert.ok(a.toasts.every(t => !('role' in t)));
     assert.strictEqual(new Set([i1, i2, w, e]).size, 4);
     // default timers: info/success armed (5 s), warning/error sticky
     assert.ok(a._toastTimers[i1] && a._toastTimers[i1].remaining === 5000);
@@ -77,6 +78,36 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     for (let n = 0; n < 8; n++) f.notify('m' + n, { type: 'error' });
     assert.strictEqual(f.toasts.length, 5);
     assert.strictEqual(f.toasts[0].message, 'm3');
+
+    // eviction: the oldest toast without an action makes room, with reason 'evict'; actions are never evicted
+    const h = vinylApp();
+    const closed = [];
+    const undoId = h.notify('undo me', { action: { label: 'Undo', fn() {} }, onClose: r => closed.push(['undo', r]) });
+    h.notify('first', { onClose: r => closed.push(['first', r]) });
+    for (let n = 0; n < 4; n++) h.notify('info ' + n);
+    assert.strictEqual(h.toasts.length, 5);
+    assert.ok(h.toasts.some(t => t.id === undoId));
+    assert.deepStrictEqual(closed, [['first', 'evict']]);
+    const k = vinylApp();
+    for (let n = 0; n < 6; n++) k.notify('undo ' + n, { action: { label: 'Undo', fn() {} } });
+    const err = k.notify('later error', { type: 'error' });
+    assert.strictEqual(k.toasts.length, 7, 'every toast keeps its Undo; the new error is shown, not evicted');
+    assert.ok(k.toasts.some(t => t.id === err));
+    // six plain info toasts: capped at 5, oldest gone
+    const m = vinylApp();
+    for (let n = 0; n < 6; n++) m.notify('info ' + n);
+    assert.deepStrictEqual(m.toasts.map(t => t.message), ['info 1', 'info 2', 'info 3', 'info 4', 'info 5']);
+
+    // markup: one persistent polite live region; no nested live regions per toast (review #86)
+    const html = fs.readFileSync(path.join(__dirname, '..', '..', 'backend', 'static', 'index.html'), 'utf8');
+    const stack = html.match(/<div class="toast-stack"[^>]*>/)[0];
+    assert.ok(/aria-live="polite"/.test(stack), '.toast-stack is the polite live region');
+    assert.ok(!/aria-relevant/.test(stack), 'default aria-relevant (additions text): x-text fills the clone after insertion');
+    const toastEl = html.match(/<template x-for="toast in toasts"[^>]*>\s*<div class="toast"[^>]*>/)[0];
+    assert.ok(!/role=|aria-live|aria-atomic/.test(toastEl), 'a toast carries no role or live region of its own');
+    const toastBody = html.slice(html.indexOf(toastEl), html.indexOf('</template>', html.indexOf(toastEl)));
+    assert.ok(/class="toast-icon" aria-hidden="true"/.test(toastBody), 'type icon, hidden from screen readers');
+    assert.ok(/class="sr-only" x-text="toast.type \+ ': '"/.test(toastBody), 'type word read before the message');
 
     // notifyError formats the error
     const g = vinylApp();

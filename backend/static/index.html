@@ -269,11 +269,14 @@
 <body class="bg-page">
     <div x-data="vinylApp()" x-init="init()" class="min-h-screen">
         <!-- Toasts: stacked bottom-right; info/success auto-dismiss, warnings/errors stay.
-             The icon and the hidden type word keep the type from relying on colour alone. -->
-        <div class="toast-stack" role="region" aria-label="Notifications">
+             The icon and the hidden type word keep the type from relying on colour alone.
+             The persistent stack is the one polite live region: a region created together with
+             its text is often not announced, and a role per toast would nest live regions (read
+             twice).  No aria-relevant: x-for inserts the clone before x-text fills it, so the
+             default "additions text" is needed.  The sr-only type word carries the urgency. -->
+        <div class="toast-stack" role="region" aria-label="Notifications" aria-live="polite">
             <template x-for="toast in toasts" :key="toast.id">
                 <div class="toast" :class="'toast-' + toast.type"
-                     :role="toast.role" :aria-live="toast.role === 'alert' ? 'assertive' : 'polite'" aria-atomic="true"
                      @mouseenter="pauseToast(toast.id)" @mouseleave="resumeToast(toast.id)"
                      @focusin="pauseToast(toast.id)" @focusout="resumeToast(toast.id)">
                     <span class="toast-icon" aria-hidden="true" x-text="toastIcon(toast.type)"></span>
