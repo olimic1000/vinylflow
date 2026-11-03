@@ -38,3 +38,6 @@ jobs:
 
       - name: Check frontend JavaScript syntax
         run: node --check backend/static/app.js
+
+      - name: Run frontend logic tests
+        run: node tests/frontend/run.js
