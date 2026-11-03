@@ -21,8 +21,15 @@ from track_boundaries import (
     boundaries_for_track_count,
     boundaries_from_durations,
     boundaries_from_gaps,
+    envelope_from_pcm,
+    gaps_from_envelope,
     parse_silence_log,
+    refine_cuts,
 )
+
+# Energy envelope: one mono decode at a low sample rate, RMS per 10 ms frame.
+ENVELOPE_SAMPLE_RATE = 8000
+ENVELOPE_FRAME_S = 0.01
 
 
 def _ffmpeg() -> str:
@@ -319,54 +326,83 @@ class AudioProcessor:
 
         return gaps, total_duration
 
-    # Smart Rescan scan ladder.  Each pass is a full-file ffmpeg decode, so
-    # the first pass is permissive enough (-30dB, 0.3s) to surface nearly
-    # every real inter-track gap as a candidate in one decode — picking the
-    # right ones happens in pure Python (boundaries_for_track_count), not in
-    # more ffmpeg runs.  Later passes escalate for very noisy records whose
-    # surface noise sits above the previous threshold.
+    # Smart Rescan scan ladder, run over the cached envelope (no decode per
+    # pass).  The first pass is permissive enough (-30dB, 0.3s) to surface
+    # nearly every real inter-track gap as a candidate; picking the right
+    # ones happens in boundaries_for_track_count.  Later passes escalate for
+    # very noisy records whose surface noise sits above the previous
+    # threshold.
     SMART_RESCAN_LADDER = [(-30.0, 0.3), (-25.0, 0.25), (-20.0, 0.2)]
 
-    def detect_tracks_for_count(self, file_path: Path, target_count: int):
-        """Find the split that yields exactly ``target_count`` tracks.
+    def compute_envelope(self, file_path: Path):
+        """Decode ``file_path`` once and return its per-frame RMS dBFS envelope.
 
-        Args:
-            file_path: Path to audio file
-            target_count: How many tracks the recording should contain
-
-        Returns:
-            (tracks, scan_info) where scan_info holds the settings of the
-            pass that produced the result and ``matched`` (True when the
-            track count equals ``target_count``).  When no pass matches
-            exactly, the closest result across all passes is returned.
+        Mono, 8 kHz, 10 ms frames (``ENVELOPE_FRAME_S``).  Every silence
+        question (gaps at any threshold, music span) is then answered in
+        memory from this array.
         """
+        import numpy as np
+
+        result = run_ffmpeg(
+            [
+                "-i",
+                str(file_path),
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "-ac",
+                "1",
+                "-ar",
+                str(ENVELOPE_SAMPLE_RATE),
+                "-",
+            ],
+            text=False,
+            capture_output=True,
+            check=True,
+        )
+        samples = np.frombuffer(result.stdout, dtype=np.int16)
+        return envelope_from_pcm(samples, int(ENVELOPE_SAMPLE_RATE * ENVELOPE_FRAME_S))
+
+    def refine_tracks(self, db, tracks):
+        """Widen envelope-derived tracks over audio still above the user's
+        silence threshold, so quiet fades aren't clipped by permissive
+        detection thresholds."""
+        return refine_cuts(db, ENVELOPE_FRAME_S, tracks, self.silence_threshold)
+
+    def tracks_for_count_from_envelope(self, db, target_count: int):
+        """Smart Rescan over a cached envelope: find the split that yields
+        exactly ``target_count`` tracks.
+
+        Tries each ``SMART_RESCAN_LADDER`` rung (threshold, min gap) in turn
+        and stops at the first whose track count matches.  Returns
+        ``(tracks, scan_info)``: ``scan_info`` holds that rung's
+        ``silence_threshold`` and ``min_silence_duration`` and ``matched``;
+        when no rung matches, the closest result across all rungs is returned
+        with ``matched`` False.  Tracks are widened by ``refine_tracks``.
+        """
+        total_duration = len(db) * ENVELOPE_FRAME_S
         best_tracks = None
         best_info = None
 
-        try:
-            for threshold, min_duration in self.SMART_RESCAN_LADDER:
-                gaps, total_duration = self._scan_gaps(file_path, threshold, min_duration)
-                tracks = boundaries_for_track_count(
-                    gaps, total_duration, self.min_track_length, target_count
-                )
-                info = {
-                    "silence_threshold": threshold,
-                    "min_silence_duration": min_duration,
-                    "matched": len(tracks) == target_count,
-                }
-                if info["matched"]:
-                    return tracks, info
-                if best_tracks is None or abs(len(tracks) - target_count) < abs(
-                    len(best_tracks) - target_count
-                ):
-                    best_tracks, best_info = tracks, info
+        for threshold, min_duration in self.SMART_RESCAN_LADDER:
+            gaps = gaps_from_envelope(db, ENVELOPE_FRAME_S, threshold, min_duration)
+            tracks = boundaries_for_track_count(
+                gaps, total_duration, self.min_track_length, target_count
+            )
+            info = {
+                "silence_threshold": threshold,
+                "min_silence_duration": min_duration,
+                "matched": len(tracks) == target_count,
+            }
+            if info["matched"]:
+                return self.refine_tracks(db, tracks), info
+            if best_tracks is None or abs(len(tracks) - target_count) < abs(
+                len(best_tracks) - target_count
+            ):
+                best_tracks, best_info = tracks, info
 
-            return best_tracks, best_info
-
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("Silence detection timed out (>5 minutes)")
-        except Exception as e:
-            raise RuntimeError(f"Smart rescan failed: {e}")
+        return self.refine_tracks(db, best_tracks), best_info
 
     def split_tracks_duration_based(
         self, file_path: Path, durations: List[float], verbose=False
