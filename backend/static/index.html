@@ -421,8 +421,8 @@
                             <option value="vinyl">Vinyl position — TRACKNUMBER as A1, B1…</option>
                             <option value="sequential_disc_per_lp">Sequential per LP — A+B=disc 1, C+D=disc 2…</option>
                         </select>
-                        <p class="text-xs mt-1" style="color: #8A8A86;" x-show="config.track_numbering === 'vinyl'">Raw vinyl position written as TRACKNUMBER (e.g. A1, B1). Default behaviour.</p>
-                        <p class="text-xs mt-1" style="color: #8A8A86;" x-show="config.track_numbering === 'sequential_disc_per_lp'">DISCNUMBER per physical record, TRACKNUMBER sequential across both sides + VINYLPOSITION tag. Single LPs appear as 1 disc. Correct sort order in Jellyfin, Roon, Plex.</p>
+                        <p class="text-xs mt-1" style="color: #8A8A86;" x-show="config.track_numbering === 'vinyl'">Raw vinyl position written as TRACKNUMBER (e.g. A1, B1); no track or disc totals. Default behaviour.</p>
+                        <p class="text-xs mt-1" style="color: #8A8A86;" x-show="config.track_numbering === 'sequential_disc_per_lp'">DISCNUMBER per physical record, TRACKNUMBER sequential across both sides (with track and disc totals) + VINYLPOSITION tag. Single LPs appear as 1 disc. Correct sort order in Jellyfin, Roon, Plex.</p>
                     </div>
 
                     <!-- Discogs Token Section -->

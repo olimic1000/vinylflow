@@ -12,9 +12,10 @@ from dotenv import load_dotenv
 
 # Change this constant to flip the default for new installs.
 # "sequential_disc_per_lp" — A+B share disc 1, C+D share disc 2, etc. TRACKNUMBER
-#                            is sequential across both sides of each LP. Single LP
-#                            appears as 1 disc. VINYLPOSITION custom tag preserved.
-# "vinyl"                  — TRACKNUMBER="A1" (legacy behaviour, no DISCNUMBER written).
+#                            is sequential across both sides of each LP, with track
+#                            and disc totals. Single LP appears as 1 disc.
+#                            VINYLPOSITION custom tag preserved.
+# "vinyl"                  — TRACKNUMBER="A1" (legacy behaviour, no DISCNUMBER or totals written).
 DEFAULT_TRACK_NUMBERING = "vinyl"
 
 

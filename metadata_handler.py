@@ -51,6 +51,8 @@ class TagSet:
     ``disc_number`` is only populated for the "sequential_disc_per_lp" scheme.
     When set, ``track_number`` is the sequential position within that LP and
     ``vinyl_position`` preserves the original "A1"/"B2" label.
+    ``track_total`` / ``disc_total`` are likewise only set for that scheme:
+    tracks on this LP, and LPs in the release.
     When ``disc_number`` is None the "vinyl" scheme is active and
     ``track_number`` carries the raw vinyl position (e.g. "A1").
     """
@@ -66,6 +68,8 @@ class TagSet:
     cover_data: Optional[bytes] = None
     disc_number: Optional[str] = None
     vinyl_position: Optional[str] = None
+    track_total: Optional[str] = None
+    disc_total: Optional[str] = None
     album_artist: Optional[str] = None
     compilation: bool = False
     # Classical releases only (see ``release_credits``); empty otherwise.
@@ -532,6 +536,16 @@ class MetadataHandler:
         return None
 
     @staticmethod
+    def _disc_of(position: str) -> Optional[int]:
+        """LP number of a vinyl position: A,B→1  C,D→2  E,F→3 …; None if unrecognised.
+
+        No end anchor, so sub-track positions like "B6.1" or "B6.2" match too."""
+        m = re.match(r'^([A-Z]+)\d+', position or "")
+        if not m:
+            return None
+        return (ord(m.group(1)[0]) - ord('A') + 2) // 2
+
+    @staticmethod
     def _sequential_disc_per_lp(vinyl_number: str, processed_positions: List[str]):
         """Compute (disc_str, track_str) for the sequential_disc_per_lp scheme.
 
@@ -546,21 +560,10 @@ class MetadataHandler:
 
         Returns (None, None) if the position doesn't match the expected pattern.
         """
-        # Drop the $ anchor so sub-track positions like "B6.1" or "B6.2" match.
-        m = re.match(r'^([A-Z]+)(\d+)', vinyl_number or "")
-        if not m:
+        disc_num = MetadataHandler._disc_of(vinyl_number)
+        if disc_num is None:
             return None, None
-        side_index = ord(m.group(1)[0]) - ord('A') + 1
-        disc_num = (side_index + 1) // 2  # A,B→1  C,D→2  E,F→3 …
-
-        def _disc_for_pos(pos):
-            pm = re.match(r'^([A-Z]+)\d+', pos or "")
-            if not pm:
-                return None
-            si = ord(pm.group(1)[0]) - ord('A') + 1
-            return (si + 1) // 2
-
-        disc_positions = [p for p in processed_positions if _disc_for_pos(p) == disc_num]
+        disc_positions = [p for p in processed_positions if MetadataHandler._disc_of(p) == disc_num]
         seq = next((i + 1 for i, p in enumerate(disc_positions) if p == vinyl_number), None)
         if seq is None:
             return None, None
@@ -580,12 +583,20 @@ class MetadataHandler:
         if discogs_track is None:
             return None
 
+        track_total = disc_total = None
         if track_numbering == "sequential_disc_per_lp":
             positions = processed_positions or [t.position for t in release.tracks]
             disc_str, track_str = self._sequential_disc_per_lp(track.vinyl_number, positions)
             if disc_str is None:
                 # Unrecognised position format — fall back to vinyl scheme
                 disc_str, track_str = None, track.vinyl_number
+            else:
+                disc_num = int(disc_str)
+                track_total = str(sum(self._disc_of(p) == disc_num for p in positions))
+                # The highest LP the release reaches, so every file of a release agrees even
+                # when Discogs skips side letters (A, B, E, F -> 3).
+                release_discs = {self._disc_of(t.position) for t in release.tracks} - {None}
+                disc_total = str(max(release_discs | {disc_num}))
         else:
             disc_str, track_str = None, track.vinyl_number
 
@@ -614,6 +625,8 @@ class MetadataHandler:
             cover_data=cover_data,
             disc_number=disc_str,
             vinyl_position=track.vinyl_number if disc_str is not None else None,
+            track_total=track_total,
+            disc_total=disc_total,
             album_artist=VARIOUS_ARTISTS if various else release.artist,
             compilation=various,
             **classical,
@@ -666,8 +679,12 @@ class MetadataHandler:
         audio["ALBUM"] = tags.album
         audio["TITLE"] = tags.title
         audio["TRACKNUMBER"] = tags.track_number
+        if tags.track_total:
+            audio["TRACKTOTAL"] = tags.track_total
         if tags.disc_number is not None:
             audio["DISCNUMBER"] = tags.disc_number
+        if tags.disc_total:
+            audio["DISCTOTAL"] = tags.disc_total
         if tags.vinyl_position is not None:
             audio["VINYLPOSITION"] = tags.vinyl_position
         if tags.compilation:
@@ -701,7 +718,10 @@ class MetadataHandler:
         audio.tags["TALB"] = TALB(encoding=3, text=tags.album)
         if tags.album_artist:
             audio.tags["TPE2"] = TPE2(encoding=3, text=tags.album_artist)
-        audio.tags["TRCK"] = TRCK(encoding=3, text=tags.track_number)
+        audio.tags["TRCK"] = TRCK(
+            encoding=3,
+            text=f"{tags.track_number}/{tags.track_total}" if tags.track_total else tags.track_number,
+        )
         if tags.compilation:
             audio.tags["TCMP"] = TCMP(encoding=3, text="1")
         if tags.composers:
@@ -715,7 +735,10 @@ class MetadataHandler:
                 encoding=3, people=[[role or "performer", name] for name, role in tags.performers],
             )
         if tags.disc_number is not None:
-            audio.tags["TPOS"] = TPOS(encoding=3, text=tags.disc_number)
+            audio.tags["TPOS"] = TPOS(
+                encoding=3,
+                text=f"{tags.disc_number}/{tags.disc_total}" if tags.disc_total else tags.disc_number,
+            )
         if tags.vinyl_position is not None:
             audio.tags["TXXX:VINYLPOSITION"] = TXXX(
                 encoding=3, desc="VINYLPOSITION", text=tags.vinyl_position,
