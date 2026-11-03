@@ -70,6 +70,7 @@ audio_processor.py  metadata_handler.py  config.py    Discogs API
 
 **Upload session storage:**
 - Source file: `VINYLFLOW_UPLOAD_DIR/{file_id}/source.{ext}`
+- Energy envelope: `VINYLFLOW_UPLOAD_DIR/{file_id}/envelope.npy` (per-frame RMS dBFS, mono 8 kHz, 10 ms frames), decoded once in the background after upload; Smart Rescan and the music span read it from memory. Removed with the session dir
 - Output: `DEFAULT_OUTPUT_DIR/{Artist} - {Album}/{position}-{title}.{fmt}`
 
 ---
@@ -81,6 +82,7 @@ audio_processor.py  metadata_handler.py  config.py    Discogs API
 | POST | `/api/upload` | Upload WAV/AIFF, create session UUID, queue MP3 preview |
 | POST | `/api/analyze` | Silence detection → track boundaries |
 | POST | `/api/analyze-duration-based` | Fallback: tracks from Discogs durations |
+| GET | `/api/scan/{file_id}` | Background envelope scan, never blocks: `{ready: false}` while decoding (plus `error` with the last failure; a failed scan is restarted), else `{ready: true, music_start, music_end, music_duration}` (lead-in/run-out trimmed); WebSocket `scan_complete` when it finishes |
 | GET | `/api/preview/{file_id}/{track_number}` | Generate 30s MP3 preview |
 | GET | `/api/waveform-peaks/{file_id}` | Waveform data for WaveSurfer |
 | GET | `/api/audio/{file_id}` | Serve audio for playback |

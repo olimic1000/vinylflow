@@ -335,20 +335,36 @@ def music_span(
     return start_idx * frame_s, min(end_idx, n) * frame_s
 
 
+# refine_cuts stops this far above the median level of the gap it walks into.  Measured on
+# synthetic gaps (tests/test_track_boundaries.py, refine section): 2 dB drifts up to 0.17 s
+# into correlated ±3 dB surface noise, 3 dB stays within one frame, and every extra dB ends
+# a 3 s fade ~0.15 s earlier.
+REFINE_FLOOR_MARGIN_DB = 3.0
+
+
 def refine_cuts(
     db: np.ndarray, frame_s: float, tracks: List[Track], threshold_db: float
 ) -> List[Track]:
-    """Widen each Track over adjacent audio that is still above ``threshold_db``.
+    """Widen each Track over an adjacent fade, never over a gap's noise floor.
 
     Gap-based cuts sit at the edge of the gap as found at a (possibly more
     permissive) threshold, which clips quiet fade-ins and fade-outs.  Each
     start walks backwards, and each end forwards, while the neighbouring
-    frame is above ``threshold_db``.  The walk stops at the first quiet
-    frame, so a click separated from the music by quiet frames is not
-    absorbed.  Walks never cross the neighbouring Track's original edge, 0,
-    or the end of the envelope; if two neighbours both walk through a
-    gap that never drops below the threshold they meet in its middle.
-    Track numbers and count are kept; durations are recomputed.
+    frame is above ``threshold_db`` *and* above the median level of the
+    stretch it walks into (the gap to the neighbouring Track, or the
+    lead-in / run-out) plus ``REFINE_FLOOR_MARGIN_DB``.  So a fade is kept,
+    and surface noise that sits above the threshold is not: on a quiet
+    record the floor is far below the threshold and only the threshold
+    counts.  The walk stops at the first quiet frame, so a click separated
+    from the music by quiet frames is not absorbed.  Walks never cross the
+    neighbouring Track's original edge, 0, or the end of the envelope; if
+    two walks still meet they share the gap at its middle.  Track numbers
+    and count are kept; durations are recomputed.
+
+    Known trade-off: in a short gap that is mostly fade the median lies in
+    the fade, so the walk stops a little early (~0.35 s of a 0.7 s fade that
+    is already > 12 dB down); a lower percentile would follow it further but
+    reads jittered noise too low.
     """
     n = len(db)
     if not tracks:
@@ -362,16 +378,25 @@ def refine_cuts(
     new_starts = list(starts)
     new_ends = list(ends)
 
+    def stop_level(lo: int, hi: int) -> float:
+        # Callers skip empty stretches: np.median([]) is nan, and max() with nan
+        # depends on argument order.
+        return max(threshold_db, float(np.median(db[lo:hi])) + REFINE_FLOOR_MARGIN_DB)
+
     for k in range(len(tracks)):
         lo = ends[k - 1] if k > 0 else 0
         hi = starts[k + 1] if k + 1 < len(tracks) else n
         i = starts[k]
-        while i > lo and db[i - 1] > threshold_db:
-            i -= 1
+        if lo < i:  # touching cuts have no stretch to walk into
+            stop = stop_level(lo, i)
+            while i > lo and db[i - 1] > stop:
+                i -= 1
         new_starts[k] = i
         j = ends[k]
-        while j < hi and db[j] > threshold_db:
-            j += 1
+        if j < hi:
+            stop = stop_level(j, hi)
+            while j < hi and db[j] > stop:
+                j += 1
         new_ends[k] = j
 
     for k in range(len(tracks) - 1):

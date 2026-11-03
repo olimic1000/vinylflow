@@ -2,14 +2,27 @@
 
 Envelopes are synthetic numpy arrays (10 ms frames) unless a test is marked as needing
 ffmpeg.  ``get_envelope`` is replaced where a test only cares about what an endpoint does
-with the envelope, not how it was computed."""
+with the envelope, not how it was computed.
 
+The background-task tests (removal cancels, failed scans retry, ``scan_complete`` order)
+await the endpoint functions directly inside ``asyncio.run``, so the envelope task shares
+the request's event loop; ``DELETE /api/queue`` still runs ``cleanup_session`` in a worker
+thread, as in production.  The decode is faked with a function that blocks on a
+``threading.Event`` so a task can be caught mid-decode; every test releases it, or the
+loop's executor shutdown would wait for the blocked thread forever."""
+
+import asyncio
 import shutil
+import threading
+import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import backend.api as api
@@ -99,6 +112,7 @@ def session(tmp_path, monkeypatch):
     api.session_store.create(session_id=sid, source_audio=source, source_filename="side.wav",
                              source_duration=136, source_size=0)
     monkeypatch.setattr(api, "_envelope_tasks", {})
+    monkeypatch.setattr(api, "_envelope_errors", {})
     monkeypatch.setattr(api, "get_session_path", lambda file_id, name=None: tmp_path / (name or ""))
     yield sid
     api.session_store.remove(sid)
@@ -136,7 +150,305 @@ def test_scan_unknown_file_is_404():
     assert TestClient(api.app).get(f"/api/scan/{uuid.uuid4()}").status_code == 404
 
 
-def test_removing_a_recording_drops_its_envelope_task(session, monkeypatch):
-    monkeypatch.setitem(api._envelope_tasks, session, object())
+class RunningTask:
+    """Stands in for an unfinished asyncio.Task: records the cancel.
+
+    Cancels go through the task's loop (``api._cancel_task`` uses
+    ``call_soon_threadsafe``, as removal runs in a worker thread); there is no
+    loop here, so the fake loop runs the callback at once."""
+
+    def __init__(self):
+        self.cancelled = False
+
+    def done(self):
+        return False
+
+    def cancel(self):
+        self.cancelled = True
+
+    def get_loop(self):
+        return SimpleNamespace(call_soon_threadsafe=lambda callback: callback())
+
+
+def test_removing_a_recording_drops_and_cancels_its_envelope_task(session, monkeypatch):
+    task = RunningTask()
+    monkeypatch.setitem(api._envelope_tasks, session, task)
+    monkeypatch.setitem(api._envelope_errors, session, "decode failed")
     assert TestClient(api.app).delete(f"/api/queue/{session}").status_code == 200
-    assert session not in api._envelope_tasks
+    assert session not in api._envelope_tasks and session not in api._envelope_errors
+    assert task.cancelled
+
+
+# --- background envelope task: removal cancels it, failed scans retry -----------------------
+
+ENVELOPE = make_env([(1, QUIET), (58, LOUD), (1, QUIET)])
+
+
+class BlockingDecode:
+    """Fake ``compute_envelope``: signals ``started``, then waits for ``release``.
+
+    ``fail_first`` makes the first call raise instead (a decode error).  ``write_cache``
+    writes envelope.npy before blocking, like the window between the real thread's
+    ``os.replace`` and the task finishing."""
+
+    def __init__(self, fail_first=False, block=True, write_cache=None):
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+        self.fail_first = fail_first
+        self.write_cache = write_cache
+        if not block:
+            self.release.set()
+
+    def __call__(self, path):
+        self.calls += 1
+        if self.fail_first and self.calls == 1:
+            raise RuntimeError("decode failed")
+        if self.write_cache is not None:
+            np.save(self.write_cache, ENVELOPE)
+        self.started.set()
+        assert self.release.wait(10), "test never released the decode"
+        return ENVELOPE
+
+
+@pytest.fixture
+def recording(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(api, "_envelope_tasks", {})
+    monkeypatch.setattr(api, "_envelope_errors", {})
+    sent = []
+
+    async def broadcast(message):
+        sent.append(message)
+
+    monkeypatch.setattr(api, "broadcast_message", broadcast)
+    sid = str(uuid.uuid4())
+    (tmp_path / sid).mkdir()
+    source = tmp_path / sid / "source.wav"
+    source.touch()
+    api.session_store.create(session_id=sid, source_audio=source, source_filename="side.wav",
+                             source_duration=60, source_size=0)
+    yield {"id": sid, "source": source, "sent": sent, "dir": tmp_path / sid}
+    api.session_store.remove(sid)
+
+
+def use_decode(monkeypatch, decode):
+    monkeypatch.setattr(api.audio_processor, "compute_envelope", decode)
+    return decode
+
+
+async def until(condition):
+    for _ in range(500):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("timed out")
+
+
+async def settle(task):
+    """Let a cancel scheduled with call_soon_threadsafe land, and the task finish."""
+    await asyncio.wait([task], timeout=2)
+    await asyncio.sleep(0.01)  # done callbacks and the broadcasts they schedule
+
+
+def scan_completes(rec):
+    return [m for m in rec["sent"] if m["type"] == "scan_complete" and m["file_id"] == rec["id"]]
+
+
+def test_delete_mid_decode_cancels_the_scan_and_sends_no_scan_complete(recording, monkeypatch):
+    decode = use_decode(monkeypatch, BlockingDecode())
+
+    async def scenario():
+        task = api.start_envelope(recording["id"], recording["source"])
+        await until(decode.started.is_set)
+        try:
+            await api.remove_from_queue(recording["id"])
+        finally:
+            decode.release.set()
+        await settle(task)
+        return task
+
+    task = asyncio.run(scenario())
+    assert task.cancelled()
+    assert scan_completes(recording) == []
+    assert recording["id"] not in api._envelope_tasks
+
+
+def test_decode_finishing_during_the_folder_removal_sends_no_scan_complete(recording, monkeypatch):
+    # Deleting a large session folder takes a while; a decode that ends meanwhile must not
+    # announce a recording that is being removed.  The fake rmtree (in the worker thread, like
+    # the real one) lets the decode finish and waits for the task before deleting.
+    decode = use_decode(monkeypatch, BlockingDecode())
+    real_rmtree = shutil.rmtree
+    tasks = {}
+
+    def slow_rmtree(path, *args, **kwargs):
+        decode.release.set()
+        deadline = time.monotonic() + 2
+        while not tasks["task"].done() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.05)  # done callbacks and the broadcast they schedule
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(api.shutil, "rmtree", slow_rmtree)
+
+    async def scenario():
+        tasks["task"] = task = api.start_envelope(recording["id"], recording["source"])
+        await until(decode.started.is_set)
+        try:
+            await api.remove_from_queue(recording["id"])
+        finally:
+            decode.release.set()
+        await settle(task)
+
+    asyncio.run(scenario())
+    assert scan_completes(recording) == []
+    assert recording["id"] not in api._envelope_tasks
+
+
+def test_clear_all_mid_decode_cancels_the_scan(recording, monkeypatch):
+    decode = use_decode(monkeypatch, BlockingDecode())
+
+    async def scenario():
+        task = api.start_envelope(recording["id"], recording["source"])
+        await until(decode.started.is_set)
+        try:
+            await api.clear_all_temp()
+        finally:
+            decode.release.set()
+        await settle(task)
+        return task
+
+    task = asyncio.run(scenario())
+    assert task.cancelled()
+    assert scan_completes(recording) == []
+    assert recording["id"] not in api._envelope_tasks
+
+
+def test_ttl_reaper_cancels_the_scan(recording, monkeypatch):
+    decode = use_decode(monkeypatch, BlockingDecode())
+    api.session_store.get(recording["id"]).updated_at = datetime.now() - timedelta(days=30)
+
+    async def scenario():
+        task = api.start_envelope(recording["id"], recording["source"])
+        await until(decode.started.is_set)
+        reaper = asyncio.ensure_future(api.cleanup_old_files())  # one sweep, then a 30 min sleep
+        try:
+            await until(lambda: api.session_store.get(recording["id"]) is None)
+        finally:
+            decode.release.set()
+        await settle(task)
+        reaper.cancel()
+        return task
+
+    task = asyncio.run(scenario())
+    assert task.cancelled()
+    assert scan_completes(recording) == []
+    assert recording["id"] not in api._envelope_tasks
+
+
+def test_rescan_waiting_on_a_removed_recording_gets_404(recording, monkeypatch):
+    decode = use_decode(monkeypatch, BlockingDecode())
+
+    async def scenario():
+        request = asyncio.ensure_future(
+            api.rescan_file(api.RescanRequest(file_id=recording["id"], expected_tracks=2)))
+        await until(decode.started.is_set)
+        try:
+            await api.remove_from_queue(recording["id"])
+        finally:
+            decode.release.set()
+        with pytest.raises(HTTPException) as err:
+            await asyncio.wait_for(request, 5)
+        return err.value
+
+    assert asyncio.run(scenario()).status_code == 404
+
+
+def test_start_envelope_for_an_unknown_recording_is_404(recording, monkeypatch):
+    use_decode(monkeypatch, BlockingDecode(block=False))
+
+    async def scenario():
+        with pytest.raises(HTTPException) as err:
+            api.start_envelope("no-such-id", recording["source"])
+        return err.value
+
+    assert asyncio.run(scenario()).status_code == 404
+    assert "no-such-id" not in api._envelope_tasks
+
+
+def test_removal_cancels_from_the_worker_thread_safely(recording, monkeypatch):
+    # asyncio debug mode raises "Non-thread-safe operation" when Task.cancel runs off the
+    # loop thread; DELETE /api/queue runs cleanup_session in a worker thread.
+    decode = use_decode(monkeypatch, BlockingDecode())
+
+    async def scenario():
+        task = api.start_envelope(recording["id"], recording["source"])
+        await until(decode.started.is_set)
+        try:
+            await api.remove_from_queue(recording["id"])
+        finally:
+            decode.release.set()
+        await settle(task)
+        return task
+
+    # Own loop rather than asyncio.run(debug=True): an unsafe cancel can leave the task stuck
+    # forever, and asyncio.run's final cancel-all would then hang instead of failing.
+    loop = asyncio.new_event_loop()
+    loop.set_debug(True)
+    try:
+        task = loop.run_until_complete(scenario())
+    finally:
+        loop.close()
+    assert task.cancelled()
+
+
+def test_failed_scan_is_retried_and_reported(recording, monkeypatch):
+    use_decode(monkeypatch, BlockingDecode(fail_first=True, block=False))
+
+    async def scenario():
+        first = api.start_envelope(recording["id"], recording["source"])
+        await settle(first)
+        failed = await api.get_scan(recording["id"])
+        retry = api._envelope_tasks.get(recording["id"])
+        assert retry is not None and retry is not first, "/api/scan must start a new scan"
+        await settle(retry)
+        return failed, await api.get_scan(recording["id"])
+
+    failed, ready = asyncio.run(scenario())
+    assert failed["ready"] is False and "decode failed" in failed["error"]
+    assert ready["ready"] is True and "error" not in ready
+    assert len(scan_completes(recording)) == 1
+    assert recording["id"] not in api._envelope_errors
+
+
+def test_scan_complete_is_sent_once_the_scan_is_ready(recording, monkeypatch):
+    use_decode(monkeypatch, BlockingDecode(block=False))
+    seen = []
+
+    async def broadcast(message):
+        if message["type"] == "scan_complete":
+            seen.append(await api.get_scan(message["file_id"]))
+
+    monkeypatch.setattr(api, "broadcast_message", broadcast)
+
+    async def scenario():
+        await settle(api.start_envelope(recording["id"], recording["source"]))
+
+    asyncio.run(scenario())
+    assert len(seen) == 1 and seen[0]["ready"] is True
+
+
+def test_scan_never_blocks_on_a_running_task_even_when_the_cache_exists(recording, monkeypatch):
+    decode = use_decode(monkeypatch, BlockingDecode(write_cache=recording["dir"] / "envelope.npy"))
+
+    async def scenario():
+        task = api.start_envelope(recording["id"], recording["source"])
+        await until(decode.started.is_set)
+        try:
+            return await asyncio.wait_for(api.get_scan(recording["id"]), 1)
+        finally:
+            decode.release.set()
+            await settle(task)
+
+    assert asyncio.run(scenario()) == {"ready": False}
