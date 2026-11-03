@@ -521,6 +521,16 @@
                             </button>
                         </template>
 
+                        <!-- Audacity labels: use the splits marked in Audacity instead of silence detection -->
+                        <div class="mt-3">
+                            <input type="file" accept=".txt,text/plain" x-ref="labelsInput" class="hidden" @change="importAudacityLabels($event)">
+                            <button @click="$refs.labelsInput.click()" :disabled="analyzing" class="text-sm font-semibold underline text-primary" :class="{'opacity-60 cursor-not-allowed': analyzing}" title="In Audacity: File → Export → Export Labels">
+                                📄 Import Audacity labels
+                            </button>
+                            <span class="text-xs text-secondary">— already marked your tracks in Audacity? Use those splits.</span>
+                            <p x-show="labelsNotice" x-cloak class="mt-2 text-sm text-primary p-2 rounded-lg" style="background-color: rgba(229, 161, 0, 0.15);" x-text="labelsNotice"></p>
+                        </div>
+
                         <!-- Smart Rescan: retry detection until it finds the expected track count -->
                         <template x-if="detectedTracks.length > 0">
                             <div class="mt-3 pt-3 border-t" style="border-color: #F0EFEB;">
@@ -553,6 +563,7 @@
                         <button @click="stopWaveform()" :disabled="!waveform" class="px-4 py-2 btn-danger rounded-lg">⏹️ Stop</button>
                         <button @click="zoomIn()" :disabled="!waveform" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;">🔍 +</button>
                         <button @click="zoomOut()" :disabled="!waveform" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;">🔍 -</button>
+                        <button @click="exportAudacityLabels()" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;" title="Save these splits as a label file for Audacity (File → Import → Labels)">📄 Export to Audacity</button>
                     </div>
                 </div>
             </div>

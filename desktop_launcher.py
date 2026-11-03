@@ -68,6 +68,35 @@ class DesktopApi:
             return None
 
 
+    def save_text_file(self, suggested_name: str, content: str) -> str | None:
+        """Ask where to save a text file (e.g. Audacity labels) and write it.
+
+        Returns the saved path, or None if the user cancelled or it failed.
+        Blob downloads are unreliable inside the native web views, so the
+        frontend routes saves through here when running as the desktop app.
+        """
+        if webview is None:
+            return None
+        try:
+            window = webview.windows[0]
+            dialog_type = webview.SAVE_DIALOG
+            if hasattr(webview, "FileDialog") and hasattr(webview.FileDialog, "SAVE"):
+                dialog_type = webview.FileDialog.SAVE
+
+            result = window.create_file_dialog(
+                dialog_type,
+                save_filename=Path(suggested_name).name or "labels.txt",
+                file_types=("Text files (*.txt)",),
+            )
+            if not result:
+                return None
+            target = Path(result[0] if isinstance(result, (list, tuple)) else result)
+            target.write_text(content, encoding="utf-8")
+            return str(target)
+        except Exception:
+            return None
+
+
 def _macos_app_support_dir() -> Path:
     return Path.home() / "Library" / "Application Support" / APP_NAME
 

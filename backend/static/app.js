@@ -66,6 +66,9 @@ function vinylApp() {
         expectedTracks: null,
         rescanNotice: '',
 
+        // Audacity label files
+        labelsNotice: '',
+
         // Processing
         isProcessing: false,
         processingProgress: 0,
@@ -492,6 +495,7 @@ function vinylApp() {
             this.selectedRelease = null;
             this.trackCountMismatch = false;
             this.searchNotice = '';
+            this.labelsNotice = '';
             this.successMessage = '';
             this.processingProgress = 0;
             this.processingMessage = '';
@@ -568,6 +572,140 @@ function vinylApp() {
                 this.processingMessage = '';
             } finally {
                 this.analyzing = false;
+            }
+        },
+
+        /**
+         * Use an Audacity label file (File → Export → Export Labels) as the
+         * track boundaries instead of silence detection.
+         */
+        async importAudacityLabels(event) {
+            const input = event.target;
+            const labelFile = input.files && input.files[0];
+            input.value = '';  // let the same file be picked again
+            if (!labelFile || !this.currentFileId || this.analyzing) return;
+
+            if (this.detectedTracks.length > 0 &&
+                !confirm('Replace the current track boundaries with the labels from this file?')) {
+                return;
+            }
+
+            this.analyzing = true;
+            this.rescanNotice = '';
+            this.labelsNotice = '';
+
+            try {
+                const text = await labelFile.text();
+                const response = await fetch('/api/import-labels', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_id: this.currentFileId, labels: text })
+                });
+                const data = await response.json();
+
+                if (!response.ok || !data.tracks) {
+                    throw new Error(data.detail || 'Could not read the label file');
+                }
+
+                this.detectedTracks = data.tracks.map(track => ({
+                    ...track,
+                    editing: false,
+                    ignored: false
+                }));
+
+                const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
+                if (file) {
+                    file.status = 'analyzed';
+                }
+
+                if (this.selectedRelease) {
+                    this.trackMappingReversed = false;
+                    this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
+                    this.trackCountMismatch =
+                        this.detectedTracks.length !== this.selectedRelease.tracks.length;
+                }
+
+                this.destroyWaveform();
+                await this.initWaveform();
+
+                this.labelsNotice = `✅ Imported ${data.tracks.length} tracks from ${labelFile.name}.`;
+
+                if (!this.selectedRelease && this.searchQuery) {
+                    await this.searchDiscogs();
+                }
+            } catch (error) {
+                console.error('Label import failed:', error);
+                this.labelsNotice = '❌ ' + error.message;
+            } finally {
+                this.analyzing = false;
+            }
+        },
+
+        /**
+         * Label text for a track in an exported label file: "A1 Title" once a
+         * release is matched, otherwise the imported label or "Track N".
+         */
+        audacityLabelName(track, idx) {
+            if (this.selectedRelease) {
+                const discogsTrack = this.selectedRelease.tracks[this.customMapping[idx]];
+                if (discogsTrack) {
+                    return `${discogsTrack.position} ${discogsTrack.title}`.trim();
+                }
+            }
+            return track.label || `Track ${track.number}`;
+        },
+
+        /**
+         * Save the current boundaries as an Audacity label file, so the same
+         * splits can be opened in Audacity with File → Import → Labels.
+         */
+        async exportAudacityLabels() {
+            const rows = [];
+            this.detectedTracks.forEach((track, idx) => {
+                if (!track.ignored) {
+                    rows.push({ start: track.start, end: track.end, name: this.audacityLabelName(track, idx) });
+                }
+            });
+            if (rows.length === 0) {
+                alert('No tracks to export.');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/export-labels', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tracks: rows })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Export failed');
+                }
+
+                const base = (this.currentFile?.filename || 'recording').replace(/\.[^.]+$/, '');
+                const filename = `${base} - labels.txt`;
+
+                if (window.pywebview && window.pywebview.api && window.pywebview.api.save_text_file) {
+                    const saved = await window.pywebview.api.save_text_file(filename, data.labels);
+                    if (saved) {
+                        this.labelsNotice = `✅ Saved labels to ${saved}. In Audacity: File → Import → Labels.`;
+                    }
+                    return;
+                }
+
+                const blob = new Blob([data.labels], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                this.labelsNotice = '✅ Labels downloaded. In Audacity: File → Import → Labels.';
+            } catch (error) {
+                console.error('Label export failed:', error);
+                alert('Label export failed: ' + error.message);
             }
         },
 

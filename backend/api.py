@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import Config
 from audio_processor import AudioProcessor, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg
 from metadata_handler import MetadataHandler
+from audacity_labels import LabelFileError, labels_from_tracks, tracks_from_labels
 from backend.sessions import (
     OutputSpec,
     ProgressEvent,
@@ -217,6 +218,25 @@ class DurationBasedAnalyzeRequest(BaseModel):
 class RescanRequest(BaseModel):
     file_id: str
     expected_tracks: int
+
+
+# An Audacity label file is a few KB even for a box set; cap what we parse.
+MAX_LABEL_FILE_CHARS = 1_000_000
+
+
+class ImportLabelsRequest(BaseModel):
+    file_id: str
+    labels: str
+
+
+class LabelRow(BaseModel):
+    start: float
+    end: float
+    name: Optional[str] = ""
+
+
+class ExportLabelsRequest(BaseModel):
+    tracks: List[LabelRow]
 
 
 class SearchRequest(BaseModel):
@@ -588,6 +608,62 @@ async def analyze_duration_based(request: DurationBasedAnalyzeRequest):
     except Exception as e:
         logger.error(f"Duration-based analysis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/import-labels")
+async def import_labels(request: ImportLabelsRequest):
+    """
+    Use an Audacity label file as the track boundaries instead of running
+    silence detection.  Region labels become tracks as-is; point labels mark
+    where each track starts.  See ``audacity_labels`` for the rules.
+    """
+    session = session_store.get(request.file_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    if len(request.labels) > MAX_LABEL_FILE_CHARS:
+        raise HTTPException(status_code=413, detail="That label file is too large.")
+
+    try:
+        tracks, names = tracks_from_labels(
+            request.labels,
+            session.source_duration,
+            min_track_length=config.default_min_track_length,
+        )
+    except LabelFileError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    session.set_boundaries(tracks)
+
+    await broadcast_message(
+        {
+            "type": "step_complete",
+            "file_id": request.file_id,
+            "step": "detection",
+            "message": f"Imported {len(tracks)} tracks from Audacity labels",
+        }
+    )
+
+    return {
+        "tracks": [
+            {
+                "number": track.number,
+                "start": track.start,
+                "end": track.end,
+                "duration": track.duration,
+                "label": name,
+            }
+            for track, name in zip(tracks, names)
+        ]
+    }
+
+
+@app.post("/api/export-labels")
+async def export_labels(request: ExportLabelsRequest):
+    """Format track boundaries as an Audacity label file (File → Import → Labels)."""
+    if not request.tracks:
+        raise HTTPException(status_code=422, detail="No tracks to export")
+    rows = [(t.start, t.end, t.name) for t in request.tracks]
+    return {"labels": labels_from_tracks(rows)}
 
 
 @app.get("/api/preview/{file_id}/{track_number}")
