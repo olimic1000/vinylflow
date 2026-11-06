@@ -551,6 +551,7 @@ GAP_STRENGTH_W = 2.0  # real gaps outweigh length error: Discogs lengths are oft
 LENGTH_SIGMA_S = 3.0  # Discogs length tolerance: sigma = 3 s + 3 % of the length
 LENGTH_SIGMA_FRAC = 0.03
 MIN_ALIGNED_TRACK_S = 5.0  # two chosen gaps closer than this cannot hold a track
+MAX_ALIGN_CANDIDATES = 2000  # bounds the alignment: ~130 MB, ~2 s at 99 tracks; ~2.8 h of 5 s weak windows
 PRE_ROLL_S = 0.8  # cut this long before the next song's onset (user: >= 0.5 s more than the 0.3 s it was)
 POST_ROLL_S = 0.5  # silence the previous track keeps at least, when the gap allows both
 EDGE_PAD_S = 0.5  # lead-in / run-out silence kept before the first and after the last track
@@ -668,9 +669,15 @@ def align_durations_to_gaps(
     ``None`` = unknown, costs nothing) minus the strength of every chosen gap.
     Side-change boundaries count their gap's strength twice.  Returns ``None``
     when there are too few candidates to place the tracks.
+
+    Each step holds m x m matrices, so a very long capture keeps only its
+    ``MAX_ALIGN_CANDIDATES`` strongest candidates; strong ones always outrank weak ones.
     """
     n = len(durations)
     pool = [c for c in cands if start < c.start and c.end < end]
+    if len(pool) > MAX_ALIGN_CANDIDATES:
+        strongest = sorted(pool, key=lambda c: c.strength)[-MAX_ALIGN_CANDIDATES:]
+        pool = sorted(strongest, key=lambda c: (c.start, c.end))
     m = len(pool)
     if n < 2 or m < n - 1:
         return None
@@ -706,7 +713,9 @@ def align_durations_to_gaps(
     return [pool[i] for i in reversed(picks)]
 
 
-def _onset(db: np.ndarray, sm: np.ndarray, frame_s: float, gap: GapCandidate) -> float:
+def _onset(
+    db: np.ndarray, sm: np.ndarray, frame_s: float, gap: GapCandidate, next_gap_start: Optional[float] = None
+) -> float:
     """Where the music after ``gap`` starts.
 
     A candidate can be several quiet runs merged across short bumps, and those bumps
@@ -718,6 +727,7 @@ def _onset(db: np.ndarray, sm: np.ndarray, frame_s: float, gap: GapCandidate) ->
     side-flip-length gap, whose needle-drop noise sits above near-digital silence),
     refined on the raw envelope to a sustained rise (a lone click is shorter than
     ``ONSET_SUSTAIN_S``).  Without such a run: the first clear rise after the candidate.
+    ``next_gap_start`` is where this track's music must end (see ``_after_needle_drop``).
     """
     n = len(sm)
     a, b = int(gap.start / frame_s), min(n - 1, int(gap.end / frame_s))
@@ -740,10 +750,12 @@ def _onset(db: np.ndarray, sm: np.ndarray, frame_s: float, gap: GapCandidate) ->
     sustain = max(1, int(round(ONSET_SUSTAIN_S / frame_s)))
     lo, hi = max(a, i - int(0.4 / frame_s)), min(n - sustain, i + int(0.4 / frame_s))
     onset = next((j for j in range(lo, hi + 1) if db[j : j + sustain].min() > thr), i)
-    return _after_needle_drop(db, sm, frame_s, onset) * frame_s
+    return _after_needle_drop(db, sm, frame_s, onset, next_gap_start) * frame_s
 
 
-def _after_needle_drop(db: np.ndarray, sm: np.ndarray, frame_s: float, i: int) -> int:
+def _after_needle_drop(
+    db: np.ndarray, sm: np.ndarray, frame_s: float, i: int, next_gap_start: Optional[float] = None
+) -> int:
     """If the sound at frame ``i`` is a needle drop (arm-up silence before it, then lead-in
     crackle and a clear step up into the music), the frame where the music starts;
     otherwise ``i``.  Side A's lead-in is already outside the music span; this is side B's.
@@ -751,7 +763,9 @@ def _after_needle_drop(db: np.ndarray, sm: np.ndarray, frame_s: float, i: int) -
     The step is the change point maximising (music median) - (90th percentile of the crackle
     before it), so a lead-in whose crackle wanders or swells still gives way to the music,
     while a song that starts right after the thump (no clear step) is left untouched, and so
-    is a very quiet opening that barely rises above the crackle.
+    is a very quiet opening that barely rises above the crackle.  The step is only looked for
+    far enough before ``next_gap_start`` to leave a track: a quiet short song after the flip
+    can pass for crackle, with the next song as its music.
     """
     n = len(sm)
     before = sm[max(0, i - int(1.0 / frame_s)) : i]
@@ -759,8 +773,11 @@ def _after_needle_drop(db: np.ndarray, sm: np.ndarray, frame_s: float, i: int) -
         return i
     a = i + int(LEAD_IN_SETTLE_S / frame_s)
     after = int(LEAD_IN_AFTER_S / frame_s)
+    stop = min(n - after, i + int(LEAD_IN_MAX_S / frame_s))
+    if next_gap_start is not None:
+        stop = min(stop, int((next_gap_start - MIN_ALIGNED_TRACK_S) / frame_s))
     best, best_t = -np.inf, None
-    for t in range(a + int(0.5 / frame_s), min(n - after, i + int(LEAD_IN_MAX_S / frame_s)), int(0.1 / frame_s)):
+    for t in range(a + int(0.5 / frame_s), stop, int(0.1 / frame_s)):
         score = float(np.median(sm[t : t + after]) - np.percentile(sm[a:t], 90))
         if score > best:
             best, best_t = score, t
@@ -776,7 +793,8 @@ def _after_needle_drop(db: np.ndarray, sm: np.ndarray, frame_s: float, i: int) -
                  if db[k : k + sustain].min() > level), best_t)
 
 def onset_cut(
-    db: np.ndarray, sm: np.ndarray, frame_s: float, gap: GapCandidate, pre_roll_s: Optional[float] = None
+    db: np.ndarray, sm: np.ndarray, frame_s: float, gap: GapCandidate, pre_roll_s: Optional[float] = None,
+    onset: Optional[float] = None,
 ) -> Tuple[float, float]:
     """``(previous_end, next_start)`` for the boundary at a chosen candidate.
 
@@ -787,11 +805,13 @@ def onset_cut(
     (side flips, run-outs): the previous track ends ``MAX_TAIL_S`` after the
     fade and the rest is dropped; a digitally silent gap keeps no tail.
     A weak (no-gap) candidate is cut contiguously at its quietest point.
+    ``onset`` saves finding the song's onset again when the caller already has it.
     """
     if not gap.strong:
         mid = (gap.start + gap.end) / 2
         return mid, mid
-    onset = _onset(db, sm, frame_s, gap)
+    if onset is None:
+        onset = _onset(db, sm, frame_s, gap)
     pre = PRE_ROLL_S if pre_roll_s is None else pre_roll_s
     cut = onset - pre
     if cut < gap.start + POST_ROLL_S:
@@ -819,13 +839,15 @@ def _assemble(
     starts, ends, infos = [music_start], [], []
     music_from = music_start  # where this track's music begins (guides ignore the padding)
     for k, cand in enumerate(chosen):
-        prev_end, next_start = onset_cut(db, sm, frame_s, cand)
+        next_gap_start = chosen[k + 1].start if k + 1 < len(chosen) else music_end
+        onset = _onset(db, sm, frame_s, cand, next_gap_start) if cand.strong else None
+        prev_end, next_start = onset_cut(db, sm, frame_s, cand, onset=onset)
         prev_end = max(prev_end, starts[-1])
         d = durations[k]
         expected = music_from + d if d is not None else (prev_end + next_start) / 2
         ends.append(prev_end)
         starts.append(max(next_start, prev_end))
-        music_from = max(starts[-1], _onset(db, sm, frame_s, cand)) if cand.strong else starts[-1]
+        music_from = max(starts[-1], onset) if cand.strong else starts[-1]
         infos.append(BoundaryInfo(
             k + 1, expected, cand.strong,
             Gap(cand.start, cand.end) if cand.strong else None, (prev_end + next_start) / 2,

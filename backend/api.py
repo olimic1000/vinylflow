@@ -14,7 +14,6 @@ from subprocess import CalledProcessError
 from typing import List, Optional
 import asyncio
 import json
-import math
 from datetime import datetime, timedelta
 
 import logging
@@ -37,6 +36,7 @@ from audio_processor import (
     AudioProcessor, ENVELOPE_FRAME_S, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg,
 )
 from track_boundaries import (
+    MIN_ALIGNED_TRACK_S,
     boundaries_from_expected_durations,
     gaps_from_envelope,
     guided_by_alignment,
@@ -723,14 +723,18 @@ async def get_scan(file_id: str):
 @app.post("/api/analyze-guided")
 async def analyze_guided(request: GuidedAnalyzeRequest):
     """
-    Place exactly ``expected_tracks`` boundaries using the cached envelope and
-    the Discogs lengths.  Best-match alignment runs first (a length that is
+    Place ``expected_tracks`` boundaries using the cached envelope and the
+    Discogs lengths.  Best-match alignment runs first (a length that is
     unknown costs nothing); the gap/scale model is the fallback when every
     length is known, and count-based detection (the Smart Rescan ladder) when
-    no length is known or neither model can place the tracks.
+    no length is known or neither model can place the tracks.  Count-based
+    detection may find fewer tracks than asked for: ``matched`` is then False.
     """
     if not 1 <= request.expected_tracks <= 99:
         raise HTTPException(status_code=422, detail="expected_tracks must be between 1 and 99")
+
+    if request.durations is not None and len(request.durations) != request.expected_tracks:
+        raise HTTPException(status_code=422, detail="durations must have one entry per expected track")
 
     side_breaks = request.side_breaks or []
     if side_breaks != sorted(set(side_breaks)) or any(
@@ -742,28 +746,33 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    durations = request.durations
-    sized = durations is not None and len(durations) == request.expected_tracks
-    # Zero, negative and non-finite lengths (JSON 1e400 parses as inf) count as unknown.
-    known = [d if d is not None and math.isfinite(d) and d > 0 else None for d in durations] if sized else []
-    all_known = sized and all(d is not None for d in known)
-    try_align = sized and request.expected_tracks >= 2 and any(d is not None for d in known)
+    await broadcast_message(
+        {
+            "type": "progress",
+            "file_id": request.file_id,
+            "step": "detecting",
+            "progress": 0.1,
+            "message": f"Placing {request.expected_tracks} tracks...",
+        }
+    )
 
     try:
         db = await get_envelope(session)
+
+        # A length that can't be real counts as unknown: zero, negative, longer than the
+        # recording, or non-finite (JSON 1e400 parses as inf; NaN fails the comparison too).
+        recording_s = len(db) * ENVELOPE_FRAME_S
+        known = [d if d is not None and 0 < d <= recording_s else None for d in request.durations or []]
+        all_known = bool(known) and None not in known
+        try_align = len(known) >= 2 and any(d is not None for d in known)
 
         def _compute():
             music_start, music_end = music_span(db, ENVELOPE_FRAME_S)
             result = None
             if try_align:
-                try:
-                    result = guided_by_alignment(
-                        db, ENVELOPE_FRAME_S, music_start, music_end,
-                        [float(d) if d is not None else None for d in known],
-                        side_breaks=side_breaks,
-                    )
-                except Exception:
-                    logger.warning("Best-match alignment failed; using fallback", exc_info=True)
+                result = guided_by_alignment(
+                    db, ENVELOPE_FRAME_S, music_start, music_end, known, side_breaks=side_breaks,
+                )
             if result is None and all_known:
                 gaps = gaps_from_envelope(
                     db,
@@ -771,10 +780,13 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
                     audio_processor.SMART_RESCAN_LADDER[0][0],
                     audio_processor.SMART_RESCAN_LADDER[0][1],
                 )
-                result = boundaries_from_expected_durations(
-                    gaps, music_start, music_end, [float(d) for d in known],
-                    side_breaks=side_breaks,
+                placed = boundaries_from_expected_durations(
+                    gaps, music_start, music_end, known, side_breaks=side_breaks,
                 )
+                # It places every track whatever the span, clamping surplus cuts to the end
+                # of the music, so a track too short to be one means the tracks don't fit.
+                if min(track.duration for track in placed.tracks) >= MIN_ALIGNED_TRACK_S:
+                    result = placed
             if result is not None:
                 # Aligned cuts touch, so for them only the outer edges widen; the gap/scale
                 # model's snapped cuts can widen into their gaps.
@@ -801,6 +813,15 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
                 for b in guided.boundaries
             ]
 
+        await broadcast_message(
+            {
+                "type": "step_complete",
+                "file_id": request.file_id,
+                "step": "detection",
+                "message": f"Guided detection placed {len(tracks)} tracks",
+            }
+        )
+
         return {
             "tracks": [
                 {"number": i + 1, "start": t.start, "end": t.end, "duration": t.duration}
@@ -821,6 +842,14 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
         raise
     except Exception as e:
         logger.error(f"Guided analysis failed: {e}", exc_info=True)
+        await broadcast_message(
+            {
+                "type": "error",
+                "file_id": request.file_id,
+                "message": f"Guided detection failed: {str(e)}",
+                "recoverable": True,
+            }
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
