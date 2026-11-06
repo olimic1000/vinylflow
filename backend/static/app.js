@@ -924,10 +924,12 @@ function vinylApp() {
                 }
 
                 if (this.detectedTracks.length === 0) {
+                    // No waveform either: initWaveform keeps an existing one, so the retry's
+                    // tracks would get no regions.
                     this.notify('No tracks were found in this recording. Try another release or adjust the silence settings.', { type: 'warning' });
+                } else {
+                    await this.initWaveform();
                 }
-
-                await this.initWaveform();
             } catch (error) {
                 console.error('Analysis failed:', error);
                 this.notifyError('Analysis failed', error);
@@ -1250,11 +1252,11 @@ function vinylApp() {
             this.customMapping = [];
         },
 
-        /** Back to the search card (tracks exist, no release chosen): search again and focus the query */
+        /** Back to the search card (tracks exist, no release chosen); searches only if it has no results */
         tryDiscogsAgain() {
             if (this.analyzing) return;
             if (!this.searchQuery.trim()) this.searchQuery = this.cleanFilename(this.currentFile?.filename || '');
-            this.searchDiscogs();
+            if (this.searchResults.length === 0) this.searchDiscogs();
             this.$nextTick(() => {
                 if (typeof document === 'undefined') return;
                 document.getElementById('discogs-search')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1632,7 +1634,12 @@ function vinylApp() {
                     file.status = 'analyzed (duration-based)';
                 }
 
-                // Reinitialize waveform
+                // The mapping and count check follow the new tracks. Reachable with no tracks at all
+                // (a pick whose detection found none), when every one would export as "Unknown".
+                this.resetMappingToDetected();
+
+                // initWaveform keeps an existing waveform, and with it the old regions
+                this.destroyWaveform();
                 await this.initWaveform();
 
                 this.notifyUndo(`Created ${this.detectedTracks.length} tracks from the Discogs lengths. Review the boundaries before exporting.`,

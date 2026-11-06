@@ -65,6 +65,66 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
         assert.strictEqual(app.showTrackCountMismatch, true);
     }
 
+    // ---- duration splitting from the "release picked, nothing detected" state: the new tracks
+    // need a mapping, or every one would export as position "Unknown" ----
+    {
+        const server = fakeServer();
+        const app = mkApp();
+        app.selectFile('f1');
+        app.selectRelease(fullRelease(1));
+        server.next('/api/analyze').answer(200, { tracks: [] });
+        await tick(); await tick();
+        assert.strictEqual(app.detectedTracks.length, 0);
+        assert.strictEqual(app.showTrackCountMismatch, true);
+
+        const waveformCalls = [];
+        app.destroyWaveform = () => waveformCalls.push('destroy');
+        app.initWaveform = async () => { waveformCalls.push('init'); };
+        const splitting = app.offerDurationBasedSplitting();
+        await tick();
+        server.next('/api/analyze-duration-based').answer(200, { tracks: detected(2) });
+        await splitting;
+        assert.deepStrictEqual(app.customMapping, [0, 1], 'each new track maps to its release track');
+        assert.strictEqual(app.trackCountMismatch, false, 'the counts match now');
+        assert.deepStrictEqual(waveformCalls, ['destroy', 'init'], 'initWaveform keeps an existing waveform, so it goes first');
+    }
+
+    // ---- a detection that finds nothing leaves no waveform behind: initWaveform returns at once
+    // when one exists, so the retry would show its tracks without draggable regions ----
+    {
+        const server = fakeServer();
+        const app = mkApp();
+        app.selectFile('f1');
+        let waveformInits = 0;
+        app.initWaveform = async () => { waveformInits += 1; };
+        app.selectRelease(fullRelease(1));
+        server.next('/api/analyze').answer(200, { tracks: [] });
+        await tick(); await tick();
+        assert.strictEqual(waveformInits, 0, 'no tracks: no waveform');
+        app.analyzeFile();   // the "Retry track detection" button
+        server.next('/api/analyze').answer(200, { tracks: detected(2) });
+        await tick(); await tick();
+        assert.strictEqual(waveformInits, 1, 'the retry builds it, with its regions');
+    }
+
+    // ---- "Try Discogs again" with results on screen goes back to them: no new Discogs request ----
+    {
+        const server = fakeServer();
+        const app = mkApp();
+        app.selectFile('f1');
+        server.next('/api/search').answer(200, { results: [card(1)] });
+        await tick(); await tick();
+        app.detectedTracks = detected(2);
+        const searches = server.calledWith('/api/search').length;
+        app.tryDiscogsAgain();
+        assert.strictEqual(server.calledWith('/api/search').length, searches, 'results kept, nothing fetched');
+
+        // ...and with nothing to show (the search failed, or found nothing) it searches again
+        app.resetSearchResults();
+        app.tryDiscogsAgain();
+        assert.strictEqual(server.calledWith('/api/search').length, searches + 1);
+    }
+
     // ---- clicking the recording already open keeps its work and searches nothing ----
     {
         const server = fakeServer();

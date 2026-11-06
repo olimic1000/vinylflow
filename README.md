@@ -218,7 +218,7 @@ DEFAULT_OUTPUT_DIR=~/Music/VinylFlow
 
 1. **Upload** — drag and drop your WAV or AIFF recording
 2. **Pick the release** — VinylFlow searches Discogs from the file name as soon as you select the recording. Result cards fill in their track lists as they load; releases with complete track lengths are marked, and the one whose lengths best fit your recording is flagged "Best fit". Edit the search box to look again. The chosen release stays in a card above the waveform (cover art, a link to Discogs, **Change release**)
-3. **Detect** — picking a release starts track detection by silence. No Discogs token, or no good match? Use **Skip Discogs — detect tracks by silence only**; **Try Discogs again** brings the search back once tracks exist
+3. **Detect** — picking a release starts track detection by silence. No Discogs token, or no good match? Use **Skip Discogs — detect tracks by silence only**; **Try Discogs again** takes you back to the search once tracks exist
 4. **Map** — match detected tracks to Discogs track listings
 5. **Choose format** — FLAC, MP3, or AIFF output
 6. **Process** — tracks are split, converted, tagged, and saved with cover art
