@@ -24,7 +24,10 @@ COMPOSER_ROLES = frozenset({
     "composed by", "composer", "written-by", "written by", "music by",
 })
 
-CONDUCTOR_ROLES = frozenset({"conductor", "chorus master"})
+CONDUCTOR_ROLES = frozenset({"conductor"})
+
+# Prepare the choir but don't lead the performance: PERFORMER only, never ARTIST.
+CHORUS_MASTER_ROLES = frozenset({"chorus master", "choir master"})
 
 # Roles whose credited name is a group (tagged ENSEMBLE).
 ENSEMBLE_ROLES = frozenset({
@@ -44,7 +47,7 @@ INSTRUMENT_ROLES = frozenset({
     "tuba", "harp", "guitar", "percussion", "timpani", "recorder", "lute",
     "saxophone", "cor anglais", "english horn", "piccolo", "celesta",
     "fortepiano", "continuo", "bass clarinet", "contrabassoon", "mandolin",
-    "accordion", "drums", "synthesizer", "keyboards",
+    "accordion", "drums", "synthesizer", "keyboards", "strings", "cembalo",
 })
 
 # Second word of a singer credit: Discogs writes "Soprano Vocals", "Baritone Voice".
@@ -64,7 +67,8 @@ ROLE_MODIFIERS = frozenset({
 # Everything performing; any role not in here (Producer, Engineer, Liner Notes,
 # Design, Photography, Mastered By, Lacquer Cut By, Recorded By ...) is never tagged.
 PERFORMING_ROLES = (
-    CONDUCTOR_ROLES | ENSEMBLE_ROLES | VOICE_ROLES | INSTRUMENT_ROLES | OTHER_PERFORMER_ROLES
+    CONDUCTOR_ROLES | CHORUS_MASTER_ROLES | ENSEMBLE_ROLES | VOICE_ROLES | INSTRUMENT_ROLES
+    | OTHER_PERFORMER_ROLES
 )
 
 
@@ -88,7 +92,10 @@ def is_various(name: str) -> bool:
 
 
 def _fields(entry) -> dict:
-    """Raw field dict of a discogs_client Artist (its ``.data``) or a plain object."""
+    """Raw field dict of a discogs_client Artist (its ``.data``), a raw payload entry
+    or a plain object."""
+    if isinstance(entry, dict):
+        return entry
     data = getattr(entry, "data", None)
     if isinstance(data, dict):
         return data
@@ -112,14 +119,10 @@ def join_artist_names(entries: Sequence) -> str:
     return "".join(parts)
 
 
-def sole_artist_name(entries: Sequence) -> str:
-    """The cleaned name when exactly one artist is listed, else "".
-
-    Used as the classical composer fallback: a line such as "Beethoven – Karajan,
-    Berliner Philharmoniker" also names performers, so it is no composer."""
+def artist_names(entries: Sequence) -> Tuple[str, ...]:
+    """The listed artists' cleaned names, in order, empty ones dropped."""
     names = [clean_artist_name(_fields(entry).get("name")) for entry in entries or []]
-    names = [name for name in names if name]
-    return names[0] if len(names) == 1 else ""
+    return tuple(name for name in names if name)
 
 
 def _split_roles(role_text: str) -> List[str]:
@@ -156,6 +159,21 @@ def _is_singer(base: str) -> bool:
     """A "<voice type> Vocals" credit ("Soprano Vocals", "Baritone Voice")."""
     head, _, rest = base.partition(" ")
     return head in VOICE_ROLES and rest in VOICE_SUFFIXES
+
+
+def _performer_label(role: str) -> str:
+    """PERFORMER label for a role: its instrument, or "" for "Soloist" and the like.
+
+    A plain "Vocals [Soprano]" takes the voice type from the brackets. Other brackets
+    stay dropped: they say how ("Piano [Solo]"), or what kind ("Flute [Alto]")."""
+    base = role_base(role)
+    if base in OTHER_PERFORMER_ROLES:
+        return ""
+    if base in VOICE_SUFFIXES:
+        for detail in re.split(r"[\[\],]", role)[1:]:
+            if detail.strip().lower() in VOICE_ROLES:
+                return detail.strip().title()
+    return base.title()
 
 
 def parse_credits(entries: Sequence) -> List[Credit]:
@@ -259,11 +277,34 @@ def classify_credits(credits: Sequence[Credit]) -> ClassicalCredits:
         elif _allowed(base, ENSEMBLE_ROLES):
             add(ensembles, credit.name)
         elif _allowed(base, PERFORMING_ROLES) or _is_singer(base):
-            label = "" if base in OTHER_PERFORMER_ROLES else role_base(credit.role).title()
-            add(performers, (credit.name, label))
+            add(performers, (credit.name, _performer_label(credit.role)))
+    # "Violin [Solo], Leader" is one performer: the instrument says more than a bare entry.
+    with_instrument = {name for name, label in performers if label}
+    performers = [(name, label) for name, label in performers if label or name not in with_instrument]
     return ClassicalCredits(
         tuple(composers), tuple(conductors), tuple(ensembles), tuple(performers),
     )
+
+
+def lone_artist_composer(artists: Sequence[str], credits: Sequence[Credit]) -> str:
+    """The composer to assume when a track has no composer credit, or "".
+
+    ``artists`` are the release's artists; ``credits`` are all its credits, whatever tracks
+    they cover. Discogs often lists the composer alone ("Beethoven"), but as often the
+    performer ("Glenn Gould"), so a lone artist only counts if the credits don't show them
+    performing. A composer credited anywhere means the rest is unknown, not this artist.
+    """
+    if len(artists) != 1:
+        return ""
+    found = classify_credits(credits)
+    performing = {name for name, _ in found.performers} | set(found.ensembles) | set(found.conductors)
+    return "" if found.composers or artists[0] in performing else artists[0]
+
+
+def artist_from_credits(found: ClassicalCredits) -> List[str]:
+    """ARTIST in the usual classical order: soloists, then ensembles, then the conductor."""
+    soloists = [name for name, label in found.performers if label.lower() not in CHORUS_MASTER_ROLES]
+    return list(dict.fromkeys(soloists + list(found.ensembles) + list(found.conductors)))
 
 
 def performer_text(name: str, label: str) -> str:

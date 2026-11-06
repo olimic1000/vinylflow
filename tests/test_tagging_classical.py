@@ -106,12 +106,42 @@ def test_modifiers_and_soloist_roles():
         Credit("Perlman", "Violin"),
         Credit("Q", "Principal Oboe"),
     ])
-    assert found.performers == (("Kempff", "Piano"), ("Perlman", ""), ("Perlman", "Violin"), ("Q", "Principal Oboe"))
+    assert found.performers == (("Kempff", "Piano"), ("Perlman", "Violin"), ("Q", "Principal Oboe"))
 
 
-def test_soloist_violin_role_text_yields_soloist_and_violin():
-    credits = parse_credits([FakeArtist("Perlman", role="Soloist, Violin")])
-    assert classify_credits(credits).performers == (("Perlman", ""), ("Perlman", "Violin"))
+@pytest.mark.parametrize("role", ["Soloist, Violin", "Violin, Soloist", "Violin [Solo], Leader"])
+def test_a_named_instrument_replaces_the_bare_performer_entry(role):
+    """One person, one PERFORMER value: "X (Violin)", not also a bare "X"."""
+    credits = parse_credits([FakeArtist("X", role=role)])
+    assert classify_credits(credits).performers == (("X", "Violin"),)
+
+
+def test_a_bare_performer_credit_is_kept_without_an_instrument():
+    assert classify_credits([Credit("X", "Leader"), Credit("Y", "Cello")]).performers == (("X", ""), ("Y", "Cello"))
+
+
+@pytest.mark.parametrize("role, label", [
+    ("Vocals [Soprano]", "Soprano"),
+    ("Voice [Mezzo-soprano]", "Mezzo-Soprano"),
+    ("Vocals [Solo, Baritone]", "Baritone"),
+    ("Vocals [Solo]", "Vocals"),
+    ("Piano [Steinway]", "Piano"),
+    ("Flute [Alto]", "Flute"),  # an alto flute, not a singer
+])
+def test_a_voice_type_in_brackets_labels_the_singer(role, label):
+    assert classify_credits([Credit("N", role)]).performers == (("N", label),)
+
+
+@pytest.mark.parametrize("role", ["Strings", "Cembalo"])
+def test_more_instruments_are_allowed(role):
+    assert classify_credits([Credit("N", role)]).performers == (("N", role),)
+
+
+@pytest.mark.parametrize("role", ["Chorus Master", "Choir Master"])
+def test_a_chorus_master_is_a_performer_not_the_conductor(role):
+    found = classify_credits([Credit("Pitz", role), Credit("Klemperer", "Conductor")])
+    assert found.conductors == ("Klemperer",)
+    assert found.performers == (("Pitz", role),)
 
 
 @pytest.mark.parametrize("role", [
@@ -209,14 +239,46 @@ def test_composer_falls_back_to_release_artist():
     assert tags.conductors == tags.ensembles == tags.performers == ()
 
 
-def test_composer_fallback_on_compilation_is_the_track_artist():
+@pytest.mark.parametrize("track_artist", ["Bach", "Maria Callas"])
+def test_a_compilation_track_artist_is_never_guessed_as_composer(track_artist):
+    """A compilation's track artist is as often the singer as the composer."""
     release = DiscogsRelease(FakeReleaseObj(
         [FakeArtist("Various")],
-        [FakeTrackObj("A1", "One", artists=[FakeArtist("Bach")]), FakeTrackObj("A2", "Two")],
+        [FakeTrackObj("A1", "One", artists=[FakeArtist(track_artist)]), FakeTrackObj("A2", "Two")],
         genres=["Classical"],
     ))
-    assert tags_for(release, "A1").composers == ("Bach",)
-    assert tags_for(release, "A2").composers == ()  # no track artist: "Various" is not named as composer
+    assert tags_for(release, "A1").composers == ()
+    assert tags_for(release, "A2").composers == ()
+
+
+@pytest.mark.parametrize("role", ["Piano", "Conductor", "Orchestra", "Soprano Vocals"])
+def test_composer_fallback_skips_an_artist_with_a_performing_credit(role):
+    release = classical([FakeArtist("Glenn Gould", role=role, tracks="A1")], artist="Glenn Gould")
+    assert tags_for(release, "A1").composers == ()
+    assert tags_for(release, "B1").composers == ()  # the credit is on A1, but it still says who they are
+
+
+def test_composer_fallback_sees_a_performing_credit_on_a_track():
+    release = classical(tracks=[
+        FakeTrackObj("A1", "One"),
+        FakeTrackObj("A2", "Two", credits=[FakeArtist("Glenn Gould", role="Piano")]),
+    ], artist="Glenn Gould")
+    assert tags_for(release, "A1").composers == ()
+
+
+def test_no_composer_is_guessed_once_the_release_credits_one_anywhere():
+    release = classical([
+        FakeArtist("Johann Sebastian Bach", role="Composed By", tracks="A1 to A2"),
+        FakeArtist("Glenn Gould", role="Piano"),
+    ], artist="Glenn Gould")
+    assert tags_for(release, "A1").composers == ("Johann Sebastian Bach",)
+    assert tags_for(release, "B1").composers == ()  # unresolved stays empty
+    # A composer credited on one track alone counts too.
+    on_a_track = classical(tracks=[
+        FakeTrackObj("A1", "One", credits=[FakeArtist("Bach", role="Composed By")]),
+        FakeTrackObj("A2", "Two"),
+    ], artist="Gould")
+    assert tags_for(on_a_track, "A2").composers == ()
 
 
 def test_composer_fallback_needs_a_single_artist():
@@ -252,7 +314,7 @@ def test_credits_and_track_ranges():
         FakeArtist("Pierre Fournier", role="Cello", tracks="B1, B2"),
         FakeArtist("Some Producer", role="Producer"),
         FakeArtist("Some Engineer", role="Recorded By", tracks="A1"),
-    ])
+    ], artist="Ludwig van Beethoven")
     a1, b2 = tags_for(release, "A1"), tags_for(release, "B2")
     assert a1.composers == ("Ludwig van Beethoven",)
     assert a1.conductors == ("Herbert von Karajan",)
@@ -263,7 +325,7 @@ def test_credits_and_track_ranges():
     assert ("Pierre Fournier", "Cello") in b2.performers
     assert ("Pierre Fournier", "Cello") not in a1.performers
     assert ("Wilhelm Kempff", "Piano") not in b2.performers
-    assert b2.album_artist == "Beethoven"
+    assert b2.album_artist == "Ludwig van Beethoven"
 
 
 def test_track_level_credits_and_artist_precedence():
@@ -279,6 +341,57 @@ def test_track_level_credits_and_artist_precedence():
 def test_artist_is_conductor_alone_when_no_soloist_or_ensemble():
     release = classical([FakeArtist("Karajan", role="Conductor")])
     assert tags_for(release, "A1").artist == "Karajan"
+
+
+def test_artist_line_stays_when_the_credits_leave_out_a_main_artist():
+    """A lone soloist credit must not push the orchestra and conductor out of ARTIST."""
+    release = DiscogsRelease(FakeReleaseObj(
+        [FakeArtist("Berliner Philharmoniker", join=","), FakeArtist("Herbert von Karajan")],
+        [FakeTrackObj("A1", "One")], genres=["Classical"],
+        credits=[FakeArtist("Michel Schwalbé", role="Violin [Solo]")],
+    ))
+    tags = tags_for(release, "A1")
+    assert tags.artist == "Berliner Philharmoniker, Herbert von Karajan"
+    assert tags.performers == (("Michel Schwalbé", "Violin"),)
+
+
+def test_compilation_track_artist_stays_in_artist():
+    release = DiscogsRelease(FakeReleaseObj(
+        [FakeArtist("Various")],
+        [FakeTrackObj("A1", "One", artists=[FakeArtist("Maria Callas")]), FakeTrackObj("A2", "Two")],
+        genres=["Classical"],
+        credits=[FakeArtist("La Scala Orchestra", role="Orchestra"), FakeArtist("Serafin", role="Conductor")],
+    ))
+    assert tags_for(release, "A1").artist == "Maria Callas"
+    assert tags_for(release, "A2").artist == "La Scala Orchestra, Serafin"  # no track artist to lose
+
+
+def test_artist_is_reordered_when_the_credits_cover_every_main_artist():
+    release = DiscogsRelease(FakeReleaseObj(
+        [FakeArtist("Karajan", join=","), FakeArtist("BPO", join=","), FakeArtist("Kempff")],
+        [FakeTrackObj("A1", "One")], genres=["Classical"],
+        credits=[FakeArtist("Karajan", role="Conductor"), FakeArtist("BPO", role="Orchestra"),
+                 FakeArtist("Kempff", role="Piano")],
+    ))
+    assert tags_for(release, "A1").artist == "Kempff, BPO, Karajan"
+
+
+def test_a_composer_in_the_artist_line_does_not_keep_it():
+    """"Beethoven – Karajan, BPO" with a composer credit: ARTIST is the performers."""
+    release = DiscogsRelease(FakeReleaseObj(
+        [FakeArtist("Beethoven", join="–"), FakeArtist("Karajan", join=","), FakeArtist("BPO")],
+        [FakeTrackObj("A1", "One"), FakeTrackObj("B1", "Two")], genres=["Classical"],
+        credits=[FakeArtist("Beethoven", role="Composed By", tracks="A1"),
+                 FakeArtist("Karajan", role="Conductor"), FakeArtist("BPO", role="Orchestra")],
+    ))
+    assert tags_for(release, "A1").artist == "BPO, Karajan"
+    assert tags_for(release, "B1").artist == "BPO, Karajan"  # credited as composer on A1 only
+
+
+def test_a_chorus_master_stays_out_of_artist():
+    release = classical([FakeArtist("Pitz", role="Chorus Master"), FakeArtist("Klemperer", role="Conductor")])
+    assert tags_for(release, "A1").artist == "Klemperer"
+    assert tags_for(classical([FakeArtist("Pitz", role="Chorus Master")]), "A1").artist == "Beethoven"
 
 
 def test_artist_unchanged_without_performers():
@@ -453,6 +566,21 @@ def test_real_release_payload_through_discogs_client():
     assert forced.composers == ("Eric Stewart", "Graham Gouldman")
     assert forced.performers == () and forced.conductors == () and forced.ensembles == ()
     assert forced.artist == parsed.artist
+
+
+def test_a_payload_without_credits_or_genres_is_not_fetched_again():
+    """discogs_client refreshes on any key missing from the payload: one more Discogs
+    request per release. ``refresh`` stands in for that request."""
+    import discogs_client
+    data = json.loads((Path(__file__).parent / "fixtures" / "discogs_release_848848.json").read_text())
+    del data["extraartists"], data["genres"]
+    rel = discogs_client.Release(discogs_client.Client("VinylFlow-tests"), data)
+
+    def no_fetch(*_):
+        raise AssertionError("must not fetch")
+    rel.refresh = no_fetch
+    parsed = DiscogsRelease(rel)
+    assert parsed.genres == [] and parsed.credits == []
 
 
 # --- real files -------------------------------------------------------------
