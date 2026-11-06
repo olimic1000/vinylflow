@@ -65,7 +65,7 @@ def test_build_tag_set_happy_path():
     release = make_release()
     track = FakeTrack(vinyl_number="A1")
 
-    tags = handler._build_tag_set(track, release, cover_data=b"fake-cover")
+    tags = handler._build_tag_set(track, release, cover_data=b"fake-cover", track_numbering="vinyl")
 
     assert tags is not None
     assert tags.artist == "Test Artist"
