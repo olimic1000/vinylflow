@@ -27,13 +27,15 @@ from PIL import Image
 from release_credits import (
     VARIOUS_ARTISTS,
     Credit,
+    artist_from_credits,
+    artist_names,
     classify_credits,
     credits_for_track,
     is_various,
     join_artist_names,
+    lone_artist_composer,
     parse_credits,
     performer_text,
-    sole_artist_name,
 )
 
 
@@ -77,7 +79,8 @@ class DiscogsTrack:
     """Represents a track from Discogs release."""
 
     def __init__(self, position: str, title: str, duration: str = "", parts: Optional[List[dict]] = None, artist: str = "",
-                 credits: Optional[List[Credit]] = None, raw_position: str = "", sole_artist: str = ""):
+                 credits: Optional[List[Credit]] = None, raw_position: str = "",
+                 artist_names: Tuple[str, ...] = ()):
         """
         Initialize Discogs track.
 
@@ -90,14 +93,13 @@ class DiscogsTrack:
             artist: The track's own artist(s) when Discogs lists them (compilations)
             credits: Track-level credits (Discogs ``extraartists``)
             raw_position: Position as Discogs wrote it (credit track ranges use it)
-            sole_artist: The track artist when Discogs lists exactly one (classical
-                composer fallback on compilations), else ""
+            artist_names: The track's own artists, one name each (``artist`` joins them)
         """
         self.position = position
         self.artist = artist
         self.credits = list(credits or [])
         self.raw_position = raw_position or position
-        self.sole_artist = sole_artist
+        self.artist_names = tuple(artist_names)
         self.parts = list(parts or [])
         self.title = title
         self.duration_str = duration
@@ -147,14 +149,19 @@ class DiscogsRelease:
         # Get artists
         artists = getattr(release, "artists", [])
         self.artist = join_artist_names(artists) or "Unknown Artist"
-        self.sole_artist = sole_artist_name(artists)
+        self.artist_names = artist_names(artists)
 
         # Handle various artists
         self.various_artists = is_various(self.artist)
 
-        # Genres and release-level credits (Discogs ``extraartists``); classical tags use them
-        self.genres = list(getattr(release, "genres", None) or [])
-        self.credits = parse_credits(getattr(release, "credits", None))
+        # Genres and release-level credits (Discogs ``extraartists``); classical tags use them.
+        # Read from the raw payload, which the fields above have loaded: discogs_client refreshes
+        # on any key the payload lacks, one more Discogs request. Plain fakes set attributes.
+        payload = getattr(release, "data", None)
+        if not isinstance(payload, dict):
+            payload = {"genres": getattr(release, "genres", None), "extraartists": getattr(release, "credits", None)}
+        self.genres = list(payload.get("genres") or [])
+        self.credits = parse_credits(payload.get("extraartists"))
 
         # Get label
         labels = getattr(release, "labels", [])
@@ -189,7 +196,7 @@ class DiscogsRelease:
             track_credits = parse_credits(getattr(track, "credits", None))
             extras = {
                 "artist": track_artist, "credits": track_credits, "raw_position": position,
-                "sole_artist": sole_artist_name(getattr(track, "artists", None) or []),
+                "artist_names": artist_names(getattr(track, "artists", None) or []),
             }
             parts = None
 
@@ -630,15 +637,19 @@ class MetadataHandler:
             discogs_track.position, positions,
         )
         found = classify_credits(credits)
-        # No composer credit: a lone release artist (on a compilation, a lone track
-        # artist) is the best guess; a line that also names performers is no composer.
-        fallback_composer = (
-            getattr(discogs_track, "sole_artist", "") if various else getattr(release, "sole_artist", "")
-        )
-        # Conventional classical ARTIST order: soloists, then ensembles, then the conductor.
-        performer_names = list(dict.fromkeys(
-            [name for name, _ in found.performers] + list(found.ensembles) + list(found.conductors)
-        ))
+        # Every credit on the release: who a name is doesn't depend on which tracks it covers.
+        all_credits = list(getattr(release, "credits", [])) + [
+            credit for release_track in release.tracks for credit in getattr(release_track, "credits", [])
+        ]
+        # A compilation's track artist is as often the singer as the composer: no guess there.
+        fallback_composer = "" if various else lone_artist_composer(getattr(release, "artist_names", ()), all_credits)
+        performer_names = artist_from_credits(found)
+        # Credits often name only part of the line up, so they replace ARTIST only when no
+        # one would be lost from it; the composer isn't lost, ARTIST is for the performers.
+        main_artists = getattr(discogs_track, "artist_names", ()) if various else getattr(release, "artist_names", ())
+        accounted_for = {*performer_names, *classify_credits(all_credits).composers, fallback_composer}
+        if not accounted_for.issuperset(main_artists):
+            performer_names = []
         return {
             "composers": found.composers or ((fallback_composer,) if fallback_composer else ()),
             "conductors": found.conductors,
