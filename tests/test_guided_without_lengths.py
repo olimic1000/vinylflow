@@ -174,9 +174,30 @@ def test_fixture_release_parses_to_twelve_sides_of_five():
 
 
 def test_a_span_with_more_candidates_than_the_cap_gives_up_for_the_count_ladder(monkeypatch):
-    """The alignment's matrices grow with the square of the candidates: past MAX_EVEN_CANDIDATES
-    in one span, guided_without_lengths returns None so the endpoint uses the count ladder."""
+    """A span this crowded means no sides were found on a very long capture: past
+    MAX_EVEN_CANDIDATES guided_without_lengths returns None so the endpoint uses the count ladder.
+    (A quality guard: MAX_ALIGN_CANDIDATES is what bounds the memory.)"""
     db, ms, me, _spans, _stretches = recording([[180] * 4])
     assert guided_by_alignment(db, F, ms, me, [None] * 4) is not None
     monkeypatch.setattr(tb, "MAX_EVEN_CANDIDATES", 1)
     assert guided_by_alignment(db, F, ms, me, [None] * 4) is None
+
+
+def test_a_side_of_one_track_still_has_to_be_long_enough_to_be_a_song():
+    """A one-track span has no gap to align, so nothing else checks its length: here a stretch of
+    noise before a 2 s fragment is taken for the flip, and "side B" would be a 3 s track."""
+    rng = np.random.default_rng(1)
+    music = lambda d: -20 + rng.normal(0, 2, round(d / F))
+    noise = lambda d: -60 + rng.normal(0, 1.5, round(d / F))
+    db = np.concatenate([noise(5), music(180), noise(3), music(180), noise(3), music(180),
+                         noise(15), music(2), noise(5)])
+    ms, me = music_span(db, F)
+    assert me > 5 + 180 * 3 + 6 + 15, "the fragment keeps the music span past the stretch"
+    assert guided_by_alignment(db, F, ms, me, [None] * 4, [3]) is None
+
+
+def test_a_real_side_of_one_track_is_placed():
+    db, ms, me, spans, _stretches = recording([[180, 180, 180], [200]])
+    placed = guided_by_alignment(db, F, ms, me, [None] * 4, [3])
+    assert placed.model == "align-even" and len(placed.tracks) == 4
+    assert abs(placed.tracks[3].duration - 200) < 5

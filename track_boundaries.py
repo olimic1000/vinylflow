@@ -558,7 +558,9 @@ SIDE_MERGE_S = 5.0  # non-music stretches closer than this are one (a click, a q
 SIDE_MIN_S = 10.0  # shortest stretch taken for a side change (the longest ones win)
 EVEN_SIGMA_FRAC = 2.5  # length tolerance around the even split: the prior only breaks ties between clear gaps
 EVEN_MIN_TRACK_S = 30.0  # no length known: nothing shorter than this is a song
-MAX_EVEN_CANDIDATES = 3000  # candidates in one span beyond which it falls back to the count ladder
+# A span this crowded (~4 h of weak windows) means no sides were found: use the count ladder.
+# A quality guard, not a bound: MAX_ALIGN_CANDIDATES bounds the memory, and runs first.
+MAX_EVEN_CANDIDATES = 3000
 
 PRE_ROLL_S = 0.8  # cut this long before the next song's onset (user: >= 0.5 s more than the 0.3 s it was)
 POST_ROLL_S = 0.5  # silence the previous track keeps at least, when the gap allows both
@@ -897,8 +899,8 @@ def _even_picks(
 ) -> Optional[List[GapCandidate]]:
     """The ``tracks - 1`` gaps of ``pool`` splitting ``[start, end]`` into ``tracks`` songs
     when no length is known: alignment against an even split with a wide tolerance."""
-    if tracks <= 1:
-        return []
+    if tracks <= 1:  # no gap to align, so the shortest-song check falls to this one
+        return [] if end - start >= EVEN_MIN_TRACK_S else None
     pool = [c for c in pool if start < c.start and c.end < end]
     if len(pool) > MAX_EVEN_CANDIDATES:
         return None
