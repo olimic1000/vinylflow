@@ -360,7 +360,7 @@ class GuidedBoundaries:
     scale: float  # scale actually applied to the Discogs durations
     scale_clamped: bool  # True when span/total was outside the clamp (scale=1.0)
     raw_scale: float
-    model: str = "scale"  # 'align' (best match), 'gap', 'scale' (proportional), or 'sides' (anchored flip)
+    model: str = "scale"  # 'align' / 'align-even' (best match), 'gap', 'scale' (proportional), or 'sides' (anchored flip)
     gap_s: float = 0.0  # per-gap silence assumed by 'gap'; 0.0 for the other models
 
 
@@ -552,6 +552,14 @@ LENGTH_SIGMA_S = 3.0  # Discogs length tolerance: sigma = 3 s + 3 % of the lengt
 LENGTH_SIGMA_FRAC = 0.03
 MIN_ALIGNED_TRACK_S = 5.0  # two chosen gaps closer than this cannot hold a track
 MAX_ALIGN_CANDIDATES = 2000  # bounds the alignment: ~130 MB, ~2 s at 99 tracks; ~2.8 h of 5 s weak windows
+# No Discogs lengths at all: sides come from long non-music stretches, tracks from clear gaps.
+SIDE_QUIET_DB = 15.0  # a 1 s block is non-music when its p75 is this far under the median block
+SIDE_MERGE_S = 5.0  # non-music stretches closer than this are one (a click, a quiet bar between)
+SIDE_MIN_S = 10.0  # shortest stretch taken for a side change (the longest ones win)
+EVEN_SIGMA_FRAC = 2.5  # length tolerance around the even split: the prior only breaks ties between clear gaps
+EVEN_MIN_TRACK_S = 30.0  # no length known: nothing shorter than this is a song
+MAX_EVEN_CANDIDATES = 3000  # candidates in one span beyond which it falls back to the count ladder
+
 PRE_ROLL_S = 0.8  # cut this long before the next song's onset (user: >= 0.5 s more than the 0.3 s it was)
 POST_ROLL_S = 0.5  # silence the previous track keeps at least, when the gap allows both
 EDGE_PAD_S = 0.5  # lead-in / run-out silence kept before the first and after the last track
@@ -647,11 +655,13 @@ def gap_candidates(
     return out
 
 
-def _length_cost(length: np.ndarray, expected: Optional[float]) -> np.ndarray:
+def _length_cost(
+    length: np.ndarray, expected: Optional[float], sigma_frac: float = LENGTH_SIGMA_FRAC
+) -> np.ndarray:
     """Robust (Cauchy-like) cost of a track length against its Discogs length."""
     if expected is None:
         return np.zeros_like(length)
-    sigma = LENGTH_SIGMA_S + LENGTH_SIGMA_FRAC * expected
+    sigma = LENGTH_SIGMA_S + sigma_frac * expected
     return np.log1p(((length - expected) / sigma) ** 2)
 
 
@@ -661,13 +671,17 @@ def align_durations_to_gaps(
     end: float,
     durations: Sequence[Optional[float]],
     side_breaks: Sequence[int] = (),
+    sigma_frac: float = LENGTH_SIGMA_FRAC,
+    min_track_s: float = MIN_ALIGNED_TRACK_S,
 ) -> Optional[List[GapCandidate]]:
     """Choose ``len(durations) - 1`` candidates, in order, that best explain the lengths.
 
     Dynamic programme minimising the sum over tracks of a robust length error
     (the music between the chosen gaps vs that track's own Discogs length;
     ``None`` = unknown, costs nothing) minus the strength of every chosen gap.
-    Side-change boundaries count their gap's strength twice.  Returns ``None``
+    Side-change boundaries count their gap's strength twice.  ``sigma_frac`` is the
+    relative length tolerance (a wide one lets gaps decide); ``min_track_s`` the
+    shortest track a pair of gaps may enclose.  Returns ``None``
     when there are too few candidates to place the tracks.
 
     Each step holds m x m matrices, so a very long capture keeps only its
@@ -690,19 +704,19 @@ def align_durations_to_gaps(
         return strength * (2.0 if (k + 1) in flips else 1.0)
 
     inf = 1e12
-    cost = _length_cost(gs - start, durations[0]) - bonus(0)
-    cost = np.where(gs - start >= MIN_ALIGNED_TRACK_S, cost, inf)
+    cost = _length_cost(gs - start, durations[0], sigma_frac) - bonus(0)
+    cost = np.where(gs - start >= min_track_s, cost, inf)
     back: List[np.ndarray] = []
     length = gs[None, :] - ge[:, None]  # [previous gap, next gap]
-    feasible = length >= MIN_ALIGNED_TRACK_S
+    feasible = length >= min_track_s
     for k in range(1, n - 1):
-        total = cost[:, None] + _length_cost(length, durations[k])
+        total = cost[:, None] + _length_cost(length, durations[k], sigma_frac)
         total = np.where(feasible, total, inf)
         prev = np.argmin(total, axis=0)
         cost = total[prev, np.arange(m)] - bonus(k)
         back.append(prev)
     tail = end - ge
-    final = cost + np.where(tail >= MIN_ALIGNED_TRACK_S, _length_cost(tail, durations[n - 1]), inf)
+    final = cost + np.where(tail >= min_track_s, _length_cost(tail, durations[n - 1], sigma_frac), inf)
     j = int(np.argmin(final))
     if final[j] >= inf / 2:
         return None
@@ -825,6 +839,121 @@ def onset_cut(
     return min(cut, gap.start + MAX_TAIL_S), cut
 
 
+def find_side_changes(
+    sm: np.ndarray, frame_s: float, start: float, end: float, count: int
+) -> List[GapCandidate]:
+    """The ``count`` longest non-music stretches inside ``[start, end]``, in time order.
+
+    Non-music = 1 s blocks whose 75th percentile is ``SIDE_QUIET_DB`` under the median block
+    (relative, so any record's level works); runs closer than ``SIDE_MERGE_S`` are one
+    stretch and ones under ``SIDE_MIN_S`` are ignored.  Fewer than ``count`` may come back.
+    """
+    per = max(1, int(round(1.0 / frame_s)))
+    a = int(start / frame_s)
+    nb = (min(len(sm), int(end / frame_s)) - a) // per
+    if count < 1 or nb < 2:
+        return []
+    level = np.percentile(sm[a : a + nb * per].reshape(nb, per), 75, axis=1)
+    quiet = level < float(np.median(level)) - SIDE_QUIET_DB
+    runs: List[List[int]] = []
+    for i, j in _runs(quiet):
+        if runs and (i - runs[-1][1]) * per * frame_s < SIDE_MERGE_S:
+            runs[-1][1] = j
+        else:
+            runs.append([i, j])
+    runs = [r for r in runs if (r[1] - r[0]) * per * frame_s >= SIDE_MIN_S]
+    runs = sorted(sorted(runs, key=lambda r: r[0] - r[1])[:count])
+    return [GapCandidate(start + i * per * frame_s, start + j * per * frame_s, GAP_STRENGTH_W * 4.0, True)
+            for i, j in runs]
+
+
+def _assign_side_changes(found: Sequence[GapCandidate], counts: Sequence[int], start: float, end: float) -> List[int]:
+    """Which side change (0-based) each found stretch is: increasing, nearest the
+    time a proportional split of the music by track count would put it."""
+    total = float(sum(counts))
+    expect = [start + (end - start) * sum(counts[: c + 1]) / total for c in range(len(counts) - 1)]
+    at = [(c.start + c.end) / 2 for c in found]
+    f, s = len(found), len(expect)
+    best = [[float("inf")] * s for _ in range(f)]
+    prev = [[-1] * s for _ in range(f)]
+    for i in range(f):
+        for c in range(i, s - (f - 1 - i)):
+            cost = abs(at[i] - expect[c])
+            if i == 0:
+                best[i][c] = cost
+            else:
+                base, k = min((best[i - 1][k], k) for k in range(c))
+                best[i][c], prev[i][c] = base + cost, k
+    c = min(range(s), key=lambda c: best[f - 1][c])
+    out = [c]
+    for i in range(f - 1, 0, -1):
+        c = prev[i][c]
+        out.append(c)
+    return out[::-1]
+
+
+def _even_picks(
+    pool: Sequence[GapCandidate], start: float, end: float, tracks: int, breaks: Sequence[int] = ()
+) -> Optional[List[GapCandidate]]:
+    """The ``tracks - 1`` gaps of ``pool`` splitting ``[start, end]`` into ``tracks`` songs
+    when no length is known: alignment against an even split with a wide tolerance."""
+    if tracks <= 1:
+        return []
+    pool = [c for c in pool if start < c.start and c.end < end]
+    if len(pool) > MAX_EVEN_CANDIDATES:
+        return None
+    return align_durations_to_gaps(
+        pool, start, end, [(end - start) / tracks] * tracks, breaks, EVEN_SIGMA_FRAC, EVEN_MIN_TRACK_S
+    )
+
+
+def guided_without_lengths(
+    db: np.ndarray,
+    frame_s: float,
+    music_start: float,
+    music_end: float,
+    n: int,
+    side_breaks: Optional[Sequence[int]] = None,
+    sm: Optional[np.ndarray] = None,
+) -> Optional[GuidedBoundaries]:
+    """Guided placement for ``n`` tracks of unknown length; ``None`` if it cannot place them.
+
+    Sides first: the longest non-music stretches (``find_side_changes``) split the music
+    into side spans, every stretch one strong candidate so its cut gets the usual tail cap
+    and needle-drop skip and no track sits in the noise.  A stretch found fewer times than
+    there are side changes is matched to the change a proportional split puts nearest; the
+    changes left over are placed by the alignment inside their span (flip bonus).  Inside a
+    span the tracks are aligned to an even split with a wide tolerance, so clear gaps decide.
+    """
+    if n < 2:
+        return None
+    sm = smooth_envelope(db, frame_s) if sm is None else sm
+    marks = sorted(side_breaks or ())
+    counts = [b - a for a, b in zip([0] + marks, marks + [n])]
+    found = find_side_changes(sm, frame_s, music_start, music_end, len(marks))
+    assigned = _assign_side_changes(found, counts, music_start, music_end) if found else []
+
+    # One pool for the whole recording: the quiet floor is read where the surface noise is
+    # plentiful (a span of its own would take quiet music for the floor).
+    pool = gap_candidates(sm, frame_s, music_start, music_end)
+    cuts = [0] + [c + 1 for c in assigned] + [len(counts)]  # span k = sides cuts[k]:cuts[k+1]
+    chosen: List[GapCandidate] = []
+    span_start = music_start
+    for k in range(len(cuts) - 1):
+        tracks = sum(counts[cuts[k] : cuts[k + 1]])
+        stretch = found[k] if k < len(found) else None
+        first = sum(counts[: cuts[k]])
+        local = [b - first for b in marks if first < b < first + tracks]
+        picks = _even_picks(pool, span_start, stretch.start if stretch else music_end, tracks, local)
+        if picks is None:
+            return None
+        chosen += picks
+        if stretch:
+            chosen.append(stretch)
+            span_start = _onset(db, sm, frame_s, stretch)
+    return _assemble(db, sm, frame_s, music_start, music_end, chosen, [None] * n, "align-even")
+
+
 def _assemble(
     db: np.ndarray,
     sm: np.ndarray,
@@ -876,15 +1005,14 @@ def guided_by_alignment(
     Always ``len(durations)`` Tracks when it returns.  ``expected`` is where a
     track's own Discogs length puts its end given where it was started (the
     chosen position when that length is unknown); ``snapped`` means a real gap
-    was used, not a segue spot.  With no known length at all there is nothing to
-    align, so ``None`` (the caller falls back to count-based detection).
+    was used, not a segue spot.  With no length at all: ``guided_without_lengths``.
     """
     n = len(durations)
     if n < 2:
         return None
-    if all(d is None for d in durations):
-        return None
     sm = smooth_envelope(db, frame_s) if sm is None else sm
+    if all(d is None for d in durations):
+        return guided_without_lengths(db, frame_s, music_start, music_end, n, side_breaks, sm)
     chosen = align_durations_to_gaps(
         gap_candidates(sm, frame_s, music_start, music_end),
         music_start, music_end, durations, side_breaks or (),

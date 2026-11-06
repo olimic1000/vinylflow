@@ -42,6 +42,7 @@ SCENARIOS = [
     ("+-3 s + 2 outliers 25 s", 3, 2, 25, 0),
     ("2 lengths missing", 0, 0, 0, 2),
     ("+-5 s + 1 outlier 40 s + 1 missing", 5, 1, 40, 1),
+    ("no lengths", 0, 0, 0, -1),  # old = the Smart Rescan count ladder, new = sides + even split
 ]
 REGION_MARGIN_DB = 12.0
 RIGHT_TOLERANCE_S = 0.25
@@ -141,6 +142,24 @@ def run_scenario(case, scen, trials, seed):
     gaps = tb.gaps_from_envelope(db, F, -30.0, 0.3)
     acc = {"old": [], "new": []}
     onset = []
+    if nmiss < 0:  # every length unknown: deterministic, one run
+        from audio_processor import AudioProcessor
+
+        def right_of(tracks_):
+            if len(tracks_) != n:
+                return [False] * (n - 1)
+            cuts = [(tracks_[k].end + tracks_[k + 1].start) / 2 for k in range(n - 1)]
+            return [r[0] - RIGHT_TOLERANCE_S <= c <= r[1] + RIGHT_TOLERANCE_S for c, r in zip(cuts, regions)]
+
+        old, _info = AudioProcessor().tracks_for_count_from_envelope(db, n)
+        acc["old"].append(right_of(old))
+        g = tb.guided_by_alignment(db, F, ms, me, [None] * n, side_breaks=sb, sm=sm)
+        right = right_of(g.tracks) if g else [False] * (n - 1)
+        acc["new"].append(right)
+        if g:
+            onset += [(g.tracks[k + 1].start - regions[k][1], g.tracks[k + 1].start - tracks[k + 1]["start"])
+                      for k in range(n - 1) if right[k]]
+        return acc, onset
     for _ in range(trials):
         d = [round(x + rnd.uniform(-jit, jit)) for x in lengths]
         for o in rnd.sample(range(n), nout):
