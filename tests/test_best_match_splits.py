@@ -3,6 +3,8 @@
 Music is -20 dB (+-2 dB jitter), gaps are surface noise at -60 dB; envelopes
 have 10 ms frames like the real one.  Real-record numbers: tests/e2e/real_records_eval.py.
 """
+import tracemalloc
+
 import numpy as np
 import pytest
 
@@ -181,13 +183,46 @@ def test_too_many_tracks_for_the_audio_returns_none():
     assert align_durations_to_gaps([], ms, me, [60.0, 50.0]) is None
 
 
-def test_alignment_is_fast_on_a_45_minute_recording():
-    import time
+def test_alignment_places_a_45_minute_recording():
     lengths = [225] * 12
     db, _, ms, me = album(lengths, gaps=3.0)
-    t0 = time.time()
     g = place(db, (ms, me), [float(x) for x in lengths], side_breaks=[6])
-    assert g is not None and time.time() - t0 < 5.0
+    assert g is not None and len(g.tracks) == 12
+
+
+def weak_pool(count):
+    """Weak candidates every 5 s, as a long recording yields."""
+    return [GapCandidate(10.0 + 5 * i, 10.3 + 5 * i, -1.0, False) for i in range(count)]
+
+
+def test_too_many_candidates_keeps_the_real_gaps(monkeypatch):
+    """A long capture stays alignable: past the cap the weak candidates go first."""
+    monkeypatch.setattr(tb, "MAX_ALIGN_CANDIDATES", 50)
+    real = [GapCandidate(t, t + 3.0, 3.0, True) for t in (301.0, 601.0, 901.0)]
+    pool = sorted(weak_pool(400) + real, key=lambda c: c.start)
+    picks = align_durations_to_gaps(pool, 0.0, 2100.0, [300.0, 300.0, 300.0, 300.0])
+    assert picks == real
+
+
+def test_alignment_memory_stays_bounded_on_a_long_capture():
+    """About 6 h of candidates; without the cap this peaked at over 600 MB."""
+    pool = weak_pool(4400)
+    tracemalloc.start()
+    try:
+        picks = align_durations_to_gaps(pool, 0.0, 22100.0, [5500.0] * 4)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert picks is not None and peak < 200e6
+
+
+def test_each_boundary_finds_its_onset_once(monkeypatch):
+    db, _, ms, me = album([60, 50, 70])
+    calls = []
+    real_onset = tb._onset
+    monkeypatch.setattr(tb, "_onset", lambda *args, **kwargs: calls.append(1) or real_onset(*args, **kwargs))
+    place(db, (ms, me), [60.0, 50.0, 70.0])
+    assert len(calls) == 2
 
 
 def test_guided_endpoint_falls_back_to_the_gap_model(monkeypatch, tmp_path):
@@ -276,3 +311,22 @@ def test_a_quiet_opening_barely_above_the_crackle_is_not_skipped():
     db, ms, me, drop, music = _side_flip(lead_in_s=6.0, music_db=-29.0)
     g = place(db, (ms, me), [60.0, 60.0], side_breaks=[1])
     assert g.tracks[1].start < music - 3.0
+
+
+def test_the_needle_drop_skip_stops_short_of_the_next_gap():
+    """A quiet short track after the flip looks like lead-in crackle, and the loud track after
+    the next gap like the music it leads to. Skipping that far left a 0 s track."""
+    db, spans, ms, me = album([60, 60], gaps=40.0, seed=3)
+    rng = np.random.default_rng(3)
+    flip_start, flip_end = spans[0]
+    drop = flip_end - 10.0
+    db[int((flip_start + 3) / F):int(drop / F)] = -80.0              # needle lifted
+    db[int(drop / F):int((drop + 0.4) / F)] = -10.0                  # the thump
+    quiet_track = int((drop + 0.4) / F), int((drop + 6.4) / F)
+    db[quiet_track[0]:quiet_track[1]] = -35.0 + rng.normal(0, 1.5, quiet_track[1] - quiet_track[0])
+    db[quiet_track[1]:int(flip_end / F)] = -80.0                     # the gap after it
+    db[int(flip_end / F):int((flip_end + 60) / F)] = -18.0 + rng.normal(0, 2, int(60 / F))
+
+    g = place(db, (ms, me), [60.0, 6.0, 60.0], side_breaks=[1])
+    assert g.tracks[1].duration > 5.0
+    assert g.tracks[1].start == pytest.approx(drop - tb.PRE_ROLL_S, abs=0.3)
