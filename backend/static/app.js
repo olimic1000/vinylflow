@@ -513,7 +513,14 @@ function vinylApp() {
 
                 const known = new Set(this.uploadedFiles.map(f => f.id));
                 const added = [];
+                let replacedCurrentBy = null;
                 (data.files || []).forEach(file => {
+                    // The file changed on disk, so the server started over: the old entry is gone
+                    if (file.replaces) {
+                        if (file.replaces === this.currentFileId) replacedCurrentBy = file.id;
+                        this.uploadedFiles = this.uploadedFiles.filter(entry => entry.id !== file.replaces);
+                        this.notify(`"${file.filename}" changed on disk, so it was imported again. Earlier splits for it are gone.`, { type: 'warning' });
+                    }
                     if (known.has(file.id)) {
                         const existing = this.uploadedFiles.find(entry => entry.id === file.id);
                         if (file.status) existing.status = file.status;
@@ -527,7 +534,9 @@ function vinylApp() {
                     this.uploadedFiles.push(entry);
                     added.push(entry);
                 });
-                if (!this.currentFile && data.files?.length > 0) {
+                if (replacedCurrentBy) {
+                    this.selectFile(replacedCurrentBy);
+                } else if (!this.currentFile && data.files?.length > 0) {
                     this.selectFile((added[0] || data.files[0]).id);
                 } else if (data.files?.length === 1 && !added.length && data.files[0].id !== this.currentFileId) {
                     // Not the recording on screen: selectFile would clear its splits and release

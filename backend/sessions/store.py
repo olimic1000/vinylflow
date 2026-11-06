@@ -34,6 +34,7 @@ class SessionStore:
         source_duration: float,
         source_size: int,
         in_place: bool = False,
+        source_mtime: Optional[float] = None,
     ) -> Session:
         session = Session(
             id=session_id,
@@ -42,6 +43,7 @@ class SessionStore:
             source_duration=source_duration,
             source_size=source_size,
             in_place=in_place,
+            source_mtime=source_mtime,
         )
         with self._lock:
             self._sessions[session_id] = session

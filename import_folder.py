@@ -73,7 +73,7 @@ def list_audio(import_dir: Path, now: Optional[float] = None) -> list[dict]:
                         "name": path.relative_to(import_dir).as_posix(),
                         "size": st.st_size,
                         "mtime": st.st_mtime,
-                        "stable": (now - st.st_mtime) >= STABLE_AGE_S,
+                        "stable": _settled(st.st_mtime, now),
                         "path": real,
                     })
             except OSError:
@@ -115,6 +115,13 @@ def vet_file(real: Path) -> Path:
     return real
 
 
+def _settled(mtime: float, now: float) -> bool:
+    """False while a file is being written, when its mtime is about now. An mtime far in the
+    future (a faster clock on a NAS, or preserved timestamps) is settled too: it would otherwise
+    never reach the stable age."""
+    return abs(now - mtime) >= STABLE_AGE_S
+
+
 def is_stable(path: Path, now: Optional[float] = None) -> bool:
     now = time.time() if now is None else now
-    return (now - path.stat().st_mtime) >= STABLE_AGE_S
+    return _settled(path.stat().st_mtime, now)

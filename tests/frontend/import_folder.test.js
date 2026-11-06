@@ -83,6 +83,19 @@ function reset(files = []) {
     await a.importSelectedFiles();
     assert.strictEqual(reselected, 1, 're-importing another queued recording selects it');
 
+    // ---- a file that changed on disk came back as a new session: the old queue entry goes, and
+    // the recording on screen moves to the new one (its splits belonged to the old audio) ----
+    reset([row('a.wav', { imported_id: 'old' })]);
+    a = mkApp(); await a.loadImportList();
+    a.uploadedFiles = [{ id: 'old', filename: 'a.wav', status: 'analyzed' }];
+    a.currentFileId = 'old'; a.currentFile = a.uploadedFiles[0];
+    postReply = () => ({ files: [{ id: 'new', filename: 'a.wav', size: 9, duration: 90, in_place: true, replaces: 'old' }], skipped: [] });
+    a.importSelected = ['a.wav'];
+    await a.importSelectedFiles();
+    assert.deepStrictEqual(a.uploadedFiles.map(f => f.id), ['new'], 'the stale entry is gone');
+    assert.strictEqual(a.currentFileId, 'new');
+    assert.ok(a.toasts.some(t => t.message.includes('changed')), 'and it says why the splits are gone');
+
     // ---- default tab: the folder only when it has something to show. An empty folder would
     // otherwise hide the drop zone from a first-time user ----
     reset([row('a.wav')]);

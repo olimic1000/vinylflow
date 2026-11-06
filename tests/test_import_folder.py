@@ -217,3 +217,67 @@ def test_listing_and_reimport_distinguish_queued_from_completed(env):
         again = client.post("/api/import", json={"names": ["again.wav"]}).json()["files"][0]
         assert again["id"] == entry["id"]
         assert again["status"] == expected
+
+
+def _import(name):
+    return client.post("/api/import", json={"names": [name]}).json()
+
+
+@pytest.mark.parametrize("seconds", [3, 1], ids=["longer", "same size"])
+def test_a_file_changed_since_its_import_starts_a_new_session(env, seconds):
+    """A re-recorded side under the same name must not reuse the old envelope and boundaries:
+    the export would cut the new audio at the old splits."""
+    imp, up, _ = env
+    src = _wav(imp / "side.wav", 1, age=7200)
+    old_id = _import("side.wav")["files"][0]["id"]
+    (up / old_id / "envelope.npy").write_bytes(b"of the old file")
+
+    _wav(src, seconds, age=3600)
+    before = _sha(src)
+    entry = _import("side.wav")["files"][0]
+
+    assert entry["id"] != old_id and entry["replaces"] == old_id
+    assert entry["size"] == src.stat().st_size
+    assert session_store.get(old_id) is None and not (up / old_id).exists()
+    assert session_store.get(entry["id"]).source_audio == src.resolve()
+    assert _sha(src) == before, "starting over never touches the source"
+
+
+def test_a_file_being_overwritten_is_not_reused(env):
+    imp, _, _ = env
+    src = _wav(imp / "side.wav", 1, age=7200)
+    old_id = _import("side.wav")["files"][0]["id"]
+    _wav(src, 2, age=0)
+    body = _import("side.wav")
+    assert body["files"] == [] and "still being copied" in body["skipped"][0]["reason"]
+    assert session_store.get(old_id) is not None
+
+
+def test_a_file_changed_during_its_export_is_refused(env):
+    imp, _, _ = env
+    src = _wav(imp / "side.wav", 1, age=7200)
+    old_id = _import("side.wav")["files"][0]["id"]
+    session_store.get(old_id).state = api.SessionState.PROCESSING
+    _wav(src, 2, age=3600)
+    body = _import("side.wav")
+    assert body["files"] == [] and "exporting" in body["skipped"][0]["reason"]
+    assert session_store.get(old_id) is not None
+
+
+def test_a_timestamp_from_a_faster_clock_counts_as_settled(env):
+    """A NAS clock ahead of ours, or timestamps preserved from such a machine: the file is not
+    being written, and a negative age would otherwise never reach the stable age."""
+    imp, _, _ = env
+    src = _wav(imp / "future.wav")
+    ahead = time.time() + 120
+    os.utime(src, (ahead, ahead))
+    assert client.get("/api/import").json()["files"][0]["stable"] is True
+    assert _import("future.wav")["skipped"] == []
+
+
+def test_import_refuses_a_symlinked_directory_leaving_the_folder(env):
+    imp, _, tmp = env
+    _wav(tmp / "outside" / "o.wav")
+    (imp / "linkdir").symlink_to(tmp / "outside", target_is_directory=True)
+    body = _import("linkdir/o.wav")
+    assert body["files"] == [] and "outside" in body["skipped"][0]["reason"]
