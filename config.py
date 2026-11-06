@@ -17,6 +17,9 @@ from dotenv import load_dotenv
 #                            VINYLPOSITION custom tag preserved.
 # "vinyl"                  — TRACKNUMBER="A1" (legacy behaviour, no DISCNUMBER or totals written).
 DEFAULT_TRACK_NUMBERING = "sequential_disc_per_lp"
+TRACK_NUMBERING_SCHEMES = ("sequential_disc_per_lp", "vinyl")
+# The default before it changed: what an older settings.json without a saved choice was using.
+LEGACY_TRACK_NUMBERING = "vinyl"
 
 
 class Config:
@@ -84,10 +87,27 @@ class Config:
         self.temp_ttl_hours = float(os.getenv("TEMP_TTL_HOURS", "2"))
 
         # Track numbering scheme
-        self.track_numbering = (
-            json_settings.get("TRACK_NUMBERING")
-            or os.getenv("TRACK_NUMBERING", DEFAULT_TRACK_NUMBERING)
-        )
+        self.track_numbering = self._resolve_track_numbering(json_settings)
+
+    def _resolve_track_numbering(self, json_settings: dict) -> str:
+        """The numbering scheme, keeping an older install on the scheme it was using.
+
+        A non-empty settings.json without a scheme comes from before the default changed:
+        new installs record the default on their first save (``_write_settings``). Pin
+        ``vinyl`` there once, so the next record sorts with the rest of the library. A
+        missing or unreadable file loads as empty, so it is never rewritten here. Unknown
+        values keep acting as ``vinyl``, as they always have.
+        """
+        scheme = json_settings.get("TRACK_NUMBERING") or os.getenv("TRACK_NUMBERING")
+        if not scheme:
+            if not json_settings:
+                return DEFAULT_TRACK_NUMBERING
+            self._write_settings({"TRACK_NUMBERING": LEGACY_TRACK_NUMBERING})
+            return LEGACY_TRACK_NUMBERING
+        if scheme not in TRACK_NUMBERING_SCHEMES:
+            print(f"Warning: unknown TRACK_NUMBERING {scheme!r}, using {LEGACY_TRACK_NUMBERING!r}")
+            return LEGACY_TRACK_NUMBERING
+        return scheme
 
     def validate(self):
         """
@@ -161,6 +181,10 @@ class Config:
                     settings = json.load(f)
             except Exception:
                 pass
+        if not settings and not os.getenv("TRACK_NUMBERING"):
+            # A new install's first save: record the default, or the next start would take
+            # this file for one from before it changed (``_resolve_track_numbering``).
+            settings["TRACK_NUMBERING"] = DEFAULT_TRACK_NUMBERING
         settings.update(updates)
         try:
             with open(settings_path, 'w') as f:

@@ -163,3 +163,34 @@ def test_id3_vinyl_scheme_has_plain_track_and_no_disc(tmp_path):
 def test_sequential_is_the_default():
     assert DEFAULT_TRACK_NUMBERING == SEQ
     assert OutputSpec(output_format="flac", output_dir=".").track_numbering == SEQ
+
+
+# --- what counts as a vinyl side ---------------------------------------------
+
+@pytest.mark.parametrize("position, disc", [
+    ("A1", 1), ("B9", 1), ("C1", 2), ("D1", 2), ("Z3", 13), ("AA1", 1), ("BB2", 1), ("CC1", 2),
+    ("A1a", 1), ("B6.1", 1),
+])
+def test_side_positions_give_their_lp(position, disc):
+    assert MetadataHandler._disc_of(position) == disc
+
+
+@pytest.mark.parametrize("position", ["CD1", "CD12", "DVD1", "BD1", "AB1", "1", "", None])
+def test_other_media_are_not_vinyl_sides(position):
+    assert MetadataHandler._disc_of(position) is None
+
+
+def test_cd_tracks_stay_out_of_the_lp_numbering():
+    """"CD1" is a bonus disc, not side C: it used to land between sides C and D."""
+    release = release_of("A1", "B1", "C1", "C2", "D1", "D2", "CD1", "CD2", "CD3")
+    d1 = tags_for(release, "D1")
+    assert (d1.disc_number, d1.track_number, d1.track_total, d1.disc_total) == ("2", "3", "4", "2")
+    cd1 = tags_for(release, "CD1")
+    assert (cd1.disc_number, cd1.track_number, cd1.track_total, cd1.disc_total) == (None, "CD1", None, None)
+    assert cd1.vinyl_position is None
+
+
+def test_a_bonus_cd_is_no_extra_disc():
+    release = release_of("A1", "B1", "CD1", "CD2")
+    a1 = tags_for(release, "A1")
+    assert (a1.disc_number, a1.track_total, a1.disc_total) == ("1", "2", "1")

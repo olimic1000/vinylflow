@@ -31,7 +31,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import Config
+from config import TRACK_NUMBERING_SCHEMES, Config
 from audio_processor import (
     AudioProcessor, ENVELOPE_FRAME_S, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg,
 )
@@ -1203,7 +1203,7 @@ async def update_config(updates: ConfigUpdate):
         config.default_output_dir = output_dir
         config.save_output_dir(output_dir)
     if updates.track_numbering is not None:
-        if updates.track_numbering in ("sequential_disc_per_lp", "vinyl"):
+        if updates.track_numbering in TRACK_NUMBERING_SCHEMES:
             config.track_numbering = updates.track_numbering
             config.save_track_numbering(updates.track_numbering)
 

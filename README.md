@@ -271,7 +271,9 @@ DEFAULT_FLAC_COMPRESSION=8
 
 **Track Numbering**: Configurable via Settings (⚙️) or by setting `TRACK_NUMBERING` in `config/settings.json`:
 - `vinyl` — writes the vinyl position (e.g. `A1`, `B2`) directly as `TRACKNUMBER`. Preserves vinyl notation but some players (Jellyfin, Roon) may mis-sort tracks.
-- `sequential_disc_per_lp` *(default)* — writes integer `DISCNUMBER` (A+B = disc 1, C+D = disc 2) and sequential `TRACKNUMBER` across both sides of each LP, with track/disc totals (`TRACKTOTAL`/`DISCTOTAL`, or `n/total` in ID3) and the original vinyl position preserved in a `VINYLPOSITION` tag. Numbering follows the release's tracklist, so a side exported on its own continues after side A and a skipped track leaves a gap. Single LPs appear as one disc; 2-LP sets appear as two. Recommended for correct playback order in media servers.
+- `sequential_disc_per_lp` *(default)* — writes integer `DISCNUMBER` (A+B = disc 1, C+D = disc 2) and sequential `TRACKNUMBER` across both sides of each LP, with track/disc totals (`TRACKTOTAL`/`DISCTOTAL`, or `n/total` in ID3) and the original vinyl position preserved in a `VINYLPOSITION` tag. Numbering follows the release's tracklist, so a side exported on its own continues after side A and a skipped track leaves a gap. Single LPs appear as one disc; 2-LP sets appear as two. Recommended for correct playback order in media servers. The disc comes from the side letter, so a release whose sides skip letters on Discogs (A, B, E, F) counts as 3 discs, and tracks on other media (`CD1`, `DVD1`) keep their position as `TRACKNUMBER` with no disc or totals.
+
+*Upgrading:* an existing `config/settings.json` without a saved scheme is set to `vinyl` on the first start, so your library keeps sorting one way; only new installs get the sequential default. An install configured only through `.env` or environment variables has no such file, so set `TRACK_NUMBERING=vinyl` there to keep the old numbering.
 
 ### Silence Detection Tips
 
