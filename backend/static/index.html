@@ -225,6 +225,12 @@
             border: 3px solid #E5A100;
         }
 
+        /* Cards are keyboard-operable (tabindex + Enter/Space): show where focus is */
+        .album-card:focus-visible {
+            outline: 3px solid #1E1E1E;
+            outline-offset: 2px;
+        }
+
         /* Queue Items */
         .queue-item {
             cursor: pointer;
@@ -575,16 +581,23 @@
                         <h2 class="text-lg font-bold text-primary mb-1" x-text="currentFile?.filename"></h2>
                         <p class="text-secondary text-sm" x-text="formatSize(currentFile?.size) + ' • ' + formatDuration(currentFile?.duration)"></p>
 
-                        <!-- Analyze Button -->
+                        <!-- Skip Discogs: silence-only detection (secondary action).  With a release
+                             already picked, the same button retries a detection that failed. -->
                         <template x-if="!detectedTracks.length && currentFile">
-                            <button @click="analyzeFile()" :disabled="analyzing" class="mt-3 px-4 py-2 btn-primary rounded-lg font-semibold text-sm" :class="{'opacity-60 cursor-not-allowed': analyzing}">
-                                <span x-show="!analyzing">🔍 Analyze & Detect Tracks</span>
+                            <button @click="analyzeFile()" :disabled="analyzing" class="mt-3 px-3 py-1.5 rounded-lg text-xs text-secondary hover:bg-page" style="background-color: #F0EFEB;" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                                <span x-show="!analyzing" x-text="selectedRelease ? 'Retry track detection' : 'Skip Discogs — detect tracks by silence only'"></span>
                                 <span x-show="analyzing" class="flex items-center gap-2">
                                     <div class="spinner"></div>
                                     Detecting tracks…
                                 </span>
                             </button>
                         </template>
+
+                        <!-- Back to the search card when tracks exist but no release is chosen -->
+                        <button x-show="detectedTracks.length && !selectedRelease" x-cloak @click="tryDiscogsAgain()"
+                                :disabled="analyzing || searchLoading"
+                                class="mt-3 px-3 py-2 rounded-lg text-sm text-primary hover:bg-page border" style="border-color: #8A8A86;"
+                                :class="{'opacity-60 cursor-not-allowed': analyzing || searchLoading}">Try Discogs again</button>
 
                         <!-- Re-Analyze Button -->
                         <template x-if="detectedTracks.length > 0 && !selectedRelease">
@@ -614,6 +627,115 @@
                                 <p x-show="rescanNotice" x-cloak class="mt-2 text-sm text-primary p-2 rounded-lg" style="background-color: rgba(229, 161, 0, 0.15);" x-text="rescanNotice"></p>
                             </div>
                         </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Discogs search: starts by itself when a file is selected; swapped for the release card once one is picked -->
+        <div id="discogs-search" x-show="currentFile && discogsConfigured && !selectedRelease" x-cloak class="max-w-7xl mx-auto px-4 pb-2 sm:px-6 lg:px-8">
+            <div class="bg-card rounded-lg shadow p-6">
+                <h3 class="text-lg font-semibold text-primary mb-1">🔍 Find the release on Discogs</h3>
+                <p class="text-sm text-secondary mb-4">Searched from the file name. Pick the release to name and tag the tracks.</p>
+                <div class="flex gap-2 mb-4">
+                    <input id="discogs-query" type="text" x-model="searchQuery" @keyup.enter="searchDiscogs()" aria-label="Search Discogs" placeholder="Enter artist or album name..." class="flex-1 min-w-0 px-4 py-2 border focus-primary rounded-lg" style="border-color: #8A8A86;">
+                    <button @click="searchDiscogs()" :disabled="searchLoading" class="px-6 py-2 btn-primary rounded-lg font-semibold" :class="{'opacity-60 cursor-not-allowed': searchLoading}">Search</button>
+                </div>
+
+                <!-- Loading Animation -->
+                <div x-show="searchLoading" role="status" class="flex items-center justify-center gap-3 py-8">
+                    <div class="spinner"></div>
+                    <span class="text-secondary">Searching Discogs...</span>
+                </div>
+
+                <!-- Search Notice (no results / errors) -->
+                <div x-show="searchNotice && !searchLoading" x-cloak role="status" class="p-3 rounded-lg text-sm text-primary" style="background-color: rgba(229, 161, 0, 0.15);">
+                    <span x-text="searchNotice"></span>
+                </div>
+
+                <!-- Result filter -->
+                <label x-show="searchResults.length > 0 && !searchLoading" class="flex items-center gap-2 text-sm text-secondary cursor-pointer mt-1">
+                    <input type="checkbox" x-model="onlyWithLengths" class="w-4 h-4 rounded" style="accent-color: #E5A100;">
+                    Only show releases with track lengths
+                </label>
+                <p x-show="searchResults.length > 0 && !searchLoading && filteredResults.length === 0" x-cloak class="mt-3 text-sm text-secondary">No results with complete track lengths. Untick the filter to see all releases.</p>
+
+                <div x-show="filteredResults.length > 0 && !searchLoading" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mt-4">
+                    <template x-for="result in filteredResults" :key="result.id">
+                        <div role="button" tabindex="0" @click="chooseResult(result)" @keydown.enter.self.prevent="chooseResult(result)" @keydown.space.self.prevent="chooseResult(result)"
+                             :aria-label="`Use ${result.artist} - ${result.title}`"
+                             class="album-card bg-card border-2 rounded-lg p-3 hover:shadow-lg" :class="{'opacity-60': result.opening}"
+                             :style="releaseDurationInfo(result).status === 'full' ? 'border-color: #10B981; box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35);' : 'border-color: #8A8A86;'">
+                            <img :src="result.cover_url || ''" :alt="result.title" class="w-full aspect-square object-cover rounded mb-2" style="background-color: #F0EFEB;" onerror="this.style.display='none'">
+                            <p class="font-semibold text-sm truncate text-primary" x-text="result.artist"></p>
+                            <p class="text-xs text-secondary truncate" x-text="result.title"></p>
+                            <p class="text-xs text-secondary" x-text="result.year"></p>
+                            <p class="text-xs text-secondary mt-1">
+                                <template x-if="result.tracks">
+                                    <span>
+                                        <span x-text="`${result.tracks.length} tracks`"></span>
+                                        <span x-show="releaseSides(result).length > 0" class="ml-1" x-text="sidesSummary(result)"></span>
+                                    </span>
+                                </template>
+                                <template x-if="!result.tracks">
+                                    <span x-text="result.detailStatus === 'error' ? '– tracks' : '… tracks'"></span>
+                                </template>
+                            </p>
+                            <template x-if="!result.tracks && result.opening">
+                                <span class="inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-medium" style="background-color: #F0EFEB; color: #7A5400;">
+                                    <span class="inline-block w-3 h-3 border-2 rounded-full animate-spin align-middle mr-1" style="border-color: #E5A100; border-top-color: transparent;"></span>Loading tracklist…
+                                </span>
+                            </template>
+                            <template x-if="!result.tracks && !result.opening && result.detailStatus === 'error'">
+                                <span class="inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-medium" style="background-color: rgba(229, 161, 0, 0.15); color: #7A5400;">couldn't load tracklist · click to retry</span>
+                            </template>
+                            <template x-if="!result.tracks && !result.opening && result.detailStatus !== 'error'">
+                                <span class="inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-medium" style="background-color: #F0EFEB; color: #5E5E5A;">checking lengths…</span>
+                            </template>
+                            <template x-if="result.tracks && releaseDurationInfo(result).status === 'full'">
+                                <span class="inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-semibold" style="background-color: rgba(16, 185, 129, 0.15); color: #0A6B4B;">⏱ Track lengths</span>
+                            </template>
+                            <template x-if="result.tracks && releaseDurationInfo(result).status === 'partial'">
+                                <span class="inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-semibold" style="background-color: rgba(229, 161, 0, 0.15); color: #7A5400;" x-text="`⏱ ${releaseDurationInfo(result).withDuration}/${releaseDurationInfo(result).total} lengths`"></span>
+                            </template>
+                            <template x-if="result.tracks && releaseDurationInfo(result).status === 'none'">
+                                <span class="inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-medium" style="background-color: #F0EFEB; color: #5E5E5A;">No track lengths</span>
+                            </template>
+                            <template x-if="result.tracks && cardFit(result)">
+                                <p class="text-xs mt-1 font-medium" :style="cardFit(result).state === 'fit' ? 'color: #0A6B4B;' : 'color: #5E5E5A;'">
+                                    <span x-show="bestFitId === result.id" class="inline-block mr-1 px-1.5 py-0.5 rounded-full text-xs font-semibold" style="background-color: #0B6B4A; color: #FFFFFF;">Best fit</span>
+                                    <span x-text="fitText(cardFit(result))"></span>
+                                </p>
+                            </template>
+                            <a @click.stop :href="`https://www.discogs.com${result.uri}`" target="_blank" rel="noopener noreferrer" class="text-xs underline hover:no-underline mt-2 inline-block" style="color: #8A5F00;">View on Discogs ↗</a>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+
+        <!-- Release: the one picked above; Change release swaps back to the search -->
+        <div id="release-card" x-show="currentFile && selectedRelease" x-cloak class="max-w-7xl mx-auto px-4 pb-2 sm:px-6 lg:px-8">
+            <div class="bg-card rounded-lg shadow p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-semibold text-primary">💿 Release</h3>
+                    <button @click="changeRelease()" class="px-4 py-2 rounded-lg text-primary hover:bg-page" style="background-color: #F0EFEB;">← Change release</button>
+                </div>
+                <div class="p-4 rounded-lg flex items-start gap-4" style="background-color: rgba(229, 161, 0, 0.1);">
+                    <!-- Hidden when the release has no cover or it fails to load (onload re-shows it:
+                         the same img is reused for the next release's cover) -->
+                    <template x-if="selectedRelease?.cover_url">
+                        <img :src="selectedRelease.cover_url" alt="" data-testid="release-cover"
+                             class="w-16 h-16 sm:w-24 sm:h-24 flex-shrink-0 object-cover rounded" style="background-color: #F0EFEB;"
+                             onload="this.style.display=''" onerror="this.style.display='none'">
+                    </template>
+                    <div class="flex-1 min-w-0">
+                        <p class="font-bold text-primary" x-text="selectedRelease ? `${selectedRelease.artist} - ${selectedRelease.title}` : ''"></p>
+                        <p class="text-sm text-secondary" x-text="selectedRelease ? `${selectedRelease.year} • ${selectedRelease.label}` : ''"></p>
+                        <!-- #8A5F00: 5.2:1 on this amber tint (the cards' #E5A100 would be 1.96:1) -->
+                        <a x-show="selectedRelease?.id" :href="selectedRelease ? `https://www.discogs.com/release/${selectedRelease.id}` : '#'"
+                           target="_blank" rel="noopener noreferrer" data-testid="release-discogs-link"
+                           class="mt-1 inline-block text-sm underline hover:no-underline" style="color: #8A5F00;">View on Discogs ↗</a>
                     </div>
                 </div>
             </div>
@@ -694,50 +816,17 @@
                         </div>
                     </div>
 
-                    <!-- Discogs Search -->
-                    <div x-show="detectedTracks.length > 0 && !selectedRelease" x-cloak class="bg-card rounded-lg shadow p-6">
-                        <h3 class="text-lg font-semibold text-primary mb-4">🔍 Search Discogs</h3>
-                        <div class="flex gap-2 mb-4">
-                            <input type="text" x-model="searchQuery" @keyup.enter="searchDiscogs()" placeholder="Enter artist or album name..." class="flex-1 px-4 py-2 border focus-primary rounded-lg" style="border-color: #8A8A86;">
-                            <button @click="searchDiscogs()" :disabled="searchLoading" class="px-6 py-2 btn-primary rounded-lg font-semibold" :class="{'opacity-60 cursor-not-allowed': searchLoading}">Search</button>
-                        </div>
-
-                        <!-- Loading Animation -->
-                        <div x-show="searchLoading" class="flex items-center justify-center gap-3 py-8">
-                            <div class="spinner"></div>
-                            <span class="text-secondary">Searching Discogs...</span>
-                        </div>
-
-                        <!-- Search Notice (no results / errors) -->
-                        <div x-show="searchNotice && !searchLoading" x-cloak class="p-3 rounded-lg text-sm text-primary" style="background-color: rgba(229, 161, 0, 0.15);">
-                            <span x-text="searchNotice"></span>
-                        </div>
-
-                        <div x-show="searchResults.length > 0 && !searchLoading" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mt-4">
-                            <template x-for="result in searchResults" :key="result.id">
-                                <div @click="selectRelease(result)" class="album-card bg-card border-2 rounded-lg p-3 hover:shadow-lg" style="border-color: #8A8A86;">
-                                    <img :src="result.cover_url || ''" :alt="result.title" class="w-full aspect-square object-cover rounded mb-2" style="background-color: #F0EFEB;" onerror="this.style.display='none'">
-                                    <p class="font-semibold text-sm truncate text-primary" x-text="result.artist"></p>
-                                    <p class="text-xs text-secondary truncate" x-text="result.title"></p>
-                                    <p class="text-xs text-muted" x-text="result.year"></p>
-                                    <a @click.stop :href="`https://www.discogs.com${result.uri}`" target="_blank" rel="noopener noreferrer" class="text-xs hover:underline mt-1 inline-block" style="color: #E5A100;">View on Discogs ↗</a>
-                                </div>
-                            </template>
-                        </div>
-                    </div>
-
                     <!-- Track Mapping -->
                     <div x-show="selectedRelease" x-cloak class="bg-card rounded-lg shadow p-6">
                         <div class="flex justify-between items-center mb-4">
                             <h3 class="text-lg font-semibold text-primary">🎚️ Track Mapping</h3>
                             <div class="flex gap-2">
                                 <button @click="reverseMapping()" class="px-4 py-2 rounded-lg text-primary hover:bg-page" style="background-color: #F0EFEB;">↕️ Reverse</button>
-                                <button @click="selectedRelease = null" class="px-4 py-2 rounded-lg text-primary hover:bg-page" style="background-color: #F0EFEB;">← Back</button>
                             </div>
                         </div>
 
                         <!-- Track Count Mismatch Warning -->
-                        <div x-show="trackCountMismatch" class="mb-4 p-4 rounded-lg border-2" style="background-color: rgba(217, 64, 50, 0.1); border-color: #D94032;">
+                        <div x-show="showTrackCountMismatch" class="mb-4 p-4 rounded-lg border-2" style="background-color: rgba(217, 64, 50, 0.1); border-color: #D94032;">
                             <div class="flex items-start gap-3">
                                 <span class="text-2xl">⚠️</span>
                                 <div class="flex-1">
@@ -764,12 +853,6 @@
                                     <p x-show="rescanNotice" x-cloak class="mt-2 text-sm text-primary" x-text="rescanNotice"></p>
                                 </div>
                             </div>
-                        </div>
-
-                        <!-- Selected Release Info -->
-                        <div class="mb-4 p-4 rounded-lg" style="background-color: rgba(229, 161, 0, 0.1);">
-                            <p class="font-bold text-primary" x-text="selectedRelease ? `${selectedRelease.artist} - ${selectedRelease.title}` : ''"></p>
-                            <p class="text-sm text-secondary" x-text="selectedRelease ? `${selectedRelease.year} • ${selectedRelease.label}` : ''"></p>
                         </div>
 
                         <!-- Output Format Selector -->

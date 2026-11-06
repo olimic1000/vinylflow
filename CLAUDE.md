@@ -61,6 +61,12 @@ audio_processor.py  metadata_handler.py  config.py    Discogs API
 (ffmpeg subprocess) (Mutagen + Pillow)  (settings)   (discogs-client)
 ```
 
+**User flow (Discogs first):**
+1. Selecting a file (`selectFile`) starts a Discogs search from the cleaned filename without blocking the UI (skipped when no token is configured; "Skip Discogs" still works). The search card sits above the waveform and is hidden once a release is picked.
+2. `POST /api/search` returns basic cards only (`MetadataHandler.search_basic`: one request, reads each hit's `.data`, never lazy-fetches a release; `tracks: null`). The UI then loads tracklists from `GET /api/release/{id}` two at a time (`loadAllReleaseDetails`); a card click on an unloaded card waits for its load (`chooseResult`, retry on failure). Only a release whose tracklist loaded can be selected.
+3. Cards show the track count, length badges, the "Only show releases with track lengths" filter and a fit indicator against the music span (`/api/scan/{id}` / WebSocket `scan_complete`, else the file length). `searchSeq` is bumped by every search and file switch; replies of an older sequence are dropped.
+4. Picking a release with no detected tracks runs plain silence detection (`analyzeFile`); `resetMappingToDetected` rebuilds `customMapping` and `trackCountMismatch` once the tracks arrive. The release card (cover, View on Discogs, Change release) replaces the old selected-release block in the mapping card. "Skip Discogs" runs detection without a release; "Try Discogs again" returns to the search when tracks exist and no release is chosen.
+
 **Processing pipeline** (`POST /api/process` → `process_file_background`):
 1. Fetch release from Discogs
 2. Apply user's track→position mapping (A1, B2, etc.)
@@ -88,7 +94,8 @@ audio_processor.py  metadata_handler.py  config.py    Discogs API
 | GET | `/api/preview/{file_id}/{track_number}` | Generate 30s MP3 preview |
 | GET | `/api/waveform-peaks/{file_id}` | Waveform data for WaveSurfer |
 | GET | `/api/audio/{file_id}` | Serve audio for playback |
-| POST | `/api/search` | Discogs search |
+| POST | `/api/search` | Discogs search `{query, max_results}` -> `{results}`: basic cards with `tracks: null` (one Discogs request, no per-release fetch); the UI uses 12 per search |
+| GET | `/api/release/{release_id}` | Full release + tracklist (server-side cached); fills a search card |
 | POST | `/api/process` | Start background processing job |
 | GET | `/api/process/{job_id}` | Poll job status |
 | GET/DELETE | `/api/queue`, `/api/queue/{file_id}` | Manage upload queue |

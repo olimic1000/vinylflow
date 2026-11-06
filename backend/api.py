@@ -1108,7 +1108,7 @@ async def get_audio_file(file_id: str):
 
 
 def _serialize_release(release) -> dict:
-    """Full release payload shared by /api/search and /api/release/{id}."""
+    """Full release payload of /api/release/{id} (tracks always set)."""
     return {
         "id": release.id,
         "artist": release.artist,
@@ -1127,14 +1127,16 @@ def _serialize_release(release) -> dict:
 
 @app.post("/api/search")
 async def search_discogs(request: SearchRequest):
-    """Search Discogs for releases."""
+    """Search Discogs; basic cards only (``tracks: null`` = not loaded yet).
+
+    Full tracklists come from GET /api/release/{id}, which the UI calls per card.
+    """
     try:
-        # Discogs does 1+N HTTP round-trips with rate-limit sleeps — keep
-        # that off the event loop.
-        releases = await asyncio.to_thread(
-            metadata_handler.search_releases, request.query, max_results=request.max_results
+        # One search round-trip (rate-limit sleep inside) -- keep it off the event loop.
+        basic = await asyncio.to_thread(
+            metadata_handler.search_basic, request.query, request.max_results
         )
-        return {"results": [_serialize_release(release) for _, release in releases]}
+        return {"results": [{**result, "tracks": None} for result in basic]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

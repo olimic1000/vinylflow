@@ -373,38 +373,68 @@ class MetadataHandler:
 
         return name
 
-    def search_releases(self, query: str, max_results=5) -> List[Tuple[int, DiscogsRelease]]:
+    def search_basic(self, query: str, max_results: int = 5) -> List[dict]:
         """
-        Search Discogs for releases.
+        Search Discogs with ONE request and build basic results from the raw
+        search payloads (no per-release fetch).
+
+        Only each result's plain ``.data`` dict is read: attribute access on
+        discogs_client objects can lazily fetch the full release.  Tracklists
+        come later from get_release_by_id (GET /api/release/{id}).
 
         Args:
             query: Search query
             max_results: Maximum number of results to return
 
         Returns:
-            List of (index, DiscogsRelease) tuples
+            List of dicts (id, artist, title, year, label, format, country,
+            cover_url, uri, master_id)
         """
         self._rate_limit()
+        results = self.client.search(query, type="release")
+        # Page size goes on the list, not in the query: the library appends its own
+        # per_page (default 50) to each page URL, so a per_page search field would
+        # send Discogs two page sizes.
+        results.per_page = max(1, int(max_results))
+        hits = results.page(1)
 
-        try:
-            results = self.client.search(query, type="release")
-            releases = []
+        basic = []
+        for result in hits[:max_results]:
+            data = result.data
+            rid = data.get("id")
+            if rid is None:
+                continue
+            artist, title = self._split_search_title(data.get("title") or "")
+            basic.append(
+                {
+                    "id": rid,
+                    "artist": artist,
+                    "title": title,
+                    "year": data.get("year") or "",
+                    "label": self._first(data.get("label")),
+                    "format": self._first(data.get("format")),
+                    "country": data.get("country") or "",
+                    "cover_url": data.get("cover_image") or data.get("thumb") or None,
+                    "uri": f"/release/{rid}",
+                    "master_id": data.get("master_id") or None,
+                }
+            )
+        return basic
 
-            for i, result in enumerate(results, 1):
-                if i > max_results:
-                    break
+    @staticmethod
+    def _first(value) -> str:
+        """First element of a list-valued search field (or the string itself)."""
+        if isinstance(value, (list, tuple)):
+            return str(value[0]) if value else ""
+        return str(value) if value else ""
 
-                # Through the cache, so exporting a release found here needs no
-                # second fetch (get_release_by_id logs a failed fetch).
-                release = self.get_release_by_id(result.id)
-                if release is not None:
-                    releases.append((i, release))
-
-            return releases
-
-        except Exception as e:
-            print(f"Search failed: {e}")
-            return []
+    @staticmethod
+    def _split_search_title(full: str) -> Tuple[str, str]:
+        """Split Discogs' "Artist - Title" search title (first " - " wins)."""
+        if " - " in full:
+            artist, title = full.split(" - ", 1)
+            return artist.strip(), title.strip()
+        return "Unknown Artist", full.strip()
 
     def get_release_by_id(self, release_id: int) -> Optional[DiscogsRelease]:
         """
