@@ -502,7 +502,77 @@
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <!-- Upload Zone (half width) -->
                 <div class="bg-card rounded-lg shadow p-4">
-                    <h2 class="text-lg font-semibold text-primary mb-3">Upload Files</h2>
+                    <!-- Header row: title and source tabs. flex-wrap lets further controls sit right-aligned beside the tabs (ml-auto) and wrap on narrow windows. -->
+                    <div class="flex flex-wrap items-center gap-2 mb-3">
+                        <h2 class="text-lg font-semibold text-primary mr-2">Add Files</h2>
+                        <div role="tablist" aria-label="Where to add files from" class="flex flex-wrap items-center gap-2">
+                            <template x-if="showFolderTab">
+                                <button role="tab" :aria-selected="importTab === 'folder'" @click="importTab = 'folder'" class="px-3 py-1 rounded-lg text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                        :class="importTab === 'folder' ? 'btn-primary font-semibold' : 'text-secondary hover:bg-page'"
+                                        :style="importTab === 'folder' ? '' : 'background-color: #F0EFEB;'">Import from folder</button>
+                            </template>
+                            <button role="tab" :aria-selected="importTab === 'upload' || !showFolderTab" @click="importTab = 'upload'" class="px-3 py-1 rounded-lg text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                    :class="(importTab === 'upload' || !showFolderTab) ? 'btn-primary font-semibold' : 'text-secondary hover:bg-page'"
+                                    :style="(importTab === 'upload' || !showFolderTab) ? '' : 'background-color: #F0EFEB;'">Upload</button>
+                        </div>
+                    </div>
+
+                    <!-- Import from folder: files are read in place, never uploaded -->
+                    <div x-show="showFolderTab && importTab === 'folder'" x-cloak>
+                        <div class="flex items-center gap-2 mb-2">
+                            <p class="text-xs text-secondary flex-1 min-w-0 truncate" :title="importInfo.dir" x-text="importInfo.dir"></p>
+                            <button x-show="importInfo.enabled" @click="loadImportList()" :disabled="importLoading" title="Refresh the folder list"
+                                    class="px-2 py-1 rounded text-xs text-secondary hover:bg-page focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1" style="background-color: #F0EFEB;"
+                                    :class="{'opacity-60 cursor-not-allowed': importLoading}">↻ Refresh</button>
+                        </div>
+
+                        <p x-show="importInfo.error" x-cloak class="mb-2 p-2 rounded-lg text-sm text-primary" style="background-color: rgba(229, 161, 0, 0.15);" x-text="importInfo.error"></p>
+
+                        <template x-if="importInfo.enabled && !importInfo.error">
+                            <div>
+                                <template x-if="importInfo.files.length === 0">
+                                    <p class="text-secondary text-center py-4 text-sm" x-text="`No WAV/AIFF files in ${importInfo.dir}. Copy recordings there and press Refresh.`"></p>
+                                </template>
+                                <template x-if="importInfo.files.length > 0">
+                                    <div>
+                                        <label class="flex items-center gap-2 text-xs text-secondary mb-1 cursor-pointer">
+                                            <input type="checkbox" :checked="allImportSelected" :disabled="importableFiles.length === 0" @change="toggleImportAll()">
+                                            <span>Select all</span>
+                                        </label>
+                                        <div class="space-y-1 max-h-40 overflow-y-auto">
+                                            <template x-for="file in importInfo.files" :key="file.name">
+                                                <div @click="onImportRowClick(file)" class="flex items-center gap-2 p-2 rounded-lg text-xs cursor-pointer"
+                                                     :class="{'opacity-60': file.stable === false}" style="background-color: #F0EFEB;">
+                                                    <input type="checkbox" @click.stop :checked="isImportSelected(file.name)" @change="toggleImportSelected(file.name)"
+                                                           :disabled="file.stable === false" :aria-label="`Select ${file.name}`">
+                                                    <span class="flex-1 min-w-0 truncate font-medium text-primary" :title="file.name" x-text="file.name"></span>
+                                                    <span class="text-secondary whitespace-nowrap" x-text="formatSize(file.size)"></span>
+                                                    <span class="text-secondary whitespace-nowrap"
+                                                          :style="importFileLabel(file) === 'Complete' ? 'color: #166534; font-weight: 600;' : ''"
+                                                          x-text="importFileLabel(file)"></span>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+
+                        <div class="flex items-center gap-2 mt-3">
+                            <button x-show="importInfo.enabled" @click="importSelectedFiles()" :disabled="importBusy || importSelected.length === 0"
+                                    class="px-4 py-2 btn-primary rounded-lg font-semibold text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                    :class="{'opacity-60 cursor-not-allowed': importBusy || importSelected.length === 0}">
+                                <span x-show="!importBusy" x-text="`Import selected (${importSelected.length})`"></span>
+                                <span x-show="importBusy" class="flex items-center gap-2"><div class="spinner"></div>Importing…</span>
+                            </button>
+                            <button x-show="desktopPicker" @click="chooseImportFiles()" :disabled="importBusy"
+                                    class="px-4 py-2 rounded-lg text-sm text-secondary hover:bg-page focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1" style="background-color: #F0EFEB;"
+                                    :class="{'opacity-60 cursor-not-allowed': importBusy}">Choose files…</button>
+                        </div>
+                    </div>
+
+                    <!-- Upload tab -->
+                    <div x-show="importTab === 'upload' || !showFolderTab">
                     <div
                         @drop.prevent="handleDrop($event)"
                         @dragover.prevent="dragging = true"
@@ -531,6 +601,7 @@
                     <div x-show="uploadNotice" x-cloak class="mt-3 p-2 rounded-lg text-sm text-primary" style="background-color: rgba(229, 161, 0, 0.15);">
                         <span x-text="uploadNotice"></span>
                     </div>
+                    </div>
                 </div>
 
                 <!-- Queue & File Info (half width, side by side) -->
@@ -548,7 +619,8 @@
                                 >
                                     <div class="flex justify-between items-start">
                                         <div class="flex-1 min-w-0">
-                                            <p class="font-medium text-xs truncate text-primary" x-text="file.filename"></p>
+                                            <p class="font-medium text-xs truncate text-primary"><span x-text="file.filename"></span>
+                                                <span x-show="file.in_place" class="ml-1 px-1 rounded text-secondary align-middle" style="background-color: rgba(138, 138, 134, 0.2); font-size: 0.65rem;" title="Read from the import folder — the original is never modified or deleted">in place</span></p>
                                             <p class="text-xs text-muted" x-text="formatSize(file.size) + ' • ' + formatDuration(file.duration)"></p>
                                             <p class="text-xs mt-1" :class="statusClass(file.status)" x-text="file.status"></p>
                                         </div>

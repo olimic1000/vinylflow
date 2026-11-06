@@ -20,12 +20,18 @@ services:
       # Output Configuration
       - DEFAULT_OUTPUT_DIR=/app/output
 
+      # Import folder: recordings placed here are read in place (no browser upload)
+      - VINYLFLOW_IMPORT_DIR=/app/incoming
+
       # Server Configuration
       # Internal port is always 8000. Change PORT in .env to map a different external port.
       - PORT=8000
     volumes:
       # Persistent storage for processed files
       - ./output:/app/output
+      # Import folder (read-only: VinylFlow never modifies or deletes your recordings).
+      # Set IMPORT_FOLDER in .env to use an existing folder of recordings.
+      - ${IMPORT_FOLDER:-./incoming}:/app/incoming:ro
       # Temporary uploads (can be ephemeral)
       - ./temp_uploads:/app/temp_uploads
       # Config storage for settings.json (PERSISTENT)

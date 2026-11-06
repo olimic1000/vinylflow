@@ -37,6 +37,7 @@ vinylflow/
 │   └── release-artifact-scan.yml
 ├── config.py               # Config management (settings.json > .env > env vars)
 ├── audio_processor.py      # Silence detection, track splitting, ffmpeg wrappers
+├── import_folder.py        # Pure import-folder path logic: listing, name resolution (no traversal/symlink escape), overlap check
 ├── track_boundaries.py     # Pure track-boundary math (gaps, envelope, music span, guided placement, refine_cuts)
 ├── metadata_handler.py     # Discogs fetch, cover art download, audio tagging
 ├── desktop_launcher.py     # Entry point — sets up dirs/env vars, starts FastAPI, opens window
@@ -70,7 +71,8 @@ audio_processor.py  metadata_handler.py  config.py    Discogs API
 6. Broadcast completion via WebSocket
 
 **Upload session storage:**
-- Source file: `VINYLFLOW_UPLOAD_DIR/{file_id}/source.{ext}`
+- Source file: `VINYLFLOW_UPLOAD_DIR/{file_id}/source.{ext}` (upload) or the original file in the import folder (`Session.in_place`; never copied into or linked from the session dir)
+- Derived files (MP3 preview, peaks, `envelope.npy`, caches, A/B renders) always live in `VINYLFLOW_UPLOAD_DIR/{file_id}/`; all cleanup (`DELETE /api/queue`, clear-all, TTL reaper) is `rmtree` of that dir only, so an in-place source is never deleted. An import dir that equals, contains or sits inside the uploads dir is refused. A vanished in-place source gives HTTP 410 (`_require_source`) from every endpoint that reads it
 - Energy envelope: `VINYLFLOW_UPLOAD_DIR/{file_id}/envelope.npy` (per-frame RMS dBFS, mono 8 kHz, 10 ms frames), decoded once in the background after upload; Smart Rescan and the music span read it from memory. Removed with the session dir
 - Output: `DEFAULT_OUTPUT_DIR/{Artist} - {Album}/{position}-{title}.{fmt}`
 
@@ -81,6 +83,8 @@ audio_processor.py  metadata_handler.py  config.py    Discogs API
 | Method | Path | Purpose |
 |--------|------|---------|
 | POST | `/api/upload` | Upload WAV/AIFF, create session UUID, queue MP3 preview |
+| GET | `/api/import` | Import folder listing `{enabled, dir, error, files: [{name, size, mtime, stable, imported_id, imported_status}]}` (recursive <=3 levels, hidden/`._*` skipped, <=500; `stable: false` = changed <10 s ago) |
+| POST | `/api/import` | `{names?, paths?}` -> in-place Sessions (same shape as upload + `in_place`; `skipped` with reasons; an already imported file returns its existing session). `names` must resolve inside the import dir (no traversal or symlink escape); `paths` only if granted by the desktop file dialog (`DesktopApi.choose_import_files`, in-process) |
 | POST | `/api/analyze` | Silence detection → track boundaries |
 | POST | `/api/analyze-duration-based` | Fallback: tracks from Discogs durations |
 | POST | `/api/analyze-guided` | `{file_id, expected_tracks, durations?, side_breaks?}` (`durations`: one per track, `null` = unknown; `side_breaks`: track counts before lettered Discogs side changes) -> `expected_tracks` tracks from the cached envelope (`matched: false` with fewer when they can't fit). Best-match alignment first (`model: "align"`), then the gap/scale model when every length is known, then count-based detection (Smart Rescan ladder; also when no length is known, `method: "count"`). `durations` of another size is a 422; a length that is zero, negative or longer than the recording counts as unknown. Response: `tracks`, `method`, `matched`, `boundaries` (`expected`, `snapped`, `position`, `gap`), `model`, `scale`, `gap_s`, `music_start`, `music_end` |
@@ -112,6 +116,7 @@ All set by `desktop_launcher.py` before starting FastAPI. **Never hardcode paths
 |----------|--------|---------|
 | `VINYLFLOW_CONFIG_DIR` | launcher | Platform config dir (AppData / Library / .config) |
 | `VINYLFLOW_UPLOAD_DIR` | launcher | Temp uploads dir |
+| `VINYLFLOW_IMPORT_DIR` | launcher / compose | Import folder read in place (desktop `~/Music/VinylFlow/Incoming`, Docker `/app/incoming` mounted `:ro`). settings.json `IMPORT_DIR` overrides; **not** settable via `PUT /api/config` (only shown read-only by `GET`), so a web page can never widen what is importable. Unset = import disabled |
 | `VINYLFLOW_FFMPEG_PATH` | launcher | Absolute path to ffmpeg binary |
 | `DEFAULT_OUTPUT_DIR` | launcher | Default output folder |
 | `DISCOGS_USER_TOKEN` | user / settings.json | Discogs API token |
@@ -157,6 +162,7 @@ These rules are **critical** — violating them breaks the bundled app silently.
 - All UI state lives in one Alpine.js `x-data` object (see `app.js`).
 - **WaveSurfer.js** handles waveform rendering with draggable region markers for track boundaries.
 - WebSocket (`/ws`) receives real-time progress updates during processing.
+- **Add Files card:** header row `flex flex-wrap` with the title and the source tabs ("Import from folder" shown when an import dir is configured or the desktop dialog exists, default tab when enabled; "Upload"). The Upload tab keeps the progress bar and notice. **Import retries:** every stable folder row stays selectable and the server reuses an existing session; "In queue" and "Complete" (from the queue entry's `completed` status or the listing's `imported_status`) are distinct labels. The list refreshes after an import, after a queue removal is committed and after an export completes.
 
 ### macOS Context Menu Fix (critical)
 WKWebView intercepts right-click before JavaScript sees it. Fix applied in `init()`:

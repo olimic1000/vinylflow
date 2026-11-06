@@ -51,6 +51,7 @@ ENV/
 # Output and temporary files
 output/
 temp_uploads/
+incoming/
 *.wav
 *.flac
 *.mp3

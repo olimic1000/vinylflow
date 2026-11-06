@@ -32,6 +32,14 @@ function vinylApp() {
         currentFileId: null,
         currentFile: null,
 
+        // Import from folder (files read in place, no browser upload)
+        importTab: 'upload',            // 'folder' | 'upload'
+        importInfo: { enabled: false, dir: '', error: null, files: [] },
+        importSelected: [],             // names ticked in the folder list
+        importBusy: false,              // POST /api/import in flight
+        importLoading: false,           // GET /api/import in flight
+        desktopPicker: false,           // the pywebview bridge offers a native file dialog
+
         // Analysis
         detectedTracks: [],
         currentPlayingTrack: null,
@@ -139,6 +147,12 @@ function vinylApp() {
             await this.checkStatus();
             this.connectWebSocket();
 
+            // Import from folder: pywebview injects its bridge asynchronously
+            this.detectDesktopPicker();
+            window.addEventListener('pywebviewready', () => this.detectDesktopPicker());
+            await this.loadImportList();
+            this.chooseDefaultImportTab();
+
             this.$watch('currentFile', (file) => {
                 if (file && !this.searchQuery) {
                     this.searchQuery = this.cleanFilename(file.filename);
@@ -243,6 +257,7 @@ function vinylApp() {
                         const file = this.uploadedFiles.find(f => f.id === data.file_id);
                         if (file) {
                             file.status = 'completed';
+                            if (file.in_place) this.loadImportList();
                         }
                     }
                     break;
@@ -377,6 +392,160 @@ function vinylApp() {
         isSupportedFile(filename) {
             const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
             return this.supportedExtensions.includes(ext);
+        },
+
+        // ---------------------------------------------------------------
+        // Import from folder
+        // ---------------------------------------------------------------
+
+        /** True when the desktop shell offers a native file dialog */
+        detectDesktopPicker() {
+            this.desktopPicker = typeof window !== 'undefined'
+                && typeof window.pywebview?.api?.choose_import_files === 'function';
+            return this.desktopPicker;
+        },
+
+        /** The folder tab shows when an import dir is configured or the desktop dialog exists */
+        get showFolderTab() {
+            return this.importInfo.enabled || this.desktopPicker;
+        },
+
+        /** Every stable source can be selected again, even after a previous import or export. */
+        get importableFiles() {
+            return (this.importInfo.files || []).filter(f => f.stable !== false);
+        },
+
+        /** Reload the folder listing; failures leave the previous list in place */
+        async loadImportList() {
+            this.importLoading = true;
+            try {
+                const response = await fetch('/api/import');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                this.importInfo = {
+                    enabled: !!data.enabled,
+                    dir: data.dir || '',
+                    error: data.error || null,
+                    files: data.files || []
+                };
+                // Drop ticks for rows that vanished or became unselectable
+                const ok = new Set(this.importableFiles.map(f => f.name));
+                this.importSelected = this.importSelected.filter(n => ok.has(n));
+            } catch (error) {
+                console.error('Failed to list import folder:', error);
+            } finally {
+                this.importLoading = false;
+            }
+        },
+
+        /** Open on the folder tab only when it has recordings: an empty one would hide the drop zone */
+        chooseDefaultImportTab() {
+            this.importTab = this.importInfo.files.length > 0 ? 'folder' : 'upload';
+        },
+
+        isImportSelected(name) {
+            return this.importSelected.includes(name);
+        },
+
+        toggleImportSelected(name) {
+            this.importSelected = this.isImportSelected(name)
+                ? this.importSelected.filter(n => n !== name)
+                : [...this.importSelected, name];
+        },
+
+        get allImportSelected() {
+            const n = this.importableFiles.length;
+            return n > 0 && this.importableFiles.every(f => this.importSelected.includes(f.name));
+        },
+
+        toggleImportAll() {
+            this.importSelected = this.allImportSelected ? [] : this.importableFiles.map(f => f.name);
+        },
+
+        /** A queue entry is not proof of a completed export. */
+        importFileLabel(file) {
+            if (file.stable === false) return 'Still copying…';
+            const entry = this.uploadedFiles.find(item => item.id === file.imported_id);
+            const status = entry?.status || file.imported_status;
+            if (status === 'processing') return 'Processing…';
+            if (status === 'completed') return 'Complete';
+            return file.imported_id ? 'In queue' : '';
+        },
+
+        /** Row and checkbox use the same selection behavior; existing sessions are reused. */
+        onImportRowClick(file) {
+            if (file.stable !== false) this.toggleImportSelected(file.name);
+        },
+
+        /** Import the ticked folder files */
+        async importSelectedFiles() {
+            if (!this.importSelected.length) return;
+            await this.postImport({ names: [...this.importSelected] });
+            this.importSelected = [];
+        },
+
+        /** Desktop: native multi-select dialog, then import the chosen paths */
+        async chooseImportFiles() {
+            if (this.importBusy || !this.detectDesktopPicker()) return;
+            let paths;
+            try {
+                paths = await window.pywebview.api.choose_import_files();
+            } catch (error) {
+                this.notifyError('Could not open the file dialog', error);
+                return;
+            }
+            if (!paths || !paths.length) return;
+            await this.postImport({ paths });
+        },
+
+        /** POST /api/import and queue the returned files like an upload */
+        async postImport(body) {
+            this.importBusy = true;
+            try {
+                await this.commitAllRemovals();
+                const response = await fetch('/api/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+
+                const known = new Set(this.uploadedFiles.map(f => f.id));
+                const added = [];
+                (data.files || []).forEach(file => {
+                    if (known.has(file.id)) {
+                        const existing = this.uploadedFiles.find(entry => entry.id === file.id);
+                        if (file.status) existing.status = file.status;
+                        return;
+                    }
+                    known.add(file.id);
+                    const entry = {
+                        ...file,
+                        status: file.status || 'uploaded'
+                    };
+                    this.uploadedFiles.push(entry);
+                    added.push(entry);
+                });
+                if (!this.currentFile && data.files?.length > 0) {
+                    this.selectFile((added[0] || data.files[0]).id);
+                } else if (data.files?.length === 1 && !added.length && data.files[0].id !== this.currentFileId) {
+                    // Not the recording on screen: selectFile would clear its splits and release
+                    this.selectFile(data.files[0].id);
+                }
+
+                const skipped = data.skipped || [];
+                if (skipped.length) {
+                    const shown = skipped.slice(0, 3).map(s => `${s.name} — ${s.reason}`);
+                    if (skipped.length > 3) shown.push(`and ${skipped.length - 3} more`);
+                    this.notify(`${skipped.length} file(s) not imported: ${shown.join('; ')}`, { type: 'warning' });
+                }
+            } catch (error) {
+                this.notifyError('Import failed', error);
+            } finally {
+                this.importBusy = false;
+            }
+            await this.loadImportList();
         },
 
         /**
@@ -740,7 +909,10 @@ function vinylApp() {
                 this.searchResults = [];
             }
 
-            entry.toastId = this.notifyUndo(`Removed "${file.filename}" from the queue.`, () => this.undoRemoveFile(fileId), {
+            const removedMessage = file.in_place
+                ? `Removed "${file.filename}" from the queue. The original file stays in the import folder.`
+                : `Removed "${file.filename}" from the queue.`;
+            entry.toastId = this.notifyUndo(removedMessage, () => this.undoRemoveFile(fileId), {
                 guard: false,
                 timeout: undoMs,
                 // Any close other than Undo (timeout, X button, page unload) makes it final
@@ -808,6 +980,8 @@ function vinylApp() {
                 if (!response.ok && response.status !== 404) {
                     throw new Error(`HTTP ${response.status}`);
                 }
+                // The "In queue" marker in the folder list clears now
+                if (entry.file.in_place) this.loadImportList();
             } catch (error) {
                 // The server still has it: bring the file back so the queue
                 // reflects reality, and say so.
@@ -1786,6 +1960,7 @@ function vinylApp() {
                         const file = this.uploadedFiles.find(f => f.id === job.file_id);
                         if (file) {
                             file.status = 'completed';
+                            if (file.in_place) this.loadImportList();
                         }
                         return;
                     }
