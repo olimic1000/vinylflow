@@ -52,17 +52,18 @@ def test_invalid_side_hints_are_rejected(recording, breaks):
     assert response.status_code == 422
 
 
-def test_guided_endpoint_with_no_known_length_falls_back_to_count_detection(recording):
-    """With every length unknown there is nothing to align: the endpoint places the tracks by
-    count (Smart Rescan ladder) and reports no guided model."""
+def test_guided_endpoint_with_no_known_length_places_sides_and_gaps_by_count(recording):
+    """With every length unknown the endpoint still places the tracks from the sides and clear
+    gaps (``align-even``); ``method`` stays "count" so the UI draws no ghost markers."""
     response = TestClient(api.app).post('/api/analyze-guided', json={
         'file_id': recording, 'expected_tracks': 4, 'durations': [None] * 4, 'side_breaks': [2],
     })
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body['method'] == 'count'
-    assert body['model'] is None and body['boundaries'] == []
+    assert body['method'] == 'count' and body['matched'] is True
+    assert body['model'] == 'align-even'
     assert len(body['tracks']) == 4
+    assert [round(b['gap']['start']) for b in body['boundaries']] == [100, 203, 363]
 
 
 def test_guided_endpoint_treats_an_infinite_length_as_unknown(recording):

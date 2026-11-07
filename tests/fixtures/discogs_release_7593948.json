@@ -1,0 +1,1449 @@
+{
+ "id": 7593948,
+ "title": "Great Vocalists Of The Big Band Era",
+ "year": 1978,
+ "genres": [
+  "Jazz"
+ ],
+ "styles": [
+  "Big Band"
+ ],
+ "master_id": 3985255,
+ "tracklist": [
+  {
+   "position": "A1",
+   "type_": "track",
+   "title": "Chattanooga Choo Choo",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Cab Calloway",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 253474
+    }
+   ]
+  },
+  {
+   "position": "A2",
+   "type_": "track",
+   "title": "(I Don't Stand) A Ghost Of A Chance (With You)",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Carlotta Dale",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1089951
+    },
+    {
+     "name": "Will Bradley",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 335630
+    }
+   ]
+  },
+  {
+   "position": "A3",
+   "type_": "track",
+   "title": "The Goona Goo",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Art Gentry",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1275360
+    },
+    {
+     "name": "Bunny Berigan",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 269601
+    }
+   ]
+  },
+  {
+   "position": "A4",
+   "type_": "track",
+   "title": "The Lady From St. Paul",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Pee Wee Hunt",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 579162
+    },
+    {
+     "name": "Casa Loma Orchestra",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 311060
+    }
+   ]
+  },
+  {
+   "position": "A5",
+   "type_": "track",
+   "title": "Moonlight Bay",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Claude Thornhill",
+     "anv": "",
+     "join": ",",
+     "role": "",
+     "tracks": "",
+     "id": 313126
+    },
+    {
+     "name": "The Snowflakes (2)",
+     "anv": "Snowflakes",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 1499131
+    }
+   ]
+  },
+  {
+   "position": "B1",
+   "type_": "track",
+   "title": "Got A Date With An Angel",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Skinnay Ennis",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1088692
+    },
+    {
+     "name": "Hal Kemp",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 1056489
+    }
+   ]
+  },
+  {
+   "position": "B2",
+   "type_": "track",
+   "title": "On The Sunny Side Of The Street",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Taft Jordan",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 309977
+    },
+    {
+     "name": "Chick Webb",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 294491
+    }
+   ]
+  },
+  {
+   "position": "B3",
+   "type_": "track",
+   "title": "I, Yi, Yi, Yi, Yi",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Lina Romay",
+     "anv": "Lena Romay",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 358601
+    },
+    {
+     "name": "Xavier Cugat",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 83813
+    }
+   ]
+  },
+  {
+   "position": "B4",
+   "type_": "track",
+   "title": "Laura",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Woody Herman",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 239399
+    }
+   ]
+  },
+  {
+   "position": "B5",
+   "type_": "track",
+   "title": "Give Me The Simple Life",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Liza Morrow",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1613040
+    },
+    {
+     "name": "Benny Goodman",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254768
+    }
+   ]
+  },
+  {
+   "position": "C1",
+   "type_": "track",
+   "title": "Amapola",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Carmen Costillo",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 4662708
+    },
+    {
+     "name": "Xavier Cugat",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 83813
+    }
+   ]
+  },
+  {
+   "position": "C2",
+   "type_": "track",
+   "title": "Comes Love",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Durelle Alexander",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 2919718
+    },
+    {
+     "name": "Eddy Duchin",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 941593
+    }
+   ]
+  },
+  {
+   "position": "C3",
+   "type_": "track",
+   "title": "Out Of Nowhere",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Lena Horne",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 300050
+    },
+    {
+     "name": "Teddy Wilson",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254769
+    }
+   ]
+  },
+  {
+   "position": "C4",
+   "type_": "track",
+   "title": "'Taint What You Do It's Thew Way That Cha Do It",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Trummy Young",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 307867
+    },
+    {
+     "name": "Jimmie Lunceford",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 311058
+    }
+   ]
+  },
+  {
+   "position": "C5",
+   "type_": "track",
+   "title": "Dust Off That Old Pianna",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Harriet Hilliard",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1089950
+    },
+    {
+     "name": "Ozzie Nelson",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 331403
+    }
+   ]
+  },
+  {
+   "position": "D1",
+   "type_": "track",
+   "title": "Bounce Me Brother With A Solid Four",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Ray McKinley",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 254891
+    },
+    {
+     "name": "Will Bradley",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 335630
+    }
+   ]
+  },
+  {
+   "position": "D2",
+   "type_": "track",
+   "title": "I Never Had A Chance",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Kenny Sargent",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 255650
+    },
+    {
+     "name": "Casa Loma Orchestra",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 311060
+    }
+   ]
+  },
+  {
+   "position": "D3",
+   "type_": "track",
+   "title": "Gotta Be This Or That",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Jane Harvey",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1580307
+    },
+    {
+     "name": "Benny Goodman",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254768
+    }
+   ]
+  },
+  {
+   "position": "D4",
+   "type_": "track",
+   "title": "Nobody's Sweetheart",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Ina Ray Hutton",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 1807618
+    }
+   ]
+  },
+  {
+   "position": "D5",
+   "type_": "track",
+   "title": "My Silent Love",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Dick Haymes",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 322312
+    },
+    {
+     "name": "Harry James (2)",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 313097
+    }
+   ]
+  },
+  {
+   "position": "E1",
+   "type_": "track",
+   "title": "Nice Work If You Can Get It",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Maxine Sullivan",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 311737
+    },
+    {
+     "name": "John Kirby",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 258700
+    }
+   ]
+  },
+  {
+   "position": "E2",
+   "type_": "track",
+   "title": "Young And Healthy",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Bing Crosby",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 164571
+    },
+    {
+     "name": "Guy Lombardo",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 337046
+    }
+   ]
+  },
+  {
+   "position": "E3",
+   "type_": "track",
+   "title": "Why Don't You Do Right?",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Peggy Lee",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 79742
+    },
+    {
+     "name": "Benny Goodman",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254768
+    }
+   ]
+  },
+  {
+   "position": "E4",
+   "type_": "track",
+   "title": "They Can't Take That Away From Me",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Billie Holiday",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 33589
+    }
+   ]
+  },
+  {
+   "position": "E5",
+   "type_": "track",
+   "title": "Whistle While You Work",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Tony Pastor",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 313112
+    },
+    {
+     "name": "Artie Shaw",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 269597
+    }
+   ]
+  },
+  {
+   "position": "F1",
+   "type_": "track",
+   "title": "I Remember You",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Helen Forrest",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 299941
+    },
+    {
+     "name": "Harry James (2)",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 313097
+    }
+   ]
+  },
+  {
+   "position": "F2",
+   "type_": "track",
+   "title": "Yes, My Darling Daughter",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Irene Daye",
+     "anv": "Irene Day",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 381569
+    },
+    {
+     "name": "Gene Krupa",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 258689
+    }
+   ]
+  },
+  {
+   "position": "F3",
+   "type_": "track",
+   "title": "You, You Darling",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Ginny Simms",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 946210
+    },
+    {
+     "name": "Kay Kyser",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 1042358
+    }
+   ]
+  },
+  {
+   "position": "F4",
+   "type_": "track",
+   "title": "I Surrender, Dear",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Claire Martin (2)",
+     "anv": "Clare Martin",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1499128
+    },
+    {
+     "name": "Bobby Hackett",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254893
+    }
+   ]
+  },
+  {
+   "position": "F5",
+   "type_": "track",
+   "title": "Baby, Don't Tell On Me",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Jimmy Rushing",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 281314
+    },
+    {
+     "name": "Count Basie",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 145262
+    }
+   ]
+  },
+  {
+   "position": "G1",
+   "type_": "track",
+   "title": "I Walk Alone",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Meredith Blake",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1089977
+    },
+    {
+     "name": "Jack Jenney",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 322119
+    }
+   ]
+  },
+  {
+   "position": "G2",
+   "type_": "track",
+   "title": "I'm Beginning To See The Light",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Kitty Kallen",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 322300
+    },
+    {
+     "name": "Harry James (2)",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 313097
+    }
+   ]
+  },
+  {
+   "position": "G3",
+   "type_": "track",
+   "title": "Happiness Is A Thing Called Joe",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Frances Wayne",
+     "anv": "Francis Wayne",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 322297
+    },
+    {
+     "name": "Woody Herman",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 239399
+    }
+   ]
+  },
+  {
+   "position": "G4",
+   "type_": "track",
+   "title": "Side By Side",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Anita O'Day",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 258903
+    },
+    {
+     "name": "Gene Krupa",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 258689
+    }
+   ]
+  },
+  {
+   "position": "G5",
+   "type_": "track",
+   "title": "More Than You Know",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Billie Holiday",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 33589
+    },
+    {
+     "name": "Teddy Wilson",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254769
+    }
+   ]
+  },
+  {
+   "position": "H1",
+   "type_": "track",
+   "title": "I'll Never Say \"Never Again\" Again",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Helen Ward",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 182127
+    },
+    {
+     "name": "Benny Goodman",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254768
+    }
+   ]
+  },
+  {
+   "position": "H2",
+   "type_": "track",
+   "title": "You Stepped Out Of A Dream",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Harry Babbitt",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1042360
+    },
+    {
+     "name": "Kay Kyser",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 1042358
+    }
+   ]
+  },
+  {
+   "position": "H3",
+   "type_": "track",
+   "title": "My Melancholy Baby",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Ella Fitzgerald",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 31615
+    },
+    {
+     "name": "Teddy Wilson",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254769
+    }
+   ]
+  },
+  {
+   "position": "H4",
+   "type_": "track",
+   "title": "You'd Be So Nice To Come Home To",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Harry Cool",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 987397
+    },
+    {
+     "name": "Dick Jurgens",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 785558
+    }
+   ]
+  },
+  {
+   "position": "H5",
+   "type_": "track",
+   "title": "Let's Do It, Let's Fall In Love",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Peggy Lee",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 79742
+    },
+    {
+     "name": "Benny Goodman",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254768
+    }
+   ]
+  },
+  {
+   "position": "I1",
+   "type_": "track",
+   "title": "It All Comes Back To Me Now",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Howard Dulany",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1777819
+    },
+    {
+     "name": "Gene Krupa",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 258689
+    }
+   ]
+  },
+  {
+   "position": "I2",
+   "type_": "track",
+   "title": "How High The Moon",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Rosemary Calvin",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 893233
+    },
+    {
+     "name": "Fred Rich",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 1787733
+    }
+   ]
+  },
+  {
+   "position": "I3",
+   "type_": "track",
+   "title": "Tangerine",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Art Lund",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1267261
+    },
+    {
+     "name": "Benny Goodman",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254768
+    }
+   ]
+  },
+  {
+   "position": "I4",
+   "type_": "track",
+   "title": "Absence Makes The Heart Grow Fonder",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Bonnie Baker",
+     "anv": "Wee Bonnie Baker",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 663987
+    },
+    {
+     "name": "Orrin Tucker",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 1350072
+    }
+   ]
+  },
+  {
+   "position": "I5",
+   "type_": "track",
+   "title": "Easy Come, Easy Go",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Lee Wiley",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 307291
+    },
+    {
+     "name": "Johnny Green",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 299701
+    }
+   ]
+  },
+  {
+   "position": "J1",
+   "type_": "track",
+   "title": "Rose Of The Rio Grande",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Ivie Anderson",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 265631
+    },
+    {
+     "name": "Duke Ellington",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 145257
+    }
+   ]
+  },
+  {
+   "position": "J2",
+   "type_": "track",
+   "title": "Lazy Bones",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Mildred Bailey",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 307409
+    },
+    {
+     "name": "The Dorsey Brothers",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 2220093
+    }
+   ]
+  },
+  {
+   "position": "J3",
+   "type_": "track",
+   "title": "Boogie Wooglie Piggly",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Doris Day",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 216294
+    },
+    {
+     "name": "Les Brown",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 403579
+    }
+   ]
+  },
+  {
+   "position": "J4",
+   "type_": "track",
+   "title": "All Or Nothing At All",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Helen Humes",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 307298
+    },
+    {
+     "name": "Count Basie",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 145262
+    }
+   ]
+  },
+  {
+   "position": "J5",
+   "type_": "track",
+   "title": "My Fine Feathered Friend",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Kathleen Lane",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1089960
+    },
+    {
+     "name": "Glenn Miller",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 77991
+    }
+   ]
+  },
+  {
+   "position": "K1",
+   "type_": "track",
+   "title": "Violets For Your Furs",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Johnny Desmond",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 373573
+    },
+    {
+     "name": "Gene Krupa",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 258689
+    }
+   ]
+  },
+  {
+   "position": "K2",
+   "type_": "track",
+   "title": "Lullaby Of The Leaves",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Connie Boswell",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 307369
+    },
+    {
+     "name": "Victor Young",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 370725
+    }
+   ]
+  },
+  {
+   "position": "K3",
+   "type_": "track",
+   "title": "Organ Grinder's Swing",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Cliff Weston",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 990893
+    },
+    {
+     "name": "Joe Haymes",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 622508
+    }
+   ]
+  },
+  {
+   "position": "K4",
+   "type_": "track",
+   "title": "Don't Wake Up My Heart",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Ray Eberle",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 254908
+    },
+    {
+     "name": "Glenn Miller",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 77991
+    }
+   ]
+  },
+  {
+   "position": "K5",
+   "type_": "track",
+   "title": "Smoke Gets In Your Eyes",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Helen Forrest",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 299941
+    },
+    {
+     "name": "Benny Goodman",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 254768
+    }
+   ]
+  },
+  {
+   "position": "L1",
+   "type_": "track",
+   "title": "The Last Time I Saw Paris",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Kate Smith (2)",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 525856
+    }
+   ]
+  },
+  {
+   "position": "L2",
+   "type_": "track",
+   "title": "Goodnight Sweetheart",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Snooky Lanson",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 349491
+    },
+    {
+     "name": "Ray Noble",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 503363
+    }
+   ]
+  },
+  {
+   "position": "L3",
+   "type_": "track",
+   "title": "With Plenty Of Money And You",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Skinnay Ennis",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 1088692
+    },
+    {
+     "name": "Hal Kemp",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 1056489
+    }
+   ]
+  },
+  {
+   "position": "L4",
+   "type_": "track",
+   "title": "My Little Cousin",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Mildred Bailey",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 307409
+    },
+    {
+     "name": "Red Norvo",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 306398
+    }
+   ]
+  },
+  {
+   "position": "L5",
+   "type_": "track",
+   "title": "I Can't Afford To Dream",
+   "duration": "",
+   "artists": [
+    {
+     "name": "Connie Haines",
+     "anv": "",
+     "join": "/",
+     "role": "",
+     "tracks": "",
+     "id": 391744
+    },
+    {
+     "name": "Harry James (2)",
+     "anv": "",
+     "join": "",
+     "role": "",
+     "tracks": "",
+     "id": 313097
+    }
+   ]
+  }
+ ],
+ "artists": [
+  {
+   "name": "Various",
+   "anv": "",
+   "join": "",
+   "role": "",
+   "tracks": "",
+   "id": 194
+  }
+ ],
+ "extraartists": [],
+ "labels": [
+  {
+   "name": "Columbia Special Products",
+   "catno": "P6 14538",
+   "id": 57677
+  }
+ ],
+ "formats": [
+  {
+   "name": "Vinyl",
+   "qty": "6",
+   "descriptions": [
+    "LP",
+    "Compilation"
+   ]
+  },
+  {
+   "name": "Box Set",
+   "qty": "1",
+   "descriptions": []
+  }
+ ],
+ "images": [],
+ "_note": "Trimmed Discogs API payload for release 7593948 (Discogs release data is CC0): 6-LP box set, 12 sides x 5 tracks, no track lengths. Fetched once 2026-10-21 with the user's permission; tests use it offline."
+}
