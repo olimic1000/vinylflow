@@ -156,10 +156,10 @@ function reset(files = []) {
 
     // ---- desktop picker: paths -> POST; cancel -> no POST ----
     reset(); postReply = (b) => ({ files: [{ id: 'p1', filename: 'p.wav', size: 1, duration: 61, in_place: true }], skipped: [] });
-    global.window.pywebview = { api: { choose_import_files: async () => ['/Users/me/p.wav'] } };
+    global.window.pywebview = { api: { choose_import_files: async () => ['/Users/you/p.wav'] } };
     a = mkApp();
     await a.chooseImportFiles();
-    assert.deepStrictEqual(posts, [{ paths: ['/Users/me/p.wav'] }]);
+    assert.deepStrictEqual(posts, [{ paths: ['/Users/you/p.wav'] }]);
     assert.strictEqual(a.uploadedFiles.length, 1);
     posts.length = 0;
     global.window.pywebview.api.choose_import_files = async () => [];
