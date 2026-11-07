@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 temp_uploads/
+incoming/
 *.wav
 *.mp3
 *.flac

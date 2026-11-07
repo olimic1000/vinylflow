@@ -33,6 +33,7 @@ VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tra
 - **Discogs integration** — visual search with album artwork, metadata, and track listings
 - **Multiple output formats** — FLAC (lossless), MP3 (320kbps), or AIFF (lossless)
 - **Multiple input formats** — WAV and AIFF recordings supported
+- **Import from a folder** — large recordings are read in place from a read-only folder instead of being uploaded through the browser; see [Import from a folder](#import-from-a-folder-no-upload)
 - **Vinyl-style numbering** — proper A1, A2, B1, B2 track notation
 - **Rich tags** — multi-artist credits keep Discogs' join strings ("Simon & Garfunkel") without disambiguation suffixes ("Nirvana (2)" → "Nirvana", also in folder names), album artist is always set, compilations carry per-track artists and the compilation flag, and unknown values are left out instead of written empty
 - **Classical credits** — for releases with the Discogs genre "Classical", composers (from composer credits, else a lone release artist with no performing credit, when the release credits no composer), conductor, ensembles and soloists (allowlisted performing roles only, honouring credit track ranges such as "A1 to A3", also on a suite's movements) are tagged, and ARTIST lists soloists, then ensembles, then the conductor when the credits cover every performer in the artist line (otherwise it stays as Discogs has it); production credits are never written
@@ -94,6 +95,16 @@ cd vinylflow
 By default the port is published on `127.0.0.1` only, so VinylFlow is reachable just from the computer running it. To open it from a phone or another computer, add `BIND_ADDRESS=0.0.0.0` to your `.env` and run `docker compose up -d` again, then browse to `http://<your-computer's-IP>:8000`. To reach it by a hostname instead of an IP, also add `VINYLFLOW_ALLOWED_HOSTS=<name>` (e.g. `nas.local`) to your `.env`.
 
 **Risk:** VinylFlow has no authentication, and the API can change the output folder and write files there. Anyone who can reach the port can use it, so only enable this on a trusted network.
+
+### Import from a folder (no upload)
+
+A full album recorded at 24-bit/96 kHz is about 1.5 GB, and uploading it through the browser copies it into the container. Instead, put your recordings in the `incoming/` folder next to `docker-compose.yml` (created on first start) and use the **Import from folder** tab: VinylFlow reads them where they are.
+
+- To use a folder you already have, set `IMPORT_FOLDER=/path/to/your/recordings` in `.env` and run `docker compose up -d` again.
+- The folder is mounted **read-only**: VinylFlow never modifies, moves or deletes your recordings. Removing a file from the queue (or the automatic temp clean-up) only deletes VinylFlow's own preview and analysis files.
+- Subfolders are listed (up to 3 levels). A file that was changed in the last few seconds shows as "Still copying…" until the copy finishes. A file already in the queue can be imported again; it reuses the existing entry. The list marks files "In queue" or "Complete".
+- Desktop app: the import folder is `~/Music/VinylFlow/Incoming`, and **Choose files…** opens any WAV/AIFF on your computer in place.
+- Running without Docker or the desktop app: set `VINYLFLOW_IMPORT_DIR` to the folder (for example in `.env`). The import folder can't be changed from the web UI.
 
 ## 3. First-Run Setup
 
@@ -209,6 +220,7 @@ DEFAULT_OUTPUT_DIR=~/Music/VinylFlow
 
 **Notes:**
 - The `output/` and `temp_uploads/` directories are created automatically
+- To import recordings in place instead of uploading them, add `VINYLFLOW_IMPORT_DIR=~/Music/VinylFlow/Incoming` (or any folder) to `.env`
 - You can adjust silence detection and other settings in `.env` (see [Configuration](#configuration) below)
 - To stop the server, press `Ctrl+C` in the terminal
 
@@ -216,7 +228,7 @@ DEFAULT_OUTPUT_DIR=~/Music/VinylFlow
 
 ## How It Works
 
-1. **Upload** — drag and drop your WAV or AIFF recording
+1. **Add** — import a WAV or AIFF recording from the import folder, or drag and drop it to upload
 2. **Analyze** — VinylFlow detects track boundaries using silence detection
 3. **Search** — find your album on Discogs with visual artwork results
 4. **Map** — match detected tracks to Discogs track listings
