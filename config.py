@@ -83,6 +83,14 @@ class Config:
         self.default_min_track_length = float(os.getenv("DEFAULT_MIN_TRACK_LENGTH", "30"))
         self.default_flac_compression = int(os.getenv("DEFAULT_FLAC_COMPRESSION", "8"))
 
+        # Import folder: recordings here are read in place. Not settable through
+        # PUT /api/config, so a web page can never widen what is importable.
+        self.import_dir = (
+            json_settings.get('IMPORT_DIR') or
+            os.getenv("VINYLFLOW_IMPORT_DIR") or
+            ""
+        )
+
         # Temp file management
         self.temp_ttl_hours = float(os.getenv("TEMP_TTL_HOURS", "2"))
 

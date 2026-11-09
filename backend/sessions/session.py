@@ -41,6 +41,14 @@ class Session:
     source_audio: Path
     source_duration: float
     source_size: int
+    # True when source_audio is the user's original file in the import folder
+    # (or one picked in the desktop dialog), not a copy in the session dir.
+    # Cleanup only ever removes the session dir, so such a source is never
+    # deleted; derived files (preview, peaks, envelope) still live there.
+    in_place: bool = False
+    # mtime of an in-place source when it was imported: with the size, it tells whether the
+    # file is still the one the cached envelope and boundaries describe.
+    source_mtime: Optional[float] = None
 
     state: SessionState = SessionState.READY
     release: Optional[Any] = None
@@ -63,6 +71,8 @@ class Session:
         source_filename: str,
         source_duration: float,
         source_size: int,
+        in_place: bool = False,
+        source_mtime: Optional[float] = None,
     ) -> "Session":
         return cls(
             id=str(uuid.uuid4()),
@@ -70,6 +80,8 @@ class Session:
             source_audio=source_audio,
             source_duration=source_duration,
             source_size=source_size,
+            in_place=in_place,
+            source_mtime=source_mtime,
         )
 
     def link_release(self, release: Any) -> None:
