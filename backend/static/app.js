@@ -7,6 +7,19 @@
 const MAX_TOASTS = 5;
 // How long an Undo toast stays (ms)
 const UNDO_TOAST_MS = 8000;
+// Discogs results per search (one page; each card's tracklist loads separately)
+const SEARCH_PAGE_SIZE = 12;
+// Tracklists fetched at once while the result cards fill in (the server rate-limits Discogs anyway)
+const RELEASE_DETAIL_CONCURRENCY = 2;
+// A side set "fits" the recording when its total length is within this fraction of the music length
+const SIDE_FIT_TOLERANCE = 0.15;
+// Candidates this close (as a fraction) to the best are ties; the full album / a whole disc wins them
+const SIDE_FIT_TIE = 0.01;
+
+/** A search result card; tracks: null = tracklist not loaded yet (filled in progressively). */
+function newSearchCard(result) {
+    return { ...result, tracks: result.tracks ?? null, detailStatus: 'pending', opening: false };
+}
 
 function vinylApp() {
     return {
@@ -71,6 +84,11 @@ function vinylApp() {
         // Discogs Search
         searchQuery: '',
         searchResults: [],
+        onlyWithLengths: false,   // Result filter: hide releases without track lengths
+        detailsSettled: false,    // True once every result's tracklist load finished or failed
+        searchSeq: 0,             // Bumped by every search and file switch: stale replies are dropped
+        _detailInflight: {},      // `${searchSeq}:${releaseId}` -> promise of a tracklist load in progress
+        _pendingPickId: null,     // Card clicked while its tracklist loads; a later pick clears it
         selectedRelease: null,
         trackMappingReversed: false,
         customMapping: [],
@@ -232,6 +250,10 @@ function vinylApp() {
             console.log('WebSocket message:', data);
 
             switch (data.type) {
+                case 'scan_complete':
+                    this.applyScan(data.file_id, data);
+                    break;
+
                 case 'progress':
                     if (data.file_id === this.currentFileId) {
                         this.processingProgress = data.progress;
@@ -628,7 +650,8 @@ function vinylApp() {
                             data.files.forEach(file => {
                                 this.uploadedFiles.push({
                                     ...file,
-                                    status: 'uploaded'
+                                    status: 'uploaded',
+                                    musicDuration: null   // Filled by the background scan (scan_complete / /api/scan)
                                 });
                             });
 
@@ -833,6 +856,7 @@ function vinylApp() {
         restoreEdits(snapshot) {
             this.detectedTracks = snapshot.detectedTracks.map(track => ({ ...track }));
             this.selectedRelease = snapshot.selectedRelease;
+            if (snapshot.selectedRelease) this._pendingPickId = null;   // a card still loading must not replace it
             this.trackCountMismatch = snapshot.trackCountMismatch;
             this.trackMappingReversed = snapshot.trackMappingReversed;
             this.customMapping = [...snapshot.customMapping];
@@ -856,19 +880,47 @@ function vinylApp() {
         restoreSearch(saved) {
             this.searchResults = saved.results;
             this.searchQuery = saved.query;
+            // The loaders of the restored cards stopped when their search was superseded
+            // (removing the file bumped searchSeq): fill in the tracklists still missing.
+            const seq = ++this.searchSeq;
+            const missing = this.searchResults.filter(r => !r.tracks).map(r => r.id);
+            if (missing.length) {
+                this.detailsSettled = false;
+                this.searchResults.forEach(r => { if (!r.tracks) r.detailStatus = 'pending'; });
+                this.loadAllReleaseDetails(seq, missing);
+            } else {
+                this.detailsSettled = true;
+            }
         },
 
         /**
          * Select a file from the queue
          */
         selectFile(fileId) {
+            // Already open: everything below would throw away its splits and release, then search again.
+            if (fileId === this.currentFileId) return;
+            // Detection writes into the open recording: switching mid-way would hand it
+            // the new file's tracks (a release pick starts detection by itself).
+            if (this.analyzing) {
+                this.notify('Wait for track detection to finish before switching recordings.', { type: 'warning', timeout: 5000 });
+                return;
+            }
             this.currentFileId = fileId;
             this.currentFile = this.uploadedFiles.find(f => f.id === fileId);
+            if (this.currentFile && !(this.currentFile.musicDuration > 0)) {
+                this.fetchScan(fileId);
+            }
             this.detectedTracks = [];
-            this.searchResults = [];
+            this.resetSearchResults();
             this.selectedRelease = null;
+            this._pendingPickId = null;
             this.trackCountMismatch = false;
             this.searchNotice = '';
+            // A search of the previous file is superseded: its reply (and its tracklist
+            // loads) are dropped by the sequence check, and its loading flag must not
+            // block this file's search.
+            this.searchLoading = false;
+            this.searchSeq++;
             this.successMessage = '';
             this.processingProgress = 0;
             this.processingMessage = '';
@@ -877,6 +929,9 @@ function vinylApp() {
 
             if (this.currentFile) {
                 this.searchQuery = this.cleanFilename(this.currentFile.filename);
+                // Discogs first: start looking right away (not awaited, the UI stays usable).
+                // Without a token there is nothing to search; "Skip Discogs" still works.
+                if (this.discogsConfigured && this.searchQuery.trim()) this.searchDiscogs();
             }
         },
 
@@ -915,7 +970,9 @@ function vinylApp() {
                 this.currentFileId = null;
                 this.currentFile = null;
                 this.clearEditState();
-                this.searchResults = [];
+                this.resetSearchResults();
+                this.searchLoading = false;
+                this.searchSeq++;   // drop the replies of a search still running for this file
             }
 
             const removedMessage = file.in_place
@@ -1045,15 +1102,29 @@ function vinylApp() {
                     file.status = 'analyzed';
                 }
 
-                await this.initWaveform();
+                // A release may have been picked before detection ran (Discogs first):
+                // its mapping and track-count check need the tracks that just arrived.
+                // The release itself and the search results are left alone.
+                if (this.selectedRelease) {
+                    this.resetMappingToDetected();
+                }
 
-                if (this.searchQuery) {
-                    await this.searchDiscogs();
+                if (this.detectedTracks.length === 0) {
+                    // No waveform either: initWaveform keeps an existing one, so the retry's
+                    // tracks would get no regions.
+                    this.notify('No tracks were found in this recording. Try another release or adjust the silence settings.', { type: 'warning' });
+                } else {
+                    await this.initWaveform();
                 }
             } catch (error) {
                 console.error('Analysis failed:', error);
                 this.notifyError('Analysis failed', error);
                 this.processingMessage = '';
+                // With a release picked, show the count mismatch (and its Smart Rescan /
+                // duration-based options) instead of an empty mapping.
+                if (this.selectedRelease) {
+                    this.resetMappingToDetected();
+                }
             } finally {
                 this.analyzing = false;
             }
@@ -1061,17 +1132,16 @@ function vinylApp() {
 
         /**
          * Re-analyze file with current settings.  Runs immediately; an Undo
-         * toast restores the previous boundaries, release and search results.
+         * toast restores the previous boundaries and release.
          */
         async reanalyzeFile() {
             if (!this.currentFileId || this.analyzing) return;
 
             const fileId = this.currentFileId;
             const snapshot = this.snapshotEdits();
-            const search = this.snapshotSearch();   // the re-analysis searches again; only its Undo puts these back
 
+            // The Discogs search is independent of detection: its results stay.
             this.clearEditState();
-            this.searchResults = [];
             this.currentPlayingTrack = null;
 
             if (this.$refs.audioPlayer) {
@@ -1086,25 +1156,23 @@ function vinylApp() {
             if (this.detectedTracks.length === 0 && snapshot.detectedTracks.length > 0) {
                 // Analysis failed (analyzeFile already showed the error). Nobody
                 // confirmed the reset, so put the previous boundaries back.
-                await this.restoreSnapshotWithWaveform(snapshot, search);
+                await this.restoreSnapshotWithWaveform(snapshot);
                 return;
             }
             if (this.detectedTracks.length > 0) {
                 this.notifyUndo('Re-analyzed. Boundaries and release were reset.',
-                    () => this.restoreSnapshotWithWaveform(snapshot, search), { fileId });
+                    () => this.restoreSnapshotWithWaveform(snapshot), { fileId });
             }
         },
 
         /**
          * Undo of a flow that replaced the whole analysis (re-analyze,
          * duration-based splitting); its Undo toast checks undoBlockedReason first.
-         * `search` (a snapshotSearch() copy) is put back too when the flow cleared it.
          */
-        async restoreSnapshotWithWaveform(snapshot, search = null) {
+        async restoreSnapshotWithWaveform(snapshot) {
             this.currentPlayingTrack = null;
             this.destroyWaveform();
             this.restoreEdits(snapshot);   // regions are redrawn by initWaveform below
-            if (search) this.restoreSearch(search);
             await this.$nextTick();
             await this.initWaveform();
         },
@@ -1162,10 +1230,7 @@ function vinylApp() {
 
                 // Boundary edits from the old analysis no longer apply.
                 if (this.selectedRelease) {
-                    this.trackMappingReversed = false;
-                    this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
-                    this.trackCountMismatch =
-                        this.detectedTracks.length !== this.selectedRelease.tracks.length;
+                    this.resetMappingToDetected();
                 }
 
                 this.destroyWaveform();
@@ -1184,7 +1249,10 @@ function vinylApp() {
         },
 
         /**
-         * Search Discogs for releases
+         * Search Discogs for releases from the query box.  Safe to call twice: while a
+         * search is running the second call is ignored.  Every search takes a new
+         * sequence number, so replies (and tracklist loads) of a superseded search --
+         * another file was selected meanwhile -- are dropped instead of shown.
          */
         async searchDiscogs() {
             if (this.searchLoading) return;
@@ -1194,8 +1262,9 @@ function vinylApp() {
             }
 
             this.searchLoading = true;
-            this.searchResults = [];
+            this.resetSearchResults();
             this.searchNotice = '';
+            const seq = ++this.searchSeq;
 
             try {
                 const response = await fetch('/api/search', {
@@ -1203,10 +1272,11 @@ function vinylApp() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         query: this.searchQuery,
-                        max_results: 12
+                        max_results: SEARCH_PAGE_SIZE
                     })
                 });
                 const data = await response.json();
+                if (seq !== this.searchSeq) return;   // a file switch superseded this search
 
                 // Surface the server's error (missing token, network down)
                 // instead of corrupting searchResults with undefined.
@@ -1214,37 +1284,475 @@ function vinylApp() {
                     throw new Error(data.detail || 'Search failed');
                 }
 
-                this.searchResults = data.results;
+                this.searchResults = data.results.map(newSearchCard);
 
                 if (this.searchResults.length === 0) {
                     this.searchNotice = 'No results found. Try a different search query.';
+                } else {
+                    // Not awaited: the cards are already visible.
+                    this.loadAllReleaseDetails(seq);
                 }
             } catch (error) {
+                if (seq !== this.searchSeq) return;
                 console.error('Search failed:', error);
-                this.searchResults = [];
+                this.resetSearchResults();
                 this.searchNotice = 'Search failed: ' + error.message;
             } finally {
-                this.searchLoading = false;
+                if (seq === this.searchSeq) {
+                    this.searchLoading = false;
+                }
+            }
+        },
+
+        /** Forget the shown results (not the query box) */
+        resetSearchResults() {
+            this.searchResults = [];
+            this.detailsSettled = false;
+        },
+
+        /**
+         * Fetch full tracklists for the given results (default: all shown) in display
+         * order, RELEASE_DETAIL_CONCURRENCY at a time.  Stops as soon as searchSeq moves
+         * on (new search or file switch).
+         */
+        async loadAllReleaseDetails(seq, ids = this.searchResults.map(r => r.id)) {
+            let next = 0;
+            const worker = async () => {
+                while (seq === this.searchSeq && next < ids.length) {
+                    await this.loadReleaseDetails(ids[next++], seq);
+                }
+            };
+            await Promise.all(Array.from({ length: Math.min(RELEASE_DETAIL_CONCURRENCY, ids.length) }, worker));
+            if (seq === this.searchSeq && !this.searchResults.some(r => r.detailStatus === 'pending')) {
+                this.detailsSettled = true;
             }
         },
 
         /**
-         * Select a release from search results
+         * Fetch one release's full details and merge them into its result card.
+         * Shares an in-flight request (card click vs. background loader) of the same
+         * search; resolves true when the tracklist is loaded.
+         */
+        loadReleaseDetails(id, seq = this.searchSeq) {
+            const existing = this.searchResults.find(r => r.id === id);
+            if (existing && existing.tracks) return Promise.resolve(true);
+            // Keyed by search too: a load left over from the previous file's search must
+            // not be handed to this one (its reply is dropped, the card would stay pending).
+            const key = `${seq}:${id}`;
+            if (this._detailInflight[key]) return this._detailInflight[key];
+
+            const promise = (async () => {
+                try {
+                    const response = await fetch(`/api/release/${id}`);
+                    const data = await response.json();
+                    if (!response.ok || !Array.isArray(data.tracks)) {
+                        throw new Error(data.detail || 'Release fetch failed');
+                    }
+                    if (seq !== this.searchSeq) return false;
+                    const result = this.searchResults.find(r => r.id === id);
+                    if (!result) return false;
+                    Object.assign(result, { ...data, cover_url: data.cover_url || result.cover_url, detailStatus: 'loaded' });
+                    return true;
+                } catch (error) {
+                    if (seq === this.searchSeq) {
+                        const result = this.searchResults.find(r => r.id === id);
+                        if (result) result.detailStatus = 'error';
+                    }
+                    console.error('Release details failed:', error);
+                    return false;
+                } finally {
+                    delete this._detailInflight[key];
+                }
+            })();
+            this._detailInflight[key] = promise;
+            return promise;
+        },
+
+        /**
+         * Card click: make sure the tracklist is loaded, then select.  A card whose
+         * load failed is retried by the click; the release is only ever selected
+         * with its tracks.  The latest click wins: a later pick, Change release or a
+         * file switch while this card loads clears _pendingPickId, and its reply then
+         * only fills the card.
+         */
+        async chooseResult(result) {
+            if (result.opening) return;
+            if (result.tracks) {
+                this.selectRelease(result);
+                return;
+            }
+            const seq = this.searchSeq;
+            this._pendingPickId = result.id;
+            result.opening = true;
+            try {
+                const ok = await this.loadReleaseDetails(result.id, seq);
+                if (ok && seq === this.searchSeq && this._pendingPickId === result.id) {
+                    const fresh = this.searchResults.find(r => r.id === result.id);
+                    if (fresh) this.selectRelease(fresh);
+                }
+            } finally {
+                if (this._pendingPickId === result.id) this._pendingPickId = null;
+                result.opening = false;
+            }
+        },
+
+        /**
+         * Select a release from search results.  Only a release whose tracklist has
+         * loaded can be selected (everything downstream reads release.tracks).
+         * Detection runs after the pick when there are no tracks yet; analyzeFile
+         * builds the mapping once they arrive.
          */
         selectRelease(release) {
+            if (!Array.isArray(release?.tracks)) return;
+            this._pendingPickId = null;   // this pick replaces any card still loading
             this.selectedRelease = release;
+            this.resetMappingToDetected();
+            if (this.detectedTracks.length === 0) {
+                this.analyzeFile();
+            }
+        },
+
+        /**
+         * Map detected track i to release track i, un-reverse, and recompute the
+         * track-count warning.  Run whenever the release or the detected tracks change.
+         */
+        resetMappingToDetected() {
             this.trackMappingReversed = false;
             this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
-
             const activeTrackCount = this.detectedTracks.filter(t => !t.ignored).length;
-            const discogsTrackCount = release.tracks.length;
+            this.trackCountMismatch = !!this.selectedRelease && activeTrackCount !== this.selectedRelease.tracks.length;
+        },
 
-            // Check for track count mismatch
-            if (activeTrackCount !== discogsTrackCount) {
-                this.trackCountMismatch = true;
-            } else {
-                this.trackCountMismatch = false;
+        /**
+         * The count warning, except while the first detection runs: a pick starts it, and
+         * "0 detected" is no finding yet (its duration-splitting button would race it too).
+         * With tracks present it stays up during a Smart Rescan, whose spinner lives in it.
+         */
+        get showTrackCountMismatch() {
+            return this.trackCountMismatch && (this.detectedTracks.length > 0 || !this.analyzing);
+        },
+
+        /**
+         * Drop the selected release but keep the search results and the current
+         * detection/waveform so another release can be picked.
+         */
+        changeRelease() {
+            this.selectedRelease = null;
+            this._pendingPickId = null;   // a card still loading must not bring a release back
+            this.trackMappingReversed = false;
+            this.trackCountMismatch = false;
+            this.customMapping = [];
+        },
+
+        /**
+         * Back to the search card (tracks exist, no release chosen); searches only if it has no results.
+         * Without a token the search card is hidden and a search would only fail: open the setup instead.
+         */
+        tryDiscogsAgain() {
+            if (this.analyzing) return;
+            if (!this.discogsConfigured) {
+                this.setupRequired = true;
+                return;
             }
+            if (!this.searchQuery.trim()) this.searchQuery = this.cleanFilename(this.currentFile?.filename || '');
+            if (this.searchResults.length === 0) this.searchDiscogs();
+            this.$nextTick(() => {
+                if (typeof document === 'undefined') return;
+                document.getElementById('discogs-search')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                document.getElementById('discogs-query')?.focus({ preventScroll: true });
+            });
+        },
+
+        // ---- Music span (for the result cards' fit indicator) ------------
+
+        /** Record the music span (recording minus lead-in/run-out) of a file */
+        applyScan(fileId, scan) {
+            const file = this.uploadedFiles.find(f => f.id === fileId);
+            if (!file || !(scan.music_end > scan.music_start)) return;
+            file.musicDuration = scan.music_end - scan.music_start;
+        },
+
+        /**
+         * Ask the server whether the background scan finished (it may have completed
+         * before this file was selected / the WebSocket connected).
+         */
+        async fetchScan(fileId) {
+            try {
+                const response = await fetch(`/api/scan/${fileId}`);
+                if (!response.ok) return;
+                const data = await response.json();
+                if (data.ready) this.applyScan(fileId, data);
+            } catch (error) {
+                console.warn('Scan status unavailable:', error);
+            }
+        },
+
+        // ---- Release cards: lengths, sides and fit -----------------------
+
+        /**
+         * Parse a Discogs duration string ("5:24", "1:02:03") into seconds.
+         * Returns null when missing/unparseable/zero.
+         */
+        parseTrackDuration(str) {
+            if (!str || typeof str !== 'string') return null;
+            const parts = str.trim().split(':');
+            if (parts.length < 2 || parts.length > 3) return null;
+            if (!parts.every(p => /^\d+$/.test(p))) return null;
+            const nums = parts.map(p => parseInt(p, 10));
+            const secs = nums.length === 3
+                ? nums[0] * 3600 + nums[1] * 60 + nums[2]
+                : nums[0] * 60 + nums[1];
+            return secs > 0 ? secs : null;
+        },
+
+        /**
+         * How many of a release's tracks carry a usable length.
+         * status: 'full' | 'partial' | 'none'
+         */
+        releaseDurationInfo(release) {
+            const tracks = release?.tracks || [];
+            const total = tracks.length;
+            const withDuration = tracks.filter(t => this.parseTrackDuration(t.duration) !== null).length;
+            let status = 'none';
+            if (total > 0 && withDuration === total) status = 'full';
+            else if (withDuration > 0) status = 'partial';
+            return { total, withDuration, status };
+        },
+
+        /**
+         * Group a release's tracks by vinyl side (leading letters of the
+         * position, e.g. "A1" -> "A").  Tracks without a letter prefix
+         * ("1", "2") share a single group with side ''.  Groups keep the
+         * order in which they first appear; every track carries its
+         * original index in release.tracks as releaseIdx.
+         * totalSeconds is null unless every track in the group has a length.
+         */
+        releaseSides(release) {
+            const groups = [];
+            const bySide = {};
+            (release?.tracks || []).forEach((t, releaseIdx) => {
+                const m = /^([A-Za-z]+)/.exec(String(t.position || '').trim());
+                const side = m ? m[1].toUpperCase() : '';
+                if (!bySide[side]) {
+                    bySide[side] = { side, tracks: [], totalSeconds: 0 };
+                    groups.push(bySide[side]);
+                }
+                const g = bySide[side];
+                g.tracks.push({ ...t, releaseIdx });
+                const secs = this.parseTrackDuration(t.duration);
+                g.totalSeconds = (g.totalSeconds !== null && secs !== null) ? g.totalSeconds + secs : null;
+            });
+            return groups;
+        },
+
+        /** Short "A·4  B·5" summary of a release's sides */
+        sidesSummary(release) {
+            return this.releaseSides(release)
+                .map(g => `${this.sideLabel(g.side)}·${g.tracks.length}`)
+                .join('  ');
+        },
+
+        /** Display label for a side key */
+        sideLabel(side) {
+            return side === '' ? 'All' : side;
+        },
+
+        /**
+         * Search results after applying the "only with track lengths" filter.
+         * Discogs relevance order is preserved until every tracklist is in; then
+         * releases that fit the recording come first (stable within each group).
+         */
+        get filteredResults() {
+            // Unloaded (tracks null) and failed results stay visible: the
+            // filter only hides releases KNOWN to lack full lengths.
+            const shown = this.onlyWithLengths
+                ? this.searchResults.filter(r => !r.tracks || this.releaseDurationInfo(r).status === 'full')
+                : this.searchResults;
+            if (!this.detailsSettled) return shown;
+            return [
+                ...shown.filter(r => this.cardFit(r)?.state === 'fit'),
+                ...shown.filter(r => this.cardFit(r)?.state !== 'fit')
+            ];
+        },
+
+        /**
+         * Scope presets for a release's sides: "Full album" plus one per disc
+         * (sides pair up in order: A/B = disc 1, C/D = disc 2 ...).
+         * Disc presets only exist when the release has more than 2 sides.
+         */
+        presetsFor(groups) {
+            if (groups.length <= 1) return [];
+            const sum = gs => gs.every(g => g.totalSeconds !== null)
+                ? gs.reduce((t, g) => t + g.totalSeconds, 0) : null;
+            const make = (label, gs) => ({
+                label,
+                sides: gs.map(g => g.side),
+                trackCount: gs.reduce((t, g) => t + g.tracks.length, 0),
+                totalSeconds: sum(gs)
+            });
+            const presets = [make('Full album', groups)];
+            if (groups.length > 2) {
+                for (let i = 0; i < groups.length; i += 2) {
+                    const gs = groups.slice(i, i + 2);
+                    presets.push(make(`Disc ${i / 2 + 1} (${gs.map(g => g.side).join('/')})`, gs));
+                }
+            }
+            return presets;
+        },
+
+        /**
+         * Human label for a set of sides, matching the scope presets
+         * ("Full album", "Disc 2 (C/D)"); falls back to "Side A" / "Sides A+B".
+         */
+        scopeLabel(release, sides) {
+            const groups = this.releaseSides(release);
+            if (groups.length <= 1 || sides.length === groups.length) return 'Full album';
+            const preset = this.presetsFor(groups).find(p =>
+                p.sides.length === sides.length && p.sides.every(k => sides.includes(k)));
+            if (preset) return preset.label;
+            const names = sides.map(k => this.sideLabel(k));
+            return names.length === 1 ? `Side ${names[0]}` : `Sides ${names.join('+')}`;
+        },
+
+        /**
+         * How well a loaded release fits the current file's music length.
+         * Returns null when unknown (tracks not loaded, no lengths, no file
+         * length yet), else
+         *   { state: 'fit', label, scopeSeconds, fileSeconds, usesMusic, diff }
+         *   { state: 'nofit', fullSeconds, fileSeconds, usesMusic }
+         */
+        cardFit(release) {
+            if (!release?.tracks) return null;
+            const music = this.currentFile?.musicDuration;
+            const usesMusic = music > 0;
+            const fileSeconds = usesMusic ? music : this.currentFile?.duration;
+            if (!(fileSeconds > 0)) return null;
+
+            const groups = this.releaseSides(release);
+            if (!groups.length) return null;
+            const sumOf = sides => {
+                const gs = groups.filter(g => sides.includes(g.side));
+                return gs.every(g => g.totalSeconds !== null)
+                    ? gs.reduce((t, g) => t + g.totalSeconds, 0) : null;
+            };
+
+            const fullSeconds = sumOf(groups.map(g => g.side));
+            // suggestSides() has no candidates for single-sided releases.
+            const suggestion = groups.length <= 1
+                ? { sides: groups.map(g => g.side), matched: fullSeconds !== null && Math.abs(fullSeconds - fileSeconds) / fileSeconds <= SIDE_FIT_TOLERANCE }
+                : this.suggestSides(release, fileSeconds);
+
+            if (suggestion.matched) {
+                const scopeSeconds = sumOf(suggestion.sides);
+                if (scopeSeconds !== null) {
+                    return {
+                        state: 'fit',
+                        label: this.scopeLabel(release, suggestion.sides),
+                        scopeSeconds,
+                        fileSeconds,
+                        usesMusic,
+                        diff: Math.abs(scopeSeconds - fileSeconds) / fileSeconds
+                    };
+                }
+            }
+            if (fullSeconds === null) return null;
+            return { state: 'nofit', fullSeconds, fileSeconds, usesMusic };
+        },
+
+        /** Card text for a fit result ('' when unknown) */
+        fitText(fit) {
+            if (!fit) return '';
+            const what = fit.usesMusic ? 'music' : 'file';
+            if (fit.state === 'fit') {
+                return `${fit.label} ${this.formatDuration(fit.scopeSeconds)} · your ${what} ${this.formatDuration(fit.fileSeconds)} ✓`;
+            }
+            return `Lengths don't fit this file (full album ${this.formatDuration(fit.fullSeconds)} vs ${what} ${this.formatDuration(fit.fileSeconds)})`;
+        },
+
+        /** Id of the single closest fit, once all details are in (else null) */
+        get bestFitId() {
+            if (!this.detailsSettled) return null;
+            let best = null;
+            for (const r of this.searchResults) {
+                const fit = this.cardFit(r);
+                if (fit?.state === 'fit' && (best === null || fit.diff < best.diff)) {
+                    best = { id: r.id, diff: fit.diff };
+                }
+            }
+            return best ? best.id : null;
+        },
+
+        /**
+         * Decide which side(s) the recording most likely contains.
+         *
+         * Candidates are every contiguous run of sides in release order
+         * (A, B, A-B, B-C, A-D ...) whose total length is fully known.  The
+         * run closest to the recording length wins if within SIDE_FIT_TOLERANCE.
+         * Near-ties (within SIDE_FIT_TIE) prefer the full album, then a
+         * disc-aligned run (even start index, even length), then anything else.
+         *
+         * usedSides lists sides already claimed for the same release by other
+         * recordings; overlapping runs are skipped unless nothing else is
+         * left.  With no length match, the default is the first disc-aligned
+         * run of unused sides when some are used, otherwise the full album.
+         *
+         * Returns { sides: [keys], matched: bool, reason: 'length'|'default'|'single' }.
+         */
+        suggestSides(release, recordingSeconds, usedSides = []) {
+            const groups = this.releaseSides(release);
+            const keys = groups.map(g => g.side);
+            const n = groups.length;
+            if (n <= 1) {
+                return { sides: keys, matched: false, reason: 'single' };
+            }
+
+            const runs = [];
+            for (let i = 0; i < n; i++) {
+                let total = 0;
+                for (let j = i; j < n; j++) {
+                    total = (total !== null && groups[j].totalSeconds !== null)
+                        ? total + groups[j].totalSeconds : null;
+                    const len = j - i + 1;
+                    runs.push({
+                        sides: keys.slice(i, j + 1),
+                        total,
+                        rank: len === n ? 0 : (i % 2 === 0 && len % 2 === 0 ? 1 : 2)
+                    });
+                }
+            }
+
+            const used = new Set(usedSides);
+            const free = runs.filter(r => !r.sides.some(k => used.has(k)));
+            const pool = free.length ? free : runs;
+
+            if (recordingSeconds > 0) {
+                const scored = pool
+                    .filter(r => r.total !== null)
+                    .map(r => ({ ...r, diff: Math.abs(r.total - recordingSeconds) / recordingSeconds }));
+                if (scored.length) {
+                    const bestDiff = Math.min(...scored.map(r => r.diff));
+                    if (bestDiff <= SIDE_FIT_TOLERANCE) {
+                        const near = scored
+                            .filter(r => r.diff <= bestDiff + SIDE_FIT_TIE)
+                            .sort((x, y) => x.rank - y.rank || x.diff - y.diff);
+                        return { sides: near[0].sides, matched: true, reason: 'length' };
+                    }
+                }
+            }
+
+            // No length match: prefer the first disc of still-unused sides.
+            if (used.size > 0 && free.length) {
+                const aligned = free.find(r => r.rank === 1 && r.sides.length === 2);
+                if (aligned) {
+                    return { sides: aligned.sides, matched: false, reason: 'default' };
+                }
+                const firstFree = keys.find(k => !used.has(k));
+                if (firstFree !== undefined) {
+                    return { sides: [firstFree], matched: false, reason: 'default' };
+                }
+            }
+
+            return { sides: keys, matched: false, reason: 'default' };
         },
 
         /**
@@ -1325,7 +1833,12 @@ function vinylApp() {
                     file.status = 'analyzed (duration-based)';
                 }
 
-                // Reinitialize waveform
+                // The mapping and count check follow the new tracks. Reachable with no tracks at all
+                // (a pick whose detection found none), when every one would export as "Unknown".
+                this.resetMappingToDetected();
+
+                // initWaveform keeps an existing waveform, and with it the old regions
+                this.destroyWaveform();
                 await this.initWaveform();
 
                 this.notifyUndo(`Created ${this.detectedTracks.length} tracks from the Discogs lengths. Review the boundaries before exporting.`,
@@ -2010,7 +2523,9 @@ function vinylApp() {
             this.successMessage = '';
             this.isProcessing = false;
             this.detectedTracks = [];
-            this.searchResults = [];
+            this.resetSearchResults();
+            this.searchLoading = false;
+            this.searchSeq++;
             this.selectedRelease = null;
             this.searchQuery = '';
             this.processingProgress = 0;

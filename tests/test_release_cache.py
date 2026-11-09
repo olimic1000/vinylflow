@@ -36,16 +36,12 @@ def _raw_release(rid):
 
 
 class FakeClient:
-    """Stands in for discogs_client.Client: search hits expose only ``.id``;
-    ``release`` raises for unknown ids, as a 404 from Discogs would."""
+    """Stands in for discogs_client.Client: ``release`` raises for unknown ids,
+    as a 404 from Discogs would."""
 
-    def __init__(self, releases=None, hits=()):
+    def __init__(self, releases=None):
         self.releases = releases or {}
-        self.hits = [_Obj(id=i) for i in hits]
         self.release_calls = []
-
-    def search(self, query, **kw):
-        return list(self.hits)
 
     def release(self, rid):
         self.release_calls.append(rid)
@@ -85,21 +81,6 @@ def test_failed_fetch_not_cached():
     handler = make(FakeClient())
     assert handler.get_release_by_id(9) is None
     assert len(handler._release_cache) == 0
-
-
-def test_search_fills_the_cache_so_export_does_not_refetch():
-    client = FakeClient(releases={1: _raw_release(1), 2: _raw_release(2)}, hits=[1, 2])
-    handler = make(client)
-    found = handler.search_releases("q", max_results=5)
-    assert [release.id for _, release in found] == [1, 2]
-    handler.get_release_by_id(2)   # what the export pipeline does
-    assert client.release_calls == [1, 2]
-
-
-def test_search_skips_a_release_that_fails_to_load():
-    client = FakeClient(releases={2: _raw_release(2)}, hits=[1, 2])
-    found = make(client).search_releases("q", max_results=5)
-    assert [(index, release.id) for index, release in found] == [(2, 2)]
 
 
 def test_reinitialize_clears_the_cache():

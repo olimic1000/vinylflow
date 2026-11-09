@@ -22,7 +22,7 @@ Digitizing a vinyl record manually takes **20–30 minutes per album**: record i
 
 ## The Solution
 
-VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tracks, pick the album from Discogs, and hit process. Done.
+VinylFlow does it in **3 minutes**. Upload your recording, pick the album from the Discogs results it finds for you, check the detected tracks, and hit process. Done.
 
 ---
 
@@ -30,7 +30,7 @@ VinylFlow does it in **3 minutes**. Upload your recording, let it detect the tra
 
 - **Automatic silence detection** — intelligently finds track boundaries in your recording
 - **Duration-based splitting** — fallback for seamlessly mixed tracks with no gaps
-- **Discogs integration** — visual search with album artwork, metadata, and track listings
+- **Discogs first** — selecting a recording searches Discogs from its file name right away; result cards show artwork, track count, whether Discogs lists track lengths, and how well the lengths fit your recording
 - **Multiple output formats** — FLAC (lossless), MP3 (320kbps), or AIFF (lossless)
 - **Multiple input formats** — WAV and AIFF recordings supported
 - **Import from a folder** — large recordings are read in place from a read-only folder instead of being uploaded through the browser; see [Import from a folder](#import-from-a-folder-no-upload)
@@ -229,8 +229,8 @@ DEFAULT_OUTPUT_DIR=~/Music/VinylFlow
 ## How It Works
 
 1. **Add** — import a WAV or AIFF recording from the import folder, or drag and drop it to upload
-2. **Analyze** — VinylFlow detects track boundaries using silence detection
-3. **Search** — find your album on Discogs with visual artwork results
+2. **Pick the release** — VinylFlow searches Discogs from the file name as soon as you select the recording. Result cards fill in their track lists as they load; releases with complete track lengths are marked, and the one whose lengths best fit your recording is flagged "Best fit". Edit the search box to look again. The chosen release stays in a card above the waveform (cover art, a link to Discogs, **Change release**)
+3. **Detect** — picking a release starts track detection by silence. No Discogs token, or no good match? Use **Skip Discogs — detect tracks by silence only**; **Try Discogs again** takes you back to the search once tracks exist
 4. **Map** — match detected tracks to Discogs track listings
 5. **Choose format** — FLAC, MP3, or AIFF output
 6. **Process** — tracks are split, converted, tagged, and saved with cover art
@@ -338,7 +338,7 @@ Check if port 8000 is in use: `lsof -i :8000` (Mac/Linux) or `netstat -ano | fin
 Make sure the `output/` directory exists and has write permissions: `chmod -R 755 ./output`
 
 **Discogs search returns no results?**
-Your API token might be invalid or revoked. Click the Settings (⚙️) button and update your token, or generate a new one at [discogs.com/settings/developers](https://www.discogs.com/settings/developers)
+Edit the search box (the file name is only a starting point) and press Enter. If it keeps failing, your API token might be invalid or revoked. Click the Settings (⚙️) button and update your token, or generate a new one at [discogs.com/settings/developers](https://www.discogs.com/settings/developers)
 
 **Tracks not splitting correctly?**
 Try adjusting silence detection in Settings (⚙️), or use duration-based splitting after selecting a Discogs release.
