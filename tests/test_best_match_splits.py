@@ -96,7 +96,8 @@ def test_missing_lengths_cost_nothing():
     db, spans, ms, me = album(lengths)
     g = place(db, (ms, me), [60.0, None, 70.0, None, 55.0])
     assert [round(b.gap.start) for b in g.boundaries] == [round(s[0]) for s in spans]
-    assert place(db, (ms, me), [None] * 5) is None  # nothing known: nothing to align
+    even = place(db, (ms, me), [None] * 5)  # nothing known: even split between the clear gaps
+    assert even.model == "align-even" and [round(b.gap.start) for b in even.boundaries] == [round(s[0]) for s in spans]
 
 
 def test_segue_without_a_gap_is_cut_near_the_predicted_point_at_its_dip():

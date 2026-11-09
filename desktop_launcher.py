@@ -67,6 +67,29 @@ class DesktopApi:
         except Exception:
             return None
 
+    def choose_import_files(self) -> list[str]:
+        """Native multi-select open dialog; grants the chosen paths to
+        POST /api/import (in-process, so web pages can't forge a grant)."""
+        if webview is None:
+            return []
+        try:
+            from backend.api import grant_import_paths
+
+            dialog_type = webview.OPEN_DIALOG
+            if hasattr(webview, "FileDialog") and hasattr(webview.FileDialog, "OPEN"):
+                dialog_type = webview.FileDialog.OPEN
+
+            result = webview.windows[0].create_file_dialog(
+                dialog_type,
+                allow_multiple=True,
+                file_types=("Audio files (*.wav;*.aiff;*.aif)",),
+            )
+            if not result:
+                return []
+            return grant_import_paths(result)
+        except Exception:
+            return []
+
 
 def _macos_app_support_dir() -> Path:
     return Path.home() / "Library" / "Application Support" / APP_NAME
@@ -169,10 +192,13 @@ def configure_desktop_environment() -> tuple[str, int]:
     config_dir.mkdir(parents=True, exist_ok=True)
     upload_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
+    import_dir = Path.home() / "Music" / APP_NAME / "Incoming"
+    import_dir.mkdir(parents=True, exist_ok=True)
 
     os.environ.setdefault("VINYLFLOW_CONFIG_DIR", str(config_dir))
     os.environ.setdefault("VINYLFLOW_UPLOAD_DIR", str(upload_dir))
     os.environ.setdefault("DEFAULT_OUTPUT_DIR", str(output_dir))
+    os.environ.setdefault("VINYLFLOW_IMPORT_DIR", str(import_dir))
     os.environ.setdefault("HOST", "127.0.0.1")
     os.environ.setdefault("PORT", "8000")
     os.environ.setdefault("AUTO_OPEN_BROWSER", "0")

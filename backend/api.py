@@ -10,15 +10,16 @@ import os
 import uuid
 import shutil
 from pathlib import Path
+from stat import S_ISREG
 from subprocess import CalledProcessError
-from typing import List, Optional
+from typing import Annotated, List, Optional
 import asyncio
 import json
 from datetime import datetime, timedelta
 
 import logging
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from backend.security import SameOriginMiddleware
@@ -31,6 +32,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import import_folder
 from config import TRACK_NUMBERING_SCHEMES, Config
 from audio_processor import (
     AudioProcessor, ENVELOPE_FRAME_S, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg,
@@ -38,9 +40,11 @@ from audio_processor import (
 from track_boundaries import (
     MIN_ALIGNED_TRACK_S,
     boundaries_from_expected_durations,
+    find_side_changes,
     gaps_from_envelope,
     guided_by_alignment,
     music_span,
+    smooth_envelope,
 )
 from metadata_handler import MetadataHandler
 from backend.sessions import (
@@ -90,6 +94,7 @@ def _serialize_uploaded(session: Session) -> dict:
         "id": session.id,
         "filename": session.source_filename,
         "path": str(session.source_audio),
+        "in_place": session.in_place,
         "size": session.source_size,
         "duration": session.source_duration,
         "status": _session_status(session),
@@ -149,6 +154,28 @@ UPLOAD_DIR = Path(_upload_dir_env) if _upload_dir_env else Path(__file__).parent
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _require_source(session: Session) -> None:
+    """410 when an in-place source has vanished from the import folder, 409 when it changed
+    since its import: the session's caches and splits describe the old audio."""
+    if not session.in_place:
+        return
+    try:
+        stat = session.source_audio.stat()
+    except OSError:
+        stat = None
+    if stat is None or not S_ISREG(stat.st_mode):
+        raise HTTPException(
+            status_code=410,
+            detail=f"The source file is no longer in the import folder: {session.source_filename}",
+        )
+    if _source_changed(session, stat):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{session.source_filename} changed on disk since it was imported. "
+            "Import it again to split the new recording.",
+        )
+
+
 def get_session_path(file_id: str, filename: str = None) -> Path:
     """Get path within session directory."""
     session_dir = UPLOAD_DIR / file_id
@@ -200,34 +227,41 @@ def cleanup_session(file_id: str) -> bool:
         _forget_envelope(file_id)
 
 
+def reap_expired() -> None:
+    """One TTL pass: drop stale Sessions and orphan folders under UPLOAD_DIR.
+
+    Only session dirs are removed; an in-place source lives outside UPLOAD_DIR."""
+    ttl = config.temp_ttl_hours
+    cutoff = datetime.now() - timedelta(hours=ttl)
+
+    # Drop stale Sessions (the store skips PROCESSING entries),
+    # then remove their on-disk source folders.
+    for sid in session_store.reap_stale(ttl_hours=ttl):
+        _forget_envelope(sid)
+        session_dir = get_session_path(sid)
+        if session_dir.exists():
+            shutil.rmtree(session_dir, ignore_errors=True)
+
+    # Drop orphan dirs — folders with no live Session that have
+    # been on disk past the TTL (e.g. crash-recovery leftovers).
+    for entry in UPLOAD_DIR.iterdir():
+        if not entry.is_dir():
+            continue
+        if session_store.get(entry.name) is not None:
+            continue
+        try:
+            if datetime.fromtimestamp(entry.stat().st_mtime) < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+        except (FileNotFoundError, OSError):
+            pass
+
+
 # Background cleanup task
 async def cleanup_old_files():
     """Delete Sessions and source folders older than the configured TTL."""
     while True:
         try:
-            ttl = config.temp_ttl_hours
-            cutoff = datetime.now() - timedelta(hours=ttl)
-
-            # Drop stale Sessions (the store skips PROCESSING entries),
-            # then remove their on-disk source folders.
-            for sid in session_store.reap_stale(ttl_hours=ttl):
-                _forget_envelope(sid)
-                session_dir = get_session_path(sid)
-                if session_dir.exists():
-                    shutil.rmtree(session_dir, ignore_errors=True)
-
-            # Drop orphan dirs — folders with no live Session that have
-            # been on disk past the TTL (e.g. crash-recovery leftovers).
-            for entry in UPLOAD_DIR.iterdir():
-                if not entry.is_dir():
-                    continue
-                if session_store.get(entry.name) is not None:
-                    continue
-                try:
-                    if datetime.fromtimestamp(entry.stat().st_mtime) < cutoff:
-                        shutil.rmtree(entry, ignore_errors=True)
-                except (FileNotFoundError, OSError):
-                    pass
+            reap_expired()
 
         except Exception as e:
             print(f"Cleanup error: {e}")
@@ -500,6 +534,61 @@ async def get_envelope(session):
         raise  # the request itself was cancelled
 
 
+# Background prep runs for this many files at a time: "Select all" in the import folder must
+# not queue hundreds of decodes in the thread pool ahead of the endpoints' own work.
+PREP_CONCURRENCY = 2
+_prep_slots = asyncio.Semaphore(PREP_CONCURRENCY)
+
+
+async def _prepare_source(file_id: str, file_path: Path) -> None:
+    """MP3 preview and envelope for a new Session, once a slot is free. A recording opened
+    meanwhile starts its envelope on demand (start_envelope), which this then joins."""
+    async with _prep_slots:
+        if session_store.get(file_id) is None:
+            return  # removed while it waited
+        envelope = start_envelope(file_id, file_path)
+        await asyncio.gather(preconvert_to_mp3(file_id, file_path), envelope, return_exceptions=True)
+
+
+async def _register_source(
+    file_id: str, file_path: Path, filename: str, file_size: int, in_place: bool = False
+) -> dict:
+    """Measure a source file, create its Session and start the background
+    tasks (MP3 preview, envelope). Shared by upload and import; returns the
+    upload-entry wire shape. Derived files always go in the session dir."""
+    get_session_path(file_id).mkdir(parents=True, exist_ok=True)
+
+    # Get duration using audio processor (off the event loop)
+    try:
+        duration = await asyncio.to_thread(audio_processor.get_audio_duration, file_path)
+        if duration is None:
+            duration = 0
+    except Exception:
+        duration = 0
+
+    session_store.create(
+        session_id=file_id,
+        source_audio=file_path,
+        source_filename=filename,
+        source_duration=float(duration),
+        source_size=file_size,
+        in_place=in_place,
+        source_mtime=file_path.stat().st_mtime if in_place else None,
+    )
+
+    # MP3 conversion (fast waveform loading) and the energy envelope (music span + instant
+    # silence rescans) in the background, a few files at a time; the response doesn't wait.
+    asyncio.create_task(_prepare_source(file_id, file_path))
+
+    return {
+        "id": file_id,
+        "filename": filename,
+        "size": file_size,
+        "duration": duration,
+        "in_place": in_place,
+    }
+
+
 @app.post("/api/upload")
 async def upload_files(files: List[UploadFile] = File(...)):
     """
@@ -527,35 +616,165 @@ async def upload_files(files: List[UploadFile] = File(...)):
             while chunk := await file.read(1024 * 1024):
                 buffer.write(chunk)
 
-        # Get file metadata
-        file_size = file_path.stat().st_size
-
-        # Get duration using audio processor (off the event loop)
-        try:
-            duration = await asyncio.to_thread(audio_processor.get_audio_duration, file_path)
-            if duration is None:
-                duration = 0
-        except Exception:
-            duration = 0
-
-        session_store.create(
-            session_id=file_id,
-            source_audio=file_path,
-            source_filename=file.filename,
-            source_duration=float(duration),
-            source_size=file_size,
-        )
-
-        # Start MP3 conversion in background (for fast waveform loading)
-        asyncio.create_task(preconvert_to_mp3(file_id, file_path))
-        # ...and the energy envelope (music span + instant silence rescans).
-        start_envelope(file_id, file_path)
-
         uploaded.append(
-            {"id": file_id, "filename": file.filename, "size": file_size, "duration": duration}
+            await _register_source(file_id, file_path, file.filename, file_path.stat().st_size)
         )
 
     return {"files": uploaded}
+
+
+# --- Import from folder ------------------------------------------------------
+# Files already on disk become Sessions that reference the file in place.
+# The source is never copied into, or linked from, the session dir, so the
+# rmtree-based cleanup paths can't touch it.
+
+# Absolute paths granted by the desktop file dialog (in-process only; the
+# pywebview bridge is not reachable over HTTP).
+_granted_import_paths: set[Path] = set()
+
+
+def _vet_granted(real: Path) -> Path:
+    """Vet a dialog-granted path; the import folder's overlap rule covers ``names``, this ``paths``."""
+    if UPLOAD_DIR.resolve() in real.parents:
+        raise ValueError("File is inside the uploads folder")
+    return import_folder.vet_file(real)
+
+
+def grant_import_paths(paths) -> list[str]:
+    """Allow POST /api/import to take these absolute paths. Returns the
+    resolved paths that are regular supported files."""
+    granted: list[str] = []
+    for p in paths or []:
+        try:
+            real = _vet_granted(Path(str(p)).expanduser().resolve())
+        except (ValueError, OSError):
+            continue
+        _granted_import_paths.add(real)
+        granted.append(str(real))
+    return granted
+
+
+def _import_dir() -> Optional[Path]:
+    """The configured import folder, or None when import is disabled."""
+    value = config.import_dir
+    return Path(value).expanduser() if value else None
+
+
+def _import_state() -> tuple[Optional[Path], Optional[str]]:
+    """(import dir or None, error or None)."""
+    d = _import_dir()
+    if d is None:
+        return None, None
+    return d, import_folder.dir_error(d, UPLOAD_DIR)
+
+
+def _source_changed(session: Session, stat: os.stat_result) -> bool:
+    """True when the file ``stat`` describes is no longer the one this session's caches and
+    boundaries describe."""
+    return stat.st_size != session.source_size or stat.st_mtime != session.source_mtime
+
+
+def _session_for_source(real: Path) -> Optional[Session]:
+    """The session reading ``real`` in place, if any."""
+    for s in session_store.list():
+        try:
+            if s.source_audio.resolve() == real:
+                return s
+        except OSError:
+            continue
+    return None
+
+
+class ImportRequest(BaseModel):
+    names: Optional[List[str]] = None
+    paths: Optional[List[str]] = None
+
+
+@app.get("/api/import")
+async def list_import():
+    """List audio files in the import folder (read-only)."""
+    d, error = _import_state()
+    if d is None:
+        return {"enabled": False, "dir": None, "error": None, "files": []}
+    out = {"enabled": True, "dir": str(d), "error": error, "files": []}
+    if error:
+        return out
+    entries = await asyncio.to_thread(import_folder.list_audio, d)
+    for e in entries:
+        s = _session_for_source(e.pop("path"))
+        e["imported_id"] = s.id if s else None
+        e["imported_status"] = _session_status(s) if s else None
+    out["files"] = entries
+    return out
+
+
+@app.post("/api/import")
+async def import_files(req: ImportRequest):
+    """Create Sessions for files in the import folder (``names``) or files
+    granted by the desktop dialog (``paths``), without copying them."""
+    if req.names is None and req.paths is None:
+        raise HTTPException(status_code=400, detail="Provide names and/or paths")
+
+    d, error = _import_state()
+    imported: list[dict] = []
+    skipped: list[dict] = []
+
+    # (label, resolver) so both kinds share the vet + register logic.
+    candidates: list[tuple[str, Path]] = []
+    for name in req.names or []:
+        try:
+            if d is None:
+                raise ValueError("Import folder is not configured")
+            if error:
+                raise ValueError(error)
+            candidates.append((name, import_folder.resolve_name(d, name)))
+        except (ValueError, OSError) as e:
+            skipped.append({"name": str(name), "reason": str(e)})
+    for p in req.paths or []:
+        try:
+            real = Path(str(p)).expanduser().resolve()
+            if real not in _granted_import_paths:
+                raise ValueError("Path was not chosen in the file dialog")
+            candidates.append((str(p), _vet_granted(real)))
+        except (ValueError, OSError) as e:
+            skipped.append({"name": str(p), "reason": str(e)})
+
+    for label, real in candidates:
+        try:
+            if not import_folder.is_stable(real):
+                skipped.append({"name": label, "reason": "File is still being copied"})
+                continue
+            existing = _session_for_source(real)
+            replaces = None
+            if existing is not None:
+                if not _source_changed(existing, real.stat()):
+                    imported.append({
+                        "id": existing.id,
+                        "status": _session_status(existing),
+                        "filename": existing.source_filename,
+                        "size": existing.source_size,
+                        "duration": existing.source_duration,
+                        "in_place": True,
+                    })
+                    continue
+                if existing.state == SessionState.PROCESSING:
+                    skipped.append({"name": label, "reason": "File changed while it was exporting"})
+                    continue
+                # A re-recorded side under the same name: its caches and boundaries belong to
+                # the old audio, and the export would cut the new audio at the old splits.
+                cleanup_session(existing.id)
+                replaces = existing.id
+            entry = await _register_source(
+                str(uuid.uuid4()), real, real.name, real.stat().st_size, in_place=True
+            )
+            if replaces:
+                entry["replaces"] = replaces
+            imported.append(entry)
+        except Exception as e:
+            logger.warning("Import of %s failed: %s", label, e)
+            skipped.append({"name": label, "reason": "Could not read the file"})
+
+    return {"files": imported, "skipped": skipped}
 
 
 @app.post("/api/analyze")
@@ -567,6 +786,7 @@ async def analyze_file(request: AnalyzeRequest):
     session = session_store.get(request.file_id)
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_source(session)
 
     file_path = session.source_audio
 
@@ -630,6 +850,7 @@ async def rescan_file(request: RescanRequest):
     session = session_store.get(request.file_id)
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_source(session)
 
     await broadcast_message(
         {
@@ -681,16 +902,25 @@ async def rescan_file(request: RescanRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+MAX_SIDE_CHANGES = 8  # most side flips a scan request may ask for
+
+
+# Annotated keeps a plain default of 0, so direct calls (tests/test_envelope_scan.py) work; a
+# Query(...) default would arrive there as a Query object.
 @app.get("/api/scan/{file_id}")
-async def get_scan(file_id: str):
+async def get_scan(file_id: str, side_changes: Annotated[int, Query(ge=0, le=MAX_SIDE_CHANGES)] = 0):
     """Music span (lead-in and run-out trimmed) from the background envelope
     scan; never blocks on it: ``{"ready": false}`` while it is still decoding.
+
+    ``side_changes=N`` (> 0) also returns ``side_changes: [[start, end], ...]``, the N longest
+    non-music stretches inside the music span in time order (fewer when the record has fewer).
 
     A failed scan is restarted here, and the response carries the last failure
     as ``"error"`` until a scan succeeds."""
     session = session_store.get(file_id)
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_source(session)
 
     # Never block: get_envelope joins a running task, and the cache file exists
     # before the task finishes (between the thread's os.replace and its return),
@@ -712,12 +942,18 @@ async def get_scan(file_id: str):
         return {"ready": False, "error": error} if error else {"ready": False}
 
     start, end = music_span(db, ENVELOPE_FRAME_S)
-    return {
+    scan = {
         "ready": True,
         "music_start": start,
         "music_end": end,
         "music_duration": max(0.0, end - start),
     }
+    if side_changes > 0:
+        # Smoothing a long recording's envelope takes a moment: keep it off the event loop
+        stretches = await asyncio.to_thread(
+            lambda: find_side_changes(smooth_envelope(db, ENVELOPE_FRAME_S), ENVELOPE_FRAME_S, start, end, side_changes))
+        scan["side_changes"] = [[round(c.start, 2), round(c.end, 2)] for c in stretches]
+    return scan
 
 
 @app.post("/api/analyze-guided")
@@ -725,10 +961,11 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
     """
     Place ``expected_tracks`` boundaries using the cached envelope and the
     Discogs lengths.  Best-match alignment runs first (a length that is
-    unknown costs nothing); the gap/scale model is the fallback when every
-    length is known, and count-based detection (the Smart Rescan ladder) when
-    no length is known or neither model can place the tracks.  Count-based
-    detection may find fewer tracks than asked for: ``matched`` is then False.
+    unknown costs nothing; with none at all, sides and clear gaps decide);
+    the gap/scale model is the fallback when every length is known, and
+    count-based detection (the Smart Rescan ladder) when neither model can
+    place the tracks.  Count-based detection may find fewer tracks than asked
+    for: ``matched`` is then False.
     """
     if not 1 <= request.expected_tracks <= 99:
         raise HTTPException(status_code=422, detail="expected_tracks must be between 1 and 99")
@@ -745,6 +982,7 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
     session = session_store.get(request.file_id)
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_source(session)
 
     await broadcast_message(
         {
@@ -764,7 +1002,7 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
         recording_s = len(db) * ENVELOPE_FRAME_S
         known = [d if d is not None and 0 < d <= recording_s else None for d in request.durations or []]
         all_known = bool(known) and None not in known
-        try_align = len(known) >= 2 and any(d is not None for d in known)
+        try_align = len(known) >= 2  # no length at all: sides and clear gaps decide (even split)
 
         def _compute():
             music_start, music_end = music_span(db, ENVELOPE_FRAME_S)
@@ -827,7 +1065,8 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
                 {"number": i + 1, "start": t.start, "end": t.end, "duration": t.duration}
                 for i, t in enumerate(tracks)
             ],
-            "method": "durations" if guided is not None else "count",
+            # No lengths = placed by count (the UI draws no ghost markers and says so); model tells which.
+            "method": "durations" if guided is not None and guided.model != "align-even" else "count",
             "matched": matched,
             "boundaries": boundaries,
             "scale": guided.scale if guided else None,
@@ -862,6 +1101,7 @@ async def analyze_duration_based(request: DurationBasedAnalyzeRequest):
     session = session_store.get(request.file_id)
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_source(session)
 
     file_path = session.source_audio
     if not file_path.exists():
@@ -921,6 +1161,7 @@ async def preview_track(
     session = session_store.get(file_id)
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_source(session)
 
     boundaries = session.boundaries
     file_path = session.source_audio
@@ -999,6 +1240,7 @@ async def get_waveform_peaks(file_id: str):
     session = session_store.get(file_id)
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_source(session)
 
     file_path = session.source_audio
 
@@ -1075,6 +1317,7 @@ async def get_audio_file(file_id: str):
     session = session_store.get(file_id)
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_source(session)
 
     # Prefer the background-preconverted MP3: ~25MB streamed instead of a
     # multi-hundred-MB WAV. The choice is pinned on the first request so the
@@ -1160,6 +1403,7 @@ async def process_file(request: ProcessRequest):
     session = session_store.get(request.file_id)
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_source(session)
 
     # Validate output format
     if request.output_format not in OUTPUT_FORMATS:
@@ -1336,6 +1580,7 @@ async def get_config():
         "flac_compression": audio_processor.flac_compression,
         "output_dir": config.default_output_dir,
         "track_numbering": config.track_numbering,
+        "import_dir": str(_import_dir()) if _import_dir() else None,  # read-only
     }
 
 

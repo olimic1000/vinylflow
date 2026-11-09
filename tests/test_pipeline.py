@@ -219,3 +219,53 @@ def test_re_processing_a_complete_session(session, spec):
     )
     assert session.state == SessionState.COMPLETE
     assert session.last_run.output_files == ["B1-track.flac", "B2-track.flac"]
+
+
+# --- an export never overwrites its source -------------------------------------------------
+
+def _case_insensitive(directory: Path) -> bool:
+    probe = directory / "case-probe"
+    probe.touch()
+    try:
+        return (directory / "CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+@pytest.mark.parametrize("name", ["A1-track.aiff", "temp_A1.aiff", "a1-TRACK.aiff"],
+                         ids=["final path", "temp path", "other case"])
+def test_an_export_that_would_overwrite_its_source_fails_and_writes_nothing(tmp_path, name):
+    """An earlier AIFF export picked again (desktop "Choose files…") to re-split it with the same
+    release: track A1 would replace the source and A2 would be cut from that export."""
+    import hashlib
+
+    album = tmp_path / "out" / "Test Artist - Test Album"
+    album.mkdir(parents=True)
+    if name == "a1-TRACK.aiff" and not _case_insensitive(album):
+        pytest.skip("case-sensitive filesystem: the other-case name is a different file")
+    src = album / name
+    src.write_bytes(b"ORIGINAL-RECORDING" * 100)
+    digest = hashlib.sha256(src.read_bytes()).hexdigest()
+
+    s = SessionStore().create(
+        session_id="sess-src", source_audio=src.resolve(), source_filename=name,
+        source_duration=120.0, source_size=src.stat().st_size, in_place=True,
+    )
+    s.set_boundaries([FakeBoundary(1, 0.0, 60.0), FakeBoundary(2, 60.0, 120.0)])
+    s.set_mappings({1: "A1", 2: "A2"})
+    audio = FakeAudio()
+    events: list[ProgressEvent] = []
+
+    with pytest.raises(RuntimeError, match="would overwrite the recording"):
+        pipeline.run(
+            session=s, spec=OutputSpec(output_format="aiff", output_dir=tmp_path / "out"),
+            release_id=99, audio_processor=audio,
+            metadata_handler=FakeMetadata(release=FakeRelease(id=99, cover_url="https://example/c.jpg")),
+            on_progress=events.append,
+        )
+
+    assert hashlib.sha256(src.read_bytes()).hexdigest() == digest
+    assert audio.extract_calls == []
+    assert [p.name for p in album.iterdir()] == [name], "no track, temp or cover file written"
+    assert s.state == SessionState.FAILED
+    assert events[-1].phase == "error" and "Choose a different output folder" in events[-1].message
