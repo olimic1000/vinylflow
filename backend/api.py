@@ -12,14 +12,14 @@ import shutil
 from pathlib import Path
 from stat import S_ISREG
 from subprocess import CalledProcessError
-from typing import List, Optional
+from typing import Annotated, List, Optional
 import asyncio
 import json
 from datetime import datetime, timedelta
 
 import logging
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from backend.security import SameOriginMiddleware
@@ -40,9 +40,11 @@ from audio_processor import (
 from track_boundaries import (
     MIN_ALIGNED_TRACK_S,
     boundaries_from_expected_durations,
+    find_side_changes,
     gaps_from_envelope,
     guided_by_alignment,
     music_span,
+    smooth_envelope,
 )
 from metadata_handler import MetadataHandler
 from backend.sessions import (
@@ -900,10 +902,18 @@ async def rescan_file(request: RescanRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+MAX_SIDE_CHANGES = 8  # most side flips a scan request may ask for
+
+
+# Annotated keeps a plain default of 0, so direct calls (tests/test_envelope_scan.py) work; a
+# Query(...) default would arrive there as a Query object.
 @app.get("/api/scan/{file_id}")
-async def get_scan(file_id: str):
+async def get_scan(file_id: str, side_changes: Annotated[int, Query(ge=0, le=MAX_SIDE_CHANGES)] = 0):
     """Music span (lead-in and run-out trimmed) from the background envelope
     scan; never blocks on it: ``{"ready": false}`` while it is still decoding.
+
+    ``side_changes=N`` (> 0) also returns ``side_changes: [[start, end], ...]``, the N longest
+    non-music stretches inside the music span in time order (fewer when the record has fewer).
 
     A failed scan is restarted here, and the response carries the last failure
     as ``"error"`` until a scan succeeds."""
@@ -932,12 +942,18 @@ async def get_scan(file_id: str):
         return {"ready": False, "error": error} if error else {"ready": False}
 
     start, end = music_span(db, ENVELOPE_FRAME_S)
-    return {
+    scan = {
         "ready": True,
         "music_start": start,
         "music_end": end,
         "music_duration": max(0.0, end - start),
     }
+    if side_changes > 0:
+        # Smoothing a long recording's envelope takes a moment: keep it off the event loop
+        stretches = await asyncio.to_thread(
+            lambda: find_side_changes(smooth_envelope(db, ENVELOPE_FRAME_S), ENVELOPE_FRAME_S, start, end, side_changes))
+        scan["side_changes"] = [[round(c.start, 2), round(c.end, 2)] for c in stretches]
+    return scan
 
 
 @app.post("/api/analyze-guided")
@@ -945,10 +961,11 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
     """
     Place ``expected_tracks`` boundaries using the cached envelope and the
     Discogs lengths.  Best-match alignment runs first (a length that is
-    unknown costs nothing); the gap/scale model is the fallback when every
-    length is known, and count-based detection (the Smart Rescan ladder) when
-    no length is known or neither model can place the tracks.  Count-based
-    detection may find fewer tracks than asked for: ``matched`` is then False.
+    unknown costs nothing; with none at all, sides and clear gaps decide);
+    the gap/scale model is the fallback when every length is known, and
+    count-based detection (the Smart Rescan ladder) when neither model can
+    place the tracks.  Count-based detection may find fewer tracks than asked
+    for: ``matched`` is then False.
     """
     if not 1 <= request.expected_tracks <= 99:
         raise HTTPException(status_code=422, detail="expected_tracks must be between 1 and 99")
@@ -985,7 +1002,7 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
         recording_s = len(db) * ENVELOPE_FRAME_S
         known = [d if d is not None and 0 < d <= recording_s else None for d in request.durations or []]
         all_known = bool(known) and None not in known
-        try_align = len(known) >= 2 and any(d is not None for d in known)
+        try_align = len(known) >= 2  # no length at all: sides and clear gaps decide (even split)
 
         def _compute():
             music_start, music_end = music_span(db, ENVELOPE_FRAME_S)
@@ -1048,7 +1065,8 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
                 {"number": i + 1, "start": t.start, "end": t.end, "duration": t.duration}
                 for i, t in enumerate(tracks)
             ],
-            "method": "durations" if guided is not None else "count",
+            # No lengths = placed by count (the UI draws no ghost markers and says so); model tells which.
+            "method": "durations" if guided is not None and guided.model != "align-even" else "count",
             "matched": matched,
             "boundaries": boundaries,
             "scale": guided.scale if guided else None,

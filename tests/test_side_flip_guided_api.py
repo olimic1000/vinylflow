@@ -52,17 +52,18 @@ def test_invalid_side_hints_are_rejected(recording, breaks):
     assert response.status_code == 422
 
 
-def test_guided_endpoint_with_no_known_length_falls_back_to_count_detection(recording):
-    """With every length unknown there is nothing to align: the endpoint places the tracks by
-    count (Smart Rescan ladder) and reports no guided model."""
+def test_guided_endpoint_with_no_known_length_places_sides_and_gaps_by_count(recording):
+    """With every length unknown the endpoint still places the tracks from the sides and clear
+    gaps (``align-even``); ``method`` stays "count" so the UI draws no ghost markers."""
     response = TestClient(api.app).post('/api/analyze-guided', json={
         'file_id': recording, 'expected_tracks': 4, 'durations': [None] * 4, 'side_breaks': [2],
     })
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body['method'] == 'count'
-    assert body['model'] is None and body['boundaries'] == []
+    assert body['method'] == 'count' and body['matched'] is True
+    assert body['model'] == 'align-even'
     assert len(body['tracks']) == 4
+    assert [round(b['gap']['start']) for b in body['boundaries']] == [100, 203, 363]
 
 
 def test_guided_endpoint_treats_an_infinite_length_as_unknown(recording):
@@ -119,7 +120,9 @@ def test_huge_lengths_the_alignment_cannot_place_are_no_server_error(short_recor
 def test_lengths_beyond_the_recording_count_as_unknown(recording, durations):
     response = guided({'file_id': recording, 'expected_tracks': 4, 'durations': durations})
     assert response.status_code == 200, response.text
-    assert response.json()['method'] == 'count'
+    body = response.json()
+    # Every length unknown: placed by sides and clear gaps, not the count ladder.
+    assert body['method'] == 'count' and body['model'] == 'align-even'
 
 
 @pytest.mark.parametrize('bad_length', [1e308, 5000.0])
@@ -147,14 +150,16 @@ def test_a_wrong_number_of_lengths_is_rejected(recording, durations):
 
 def test_no_lengths_at_all_uses_count_detection(recording):
     body = guided({'file_id': recording, 'expected_tracks': 4}).json()
-    assert body['method'] == 'count' and len(body['tracks']) == 4
+    # No durations field at all: the count ladder (no guided model), not align-even.
+    assert body['method'] == 'count' and body['model'] is None and len(body['tracks']) == 4
 
 
 def test_zero_and_negative_lengths_count_as_unknown(recording):
     body = guided({'file_id': recording, 'expected_tracks': 4, 'durations': [100, 0, -5, 100]}).json()
     assert body['model'] == 'align' and len(body['tracks']) == 4
-    # All of them unusable: nothing to align.
-    assert guided({'file_id': recording, 'expected_tracks': 4, 'durations': [0, 0, -1, -1]}).json()['method'] == 'count'
+    # All of them unusable: no length known, so sides and clear gaps decide.
+    body = guided({'file_id': recording, 'expected_tracks': 4, 'durations': [0, 0, -1, -1]}).json()
+    assert body['method'] == 'count' and body['model'] == 'align-even'
 
 
 def test_mixed_known_and_unknown_lengths_align(recording):
