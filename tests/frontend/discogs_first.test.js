@@ -125,6 +125,70 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
         assert.strictEqual(server.calledWith('/api/search').length, searches + 1);
     }
 
+    // ---- "Try Discogs again" without a token: the search card is hidden and a search would
+    // only fail, so it opens the token setup instead ----
+    {
+        const server = fakeServer();
+        const app = mkApp();
+        app.discogsConfigured = false;
+        app.selectFile('f1');
+        app.detectedTracks = detected(2);
+        app.tryDiscogsAgain();
+        assert.strictEqual(app.setupRequired, true, 'the Discogs setup modal opens');
+        assert.strictEqual(server.calledWith('/api/search').length, 0, 'no search without a token');
+    }
+
+    // ---- the latest pick wins: a card still loading its tracklist must not replace a later
+    // choice when its reply lands ----
+    {
+        const server = fakeServer();
+        const app = mkApp();
+        app.selectFile('f1');
+        server.next('/api/search').answer(200, { results: [card(1), card(2), card(3)] });
+        await tick();
+        server.next('/api/release/2').answer(200, fullRelease(2));
+        await tick();
+        const clickA = app.chooseResult(app.searchResults[0]);   // waits for its tracklist
+        app.chooseResult(app.searchResults[1]);                  // loaded: selected at once
+        assert.strictEqual(app.selectedRelease.id, 2);
+        server.next('/api/release/1').answer(200, fullRelease(1));
+        await clickA;
+        assert.strictEqual(app.selectedRelease.id, 2, 'the earlier click does not override the later one');
+        assert.ok(Array.isArray(app.searchResults[0].tracks), 'the card still fills in');
+    }
+
+    // ...nor bring a release back after Change release (here on a release an Undo put back
+    // while the card loaded: restoreEdits sets it without going through selectRelease)
+    {
+        const server = fakeServer();
+        const app = mkApp();
+        app.selectFile('f1');
+        server.next('/api/search').answer(200, { results: [card(1)] });
+        await tick();
+        app.detectedTracks = detected(2);
+        const clickA = app.chooseResult(app.searchResults[0]);
+        app.selectedRelease = fullRelease(9);
+        app.changeRelease();
+        server.next('/api/release/1').answer(200, fullRelease(1));
+        await clickA;
+        assert.strictEqual(app.selectedRelease, null, 'Change release cancels the pick still loading');
+    }
+
+    // ...nor replace a release an Undo put back while the card loaded
+    {
+        const server = fakeServer();
+        const app = mkApp();
+        app.selectFile('f1');
+        server.next('/api/search').answer(200, { results: [card(1)] });
+        await tick();
+        app.detectedTracks = detected(2);
+        const clickA = app.chooseResult(app.searchResults[0]);
+        app.restoreEdits({ ...app.snapshotEdits(), selectedRelease: fullRelease(9) });
+        server.next('/api/release/1').answer(200, fullRelease(1));
+        await clickA;
+        assert.strictEqual(app.selectedRelease.id, 9, 'the release the Undo restored stays');
+    }
+
     // ---- clicking the recording already open keeps its work and searches nothing ----
     {
         const server = fakeServer();

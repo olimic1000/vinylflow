@@ -80,6 +80,7 @@ function vinylApp() {
         detailsSettled: false,    // True once every result's tracklist load finished or failed
         searchSeq: 0,             // Bumped by every search and file switch: stale replies are dropped
         _detailInflight: {},      // `${searchSeq}:${releaseId}` -> promise of a tracklist load in progress
+        _pendingPickId: null,     // Card clicked while its tracklist loads; a later pick clears it
         selectedRelease: null,
         trackMappingReversed: false,
         customMapping: [],
@@ -677,6 +678,7 @@ function vinylApp() {
         restoreEdits(snapshot) {
             this.detectedTracks = snapshot.detectedTracks.map(track => ({ ...track }));
             this.selectedRelease = snapshot.selectedRelease;
+            if (snapshot.selectedRelease) this._pendingPickId = null;   // a card still loading must not replace it
             this.trackCountMismatch = snapshot.trackCountMismatch;
             this.trackMappingReversed = snapshot.trackMappingReversed;
             this.customMapping = [...snapshot.customMapping];
@@ -733,6 +735,7 @@ function vinylApp() {
             this.detectedTracks = [];
             this.resetSearchResults();
             this.selectedRelease = null;
+            this._pendingPickId = null;
             this.trackCountMismatch = false;
             this.searchNotice = '';
             // A search of the previous file is superseded: its reply (and its tracklist
@@ -1185,7 +1188,9 @@ function vinylApp() {
         /**
          * Card click: make sure the tracklist is loaded, then select.  A card whose
          * load failed is retried by the click; the release is only ever selected
-         * with its tracks.
+         * with its tracks.  The latest click wins: a later pick, Change release or a
+         * file switch while this card loads clears _pendingPickId, and its reply then
+         * only fills the card.
          */
         async chooseResult(result) {
             if (result.opening) return;
@@ -1194,14 +1199,16 @@ function vinylApp() {
                 return;
             }
             const seq = this.searchSeq;
+            this._pendingPickId = result.id;
             result.opening = true;
             try {
                 const ok = await this.loadReleaseDetails(result.id, seq);
-                if (ok && seq === this.searchSeq) {
+                if (ok && seq === this.searchSeq && this._pendingPickId === result.id) {
                     const fresh = this.searchResults.find(r => r.id === result.id);
                     if (fresh) this.selectRelease(fresh);
                 }
             } finally {
+                if (this._pendingPickId === result.id) this._pendingPickId = null;
                 result.opening = false;
             }
         },
@@ -1214,6 +1221,7 @@ function vinylApp() {
          */
         selectRelease(release) {
             if (!Array.isArray(release?.tracks)) return;
+            this._pendingPickId = null;   // this pick replaces any card still loading
             this.selectedRelease = release;
             this.resetMappingToDetected();
             if (this.detectedTracks.length === 0) {
@@ -1247,14 +1255,22 @@ function vinylApp() {
          */
         changeRelease() {
             this.selectedRelease = null;
+            this._pendingPickId = null;   // a card still loading must not bring a release back
             this.trackMappingReversed = false;
             this.trackCountMismatch = false;
             this.customMapping = [];
         },
 
-        /** Back to the search card (tracks exist, no release chosen); searches only if it has no results */
+        /**
+         * Back to the search card (tracks exist, no release chosen); searches only if it has no results.
+         * Without a token the search card is hidden and a search would only fail: open the setup instead.
+         */
         tryDiscogsAgain() {
             if (this.analyzing) return;
+            if (!this.discogsConfigured) {
+                this.setupRequired = true;
+                return;
+            }
             if (!this.searchQuery.trim()) this.searchQuery = this.cleanFilename(this.currentFile?.filename || '');
             if (this.searchResults.length === 0) this.searchDiscogs();
             this.$nextTick(() => {
