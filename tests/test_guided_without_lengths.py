@@ -201,3 +201,76 @@ def test_a_real_side_of_one_track_is_placed():
     placed = guided_by_alignment(db, F, ms, me, [None] * 4, [3])
     assert placed.model == "align-even" and len(placed.tracks) == 4
     assert abs(placed.tracks[3].duration - 200) < 5
+
+
+def song_starts(sides, spans, gap=3.0):
+    """Where each song of ``recording(sides, ...)`` starts."""
+    out = []
+    for (a, _b), songs in zip(spans, sides):
+        out += [a + sum(songs[:i]) + gap * i for i in range(len(songs))]
+    return out
+
+
+def guided_endpoint(db, payload, tmp_path, monkeypatch):
+    import uuid
+    from fastapi.testclient import TestClient
+    import backend.api as api
+
+    sid = str(uuid.uuid4())
+    source = tmp_path / "album.wav"
+    source.touch()
+    api.session_store.create(session_id=sid, source_audio=source, source_filename="album.wav",
+                             source_duration=len(db) * F, source_size=0)
+
+    async def cached(session):
+        return db
+
+    monkeypatch.setattr(api, "get_envelope", cached)
+    try:
+        return TestClient(api.app).post("/api/analyze-guided", json={"file_id": sid, **payload})
+    finally:
+        api.session_store.remove(sid)
+
+
+# Half the recording or more non-music: the median is surface noise, so the quiet floor is assumed
+# under it and the pool holds weak spots only.  The even split then cut by guesswork (0 of 11 cuts
+# on a gap, a track in the noise); with no real gap at all the count ladder takes over.
+HALF_NOISE = ([[150] * 4] * 3, 900.0, [4, 8])  # 3 sides, 2 x 900 s between them: 50 % non-music
+SEVEN_INCH = ([[160, 170], [150, 175]], 700.0, [2])  # a 7" EP, a 700 s wait at the flip
+
+
+@pytest.mark.parametrize("sides, change, breaks", [HALF_NOISE, SEVEN_INCH], ids=["half-noise", "7-inch"])
+def test_no_real_gap_in_the_pool_falls_back_to_the_count_ladder(sides, change, breaks, tmp_path, monkeypatch):
+    import backend.api as api
+
+    db, ms, me, spans, _stretches = recording(sides, change=change)
+    n = sum(len(s) for s in sides)
+    assert not any(c.strong for c in tb.gap_candidates(smooth_envelope(db, F), F, ms, me))
+    assert guided_by_alignment(db, F, ms, me, [None] * n, side_breaks=breaks) is None
+
+    r = guided_endpoint(db, {"expected_tracks": n, "durations": [None] * n, "side_breaks": breaks},
+                        tmp_path, monkeypatch)
+    body = r.json()
+    assert r.status_code == 200 and body["model"] is None and body["method"] == "count"
+    ladder, info = api.audio_processor.tracks_for_count_from_envelope(db, n)
+    assert info["matched"] and body["matched"] is True
+    assert [(t["start"], t["end"]) for t in body["tracks"]] == [(t.start, t.end) for t in ladder]
+    assert [t["start"] for t in body["tracks"]] == pytest.approx(song_starts(sides, spans), abs=1.5)
+
+
+def test_just_under_half_noise_still_places_by_sides_and_gaps():
+    """48 % non-music: the floor is still read from the noise, so real gaps are in the pool."""
+    sides, _change, breaks = HALF_NOISE
+    db, ms, me, spans, stretches = recording(sides, change=850.0)
+    g = guided_by_alignment(db, F, ms, me, [None] * 12, side_breaks=breaks)
+    assert g is not None and g.model == "align-even"
+    assert all(b.snapped for b in g.boundaries) and in_noise(g, stretches) == []
+    assert per_side(g, spans) == [4, 4, 4]
+
+
+def test_a_found_side_change_keeps_the_placement_without_gaps_inside_sides():
+    """Segued sides: the side change is itself a strong gap, so the no-real-gap fallback stays off."""
+    db, ms, me, spans, stretches = recording([[150] * 4] * 2, change=120.0, gaps=[0.0, 0.0])
+    g = guided_by_alignment(db, F, ms, me, [None] * 8, side_breaks=[4])
+    assert g is not None and g.model == "align-even"
+    assert per_side(g, spans) == [4, 4] and in_noise(g, stretches) == []

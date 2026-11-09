@@ -938,6 +938,11 @@ def guided_without_lengths(
     # One pool for the whole recording: the quiet floor is read where the surface noise is
     # plentiful (a span of its own would take quiet music for the floor).
     pool = gap_candidates(sm, frame_s, music_start, music_end)
+    # No real gap anywhere: with half the recording or more non-music, the floor is assumed
+    # under the noise, so only weak spots are left and the even split would cut by guesswork
+    # (even into the noise).  The count ladder's fixed threshold still sees the gaps.
+    if not any(c.strong for c in pool):
+        return None
     cuts = [0] + [c + 1 for c in assigned] + [len(counts)]  # span k = sides cuts[k]:cuts[k+1]
     chosen: List[GapCandidate] = []
     span_start = music_start
