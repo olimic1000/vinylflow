@@ -72,7 +72,7 @@ audio_processor.py  metadata_handler.py  config.py    Discogs API
 
 **Upload session storage:**
 - Source file: `VINYLFLOW_UPLOAD_DIR/{file_id}/source.{ext}` (upload) or the original file in the import folder (`Session.in_place`; never copied into or linked from the session dir)
-- Derived files (MP3 preview, peaks, `envelope.npy`, caches, A/B renders) always live in `VINYLFLOW_UPLOAD_DIR/{file_id}/`; all cleanup (`DELETE /api/queue`, clear-all, TTL reaper) is `rmtree` of that dir only, so an in-place source is never deleted. An import dir that equals, contains or sits inside the uploads dir is refused. A vanished in-place source gives HTTP 410 (`_require_source`) from every endpoint that reads it
+- Derived files (MP3 preview, peaks, `envelope.npy`, caches, A/B renders) always live in `VINYLFLOW_UPLOAD_DIR/{file_id}/`; all cleanup (`DELETE /api/queue`, clear-all, TTL reaper) is `rmtree` of that dir only, so an in-place source is never deleted. An import dir that equals, contains or sits inside the uploads dir is refused. A vanished in-place source gives HTTP 410, and one changed since its import (size or mtime) 409, from every endpoint that reads it (`_require_source`). An export never writes over its own source (`pipeline.run` checks every temp and final path first)
 - Energy envelope: `VINYLFLOW_UPLOAD_DIR/{file_id}/envelope.npy` (per-frame RMS dBFS, mono 8 kHz, 10 ms frames), decoded once in the background after upload; Smart Rescan and the music span read it from memory. Removed with the session dir
 - Output: `DEFAULT_OUTPUT_DIR/{Artist} - {Album}/{position}-{title}.{fmt}`
 

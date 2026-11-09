@@ -281,3 +281,80 @@ def test_import_refuses_a_symlinked_directory_leaving_the_folder(env):
     (imp / "linkdir").symlink_to(tmp / "outside", target_is_directory=True)
     body = _import("linkdir/o.wav")
     assert body["files"] == [] and "outside" in body["skipped"][0]["reason"]
+
+
+def test_a_file_changed_while_queued_is_409_until_imported_again(env):
+    """Re-recorded under the same name with its old session still queued: analyzing or exporting
+    would use splits and caches of the old audio."""
+    imp, _, _ = env
+    src = _wav(imp / "side.wav", 1, age=7200)
+    sid = _import("side.wav")["files"][0]["id"]
+    assert client.get(f"/api/scan/{sid}").status_code == 200  # unchanged: usable
+
+    _wav(src, 2, age=3600)
+    for r in (
+        client.post("/api/analyze", json={"file_id": sid}),
+        client.get(f"/api/audio/{sid}"),
+        client.get(f"/api/waveform-peaks/{sid}"),
+        client.post("/api/process", json={"file_id": sid, "release_id": 1, "track_mapping": []}),
+    ):
+        assert r.status_code == 409 and "Import it again" in r.json()["detail"]
+    assert session_store.get(sid).state != api.SessionState.PROCESSING
+
+    assert _import("side.wav")["files"][0]["replaces"] == sid
+
+
+def test_background_prep_runs_a_few_files_at_a_time(env, monkeypatch):
+    """"Select all" must not start every file's MP3 + envelope at once, and the import answers
+    without waiting for any of it."""
+    import asyncio
+
+    import httpx
+
+    imp, _, _ = env
+    names = [f"side{i}.wav" for i in range(6)]
+    for name in names:
+        _wav(imp / name)
+    monkeypatch.setattr(api.audio_processor, "get_audio_duration", lambda path: 60.0)
+    active, peak, releases = 0, 0, []
+
+    async def slow_mp3(file_id, file_path):
+        nonlocal active, peak
+        done = asyncio.Event()
+        releases.append(done)
+        active += 1
+        peak = max(peak, active)
+        await done.wait()
+        active -= 1
+
+    def instant_envelope(file_id, file_path):
+        fut = asyncio.get_running_loop().create_future()
+        fut.set_result(None)
+        return fut
+
+    monkeypatch.setattr(api, "preconvert_to_mp3", slow_mp3)
+    monkeypatch.setattr(api, "start_envelope", instant_envelope)
+
+    async def until(condition):
+        for _ in range(500):
+            if condition():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("timed out")
+
+    async def scenario():
+        monkeypatch.setattr(api, "_prep_slots", asyncio.Semaphore(api.PREP_CONCURRENCY))
+        transport = httpx.ASGITransport(app=api.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
+            r = await asyncio.wait_for(c.post("/api/import", json={"names": names}), 10)
+        assert len(r.json()["files"]) == 6  # answered while every prep is still blocked
+        for i in range(len(names)):
+            expected = min(i + api.PREP_CONCURRENCY, len(names))
+            await until(lambda: len(releases) >= expected)
+            await asyncio.sleep(0.02)  # room for an extra prep to (wrongly) start
+            assert len(releases) == expected and active <= api.PREP_CONCURRENCY
+            releases[i].set()
+        await until(lambda: active == 0)
+
+    asyncio.run(scenario())
+    assert api.PREP_CONCURRENCY == 2 and peak == 2 and len(releases) == 6

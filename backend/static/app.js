@@ -1478,7 +1478,9 @@ function vinylApp() {
 
                 const peaksResponse = await fetch(`/api/waveform-peaks/${this.currentFileId}`);
                 if (!peaksResponse.ok) {
-                    throw new Error('Failed to load waveform peaks');
+                    // e.g. 409/410: an imported file changed or vanished; say which and what to do
+                    const data = await peaksResponse.json().catch(() => ({}));
+                    throw new Error(data.detail || 'Failed to load waveform peaks');
                 }
                 const peaksData = await peaksResponse.json();
 

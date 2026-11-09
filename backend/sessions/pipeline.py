@@ -15,6 +15,7 @@ need the calling event loop to stay responsive while ffmpeg runs.
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,11 @@ from .events import OutputSpec, ProcessingRun, ProgressEvent
 from .session import Session, SessionState
 
 ProgressCallback = Callable[[ProgressEvent], None]
+
+OVERWRITES_SOURCE = (
+    "This export would overwrite the recording being split. "
+    "Choose a different output folder or format."
+)
 
 
 def run(
@@ -69,6 +75,19 @@ def run(
         tracks = _build_tracks(session)
 
         album_folder = Path(spec.output_dir) / metadata_handler.create_album_folder_name(release)
+        ext = OUTPUT_FORMATS[spec.output_format]["extension"]
+        # Every (temp, final) path this export writes, decided before anything is written: none
+        # may be the source, e.g. an earlier export picked again to re-split it.
+        targets = [
+            (
+                album_folder / f"temp_{track.vinyl_number}{ext}",
+                album_folder / metadata_handler.create_track_filename(track, release, spec.output_format),
+            )
+            for track in tracks
+        ]
+        if any(_same_file(path, session.source_audio) for pair in targets for path in pair):
+            raise RuntimeError(OVERWRITES_SOURCE)
+
         album_folder.mkdir(parents=True, exist_ok=True)
 
         on_progress(
@@ -85,7 +104,6 @@ def run(
             if metadata_handler.download_cover_art(release.cover_url, cover_path):
                 cover_data = metadata_handler.prepare_cover_for_embedding(cover_path)
 
-        ext = OUTPUT_FORMATS[spec.output_format]["extension"]
         output_files: list[str] = []
         total = len(tracks)
 
@@ -101,7 +119,7 @@ def run(
                 )
             )
 
-            temp_output = album_folder / f"temp_{track.vinyl_number}{ext}"
+            temp_output, final_path = targets[i]
 
             audio_processor.extract_track(
                 session.source_audio,
@@ -117,13 +135,9 @@ def run(
                 track_numbering=spec.track_numbering,
             )
 
-            final_filename = metadata_handler.create_track_filename(
-                track, release, spec.output_format
-            )
-            final_path = album_folder / final_filename
             temp_output.rename(final_path)
 
-            output_files.append(final_filename)
+            output_files.append(final_path.name)
 
         session.mark_complete(album_folder, output_files)
 
@@ -147,6 +161,17 @@ def run(
         if session.state == SessionState.PROCESSING:
             session.mark_failed(str(e))
         raise
+
+
+def _same_file(path: Path, source: Path) -> bool:
+    """True when writing ``path`` would replace ``source``: the same resolved path, or, when
+    ``path`` exists, the same file under another spelling (other case on macOS, a hard link)."""
+    if path.resolve() == source.resolve():
+        return True
+    try:
+        return path.exists() and os.path.samefile(path, source)
+    except OSError:
+        return False
 
 
 def _build_tracks(session: Session) -> list[Track]:
