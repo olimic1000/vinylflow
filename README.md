@@ -230,8 +230,8 @@ DEFAULT_OUTPUT_DIR=~/Music/VinylFlow
 
 1. **Add** — import a WAV or AIFF recording from the import folder, or drag and drop it to upload
 2. **Pick the release** — VinylFlow searches Discogs from the file name as soon as you select the recording. Result cards fill in their track lists as they load; releases with complete track lengths are marked, and the one whose lengths best fit your recording is flagged "Best fit". Edit the search box to look again. The chosen release stays in a card above the waveform (cover art, a link to Discogs, **Change release**)
-3. **Detect** — picking a release starts track detection by silence. No Discogs token, or no good match? Use **Skip Discogs — detect tracks by silence only**; **Try Discogs again** takes you back to the search once tracks exist
-4. **Map** — match detected tracks to Discogs track listings
+3. **Choose the sides, detect** — if the release has several sides, VinylFlow suggests which one(s) your recording holds by comparing the Discogs lengths with the length of the music (side chips plus Full album / per-disc presets; change them any time). Picking a release then places exactly that many tracks, using the Discogs lengths and the silences between songs, and marks where the lengths expect each break with dashed lines on the waveform. After you have moved boundaries by hand, changing the release or sides asks before placing them again. **Snap to Discogs** places them again on demand (Undo brings your boundaries back). No Discogs token, or no good match? Use **Skip Discogs — detect tracks by silence only**; **Try Discogs again** takes you back to the search once tracks exist
+4. **Map** — match detected tracks to Discogs track listings (already done for the chosen sides; change any row by hand)
 5. **Choose format** — FLAC, MP3, or AIFF output
 6. **Process** — tracks are split, converted, tagged, and saved with cover art
 
@@ -341,7 +341,7 @@ Make sure the `output/` directory exists and has write permissions: `chmod -R 75
 Edit the search box (the file name is only a starting point) and press Enter. If it keeps failing, your API token might be invalid or revoked. Click the Settings (⚙️) button and update your token, or generate a new one at [discogs.com/settings/developers](https://www.discogs.com/settings/developers)
 
 **Tracks not splitting correctly?**
-Try adjusting silence detection in Settings (⚙️), or use duration-based splitting after selecting a Discogs release.
+Try adjusting silence detection in Settings (⚙️), or pick a Discogs release and use **Snap to Discogs** to place the tracks from its lengths.
 
 ---
 

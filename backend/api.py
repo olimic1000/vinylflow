@@ -281,11 +281,6 @@ class AnalyzeRequest(BaseModel):
     file_id: str
 
 
-class DurationBasedAnalyzeRequest(BaseModel):
-    file_id: str
-    discogs_durations: List[float]
-
-
 class RescanRequest(BaseModel):
     file_id: str
     expected_tracks: int
@@ -1089,62 +1084,6 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
                 "recoverable": True,
             }
         )
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/analyze-duration-based")
-async def analyze_duration_based(request: DurationBasedAnalyzeRequest):
-    """
-    Create track boundaries based on Discogs track durations.
-    Fallback method when silence detection fails.
-    """
-    session = session_store.get(request.file_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="File not found")
-    _require_source(session)
-
-    file_path = session.source_audio
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Audio file not found")
-
-    try:
-        # Use existing duration-based splitting method
-        processor = AudioProcessor(
-            silence_threshold=config.default_silence_threshold,
-            min_silence_duration=config.default_min_silence_duration,
-            min_track_length=config.default_min_track_length,
-        )
-
-        tracks = processor.split_tracks_duration_based(
-            file_path,
-            request.discogs_durations,
-            verbose=True
-        )
-
-        session.set_boundaries(tracks)
-
-        # Broadcast via WebSocket
-        await broadcast_message({
-            "type": "analysis_complete",
-            "file_id": request.file_id,
-            "track_count": len(tracks),
-            "method": "duration_based"
-        })
-
-        return {
-            "tracks": [
-                {
-                    "number": track.number,
-                    "start": track.start,
-                    "end": track.end,
-                    "duration": track.duration,
-                }
-                for track in tracks
-            ]
-        }
-
-    except Exception as e:
-        logger.error(f"Duration-based analysis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

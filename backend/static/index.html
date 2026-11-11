@@ -656,7 +656,7 @@
                         <!-- Skip Discogs: silence-only detection (secondary action).  With a release
                              already picked, the same button retries a detection that failed. -->
                         <template x-if="!detectedTracks.length && currentFile">
-                            <button @click="analyzeFile()" :disabled="analyzing" class="mt-3 px-3 py-1.5 rounded-lg text-xs text-secondary hover:bg-page" style="background-color: #F0EFEB;" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                            <button @click="selectedRelease ? redetectForTargets() : analyzeFile()" :disabled="analyzing" class="mt-3 px-3 py-1.5 rounded-lg text-xs text-secondary hover:bg-page" style="background-color: #F0EFEB;" :class="{'opacity-60 cursor-not-allowed': analyzing}">
                                 <span x-show="!analyzing" x-text="selectedRelease ? 'Retry track detection' : 'Skip Discogs — detect tracks by silence only'"></span>
                                 <span x-show="analyzing" class="flex items-center gap-2">
                                     <div class="spinner"></div>
@@ -791,7 +791,7 @@
             <div class="bg-card rounded-lg shadow p-6">
                 <div class="flex justify-between items-center mb-4">
                     <h3 class="text-lg font-semibold text-primary">💿 Release</h3>
-                    <button @click="changeRelease()" class="px-4 py-2 rounded-lg text-primary hover:bg-page" style="background-color: #F0EFEB;">← Change release</button>
+                    <button @click="changeRelease()" :disabled="analyzing" class="px-4 py-2 rounded-lg text-primary hover:bg-page" :class="{'opacity-60 cursor-not-allowed': analyzing}" style="background-color: #F0EFEB;">← Change release</button>
                 </div>
                 <div class="p-4 rounded-lg flex items-start gap-4" style="background-color: rgba(229, 161, 0, 0.1);">
                     <!-- Hidden when the release has no cover or it fails to load (onload re-shows it:
@@ -808,6 +808,59 @@
                         <a x-show="selectedRelease?.id" :href="selectedRelease ? `https://www.discogs.com/release/${selectedRelease.id}` : '#'"
                            target="_blank" rel="noopener noreferrer" data-testid="release-discogs-link"
                            class="mt-1 inline-block text-sm underline hover:no-underline" style="color: #8A5F00;">View on Discogs ↗</a>
+                    </div>
+                </div>
+
+                <!-- Side selection: guided detection places as many tracks as the chosen sides have -->
+                <div id="side-picker" class="mt-4 p-4 bg-page rounded-lg">
+                    <div class="flex flex-wrap justify-between items-baseline gap-2 mb-2">
+                        <h4 class="text-sm font-medium text-secondary" x-text="sideChips.length > 1 ? 'What does this recording contain?' : 'Tracks on this release'"></h4>
+                        <span class="text-xs text-secondary" x-text="`Recording: ${formatDuration(currentFile?.duration)}` + (currentFile?.musicDuration > 0 ? ` (music ${formatDuration(currentFile.musicDuration)})` : '')"></span>
+                    </div>
+                    <!-- Scope presets: full album / per disc -->
+                    <div x-show="sidePresets.length > 0" class="flex flex-wrap gap-2 mb-3">
+                        <template x-for="preset in sidePresets" :key="preset.label">
+                            <button type="button" @click="applyPreset(preset.sides)" :disabled="analyzing"
+                                    :aria-pressed="sidesEqualSelection(preset.sides)"
+                                    class="px-4 py-2 rounded-lg border-2 transition text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-[#1E1E1E]"
+                                    :style="sidesEqualSelection(preset.sides) ? 'border-color: #E5A100; background-color: rgba(229, 161, 0, 0.1);' : 'border-color: #8A8A86;'"
+                                    :class="{'hover:bg-card': !sidesEqualSelection(preset.sides), 'opacity-60 cursor-not-allowed': analyzing}">
+                                <span class="text-sm font-semibold text-primary"><span x-show="sidesEqualSelection(preset.sides)" aria-hidden="true">✓ </span><span x-text="preset.label"></span></span>
+                                <span class="text-xs text-secondary ml-1" x-text="`${preset.trackCount} tracks • ${preset.totalSeconds !== null ? formatDuration(preset.totalSeconds) : 'length unknown'}`"></span>
+                                <span x-show="isMatchedScope(preset.sides)" class="block text-xs font-medium" style="color: #0A6B4B;">✓ matches recording length</span>
+                            </button>
+                        </template>
+                    </div>
+                    <p x-show="defaultScopeNote" x-cloak class="mb-3 text-xs text-secondary" x-text="defaultScopeNote"></p>
+                    <p x-show="sideChips.length > 1" class="mb-2 text-xs text-secondary">Fine-tune by side:</p>
+                    <div class="flex flex-wrap gap-2">
+                        <template x-for="g in sideChips" :key="g.side">
+                            <button type="button" @click="toggleSide(g.side)" :disabled="analyzing || sideChips.length <= 1"
+                                    :aria-pressed="selectedSides.includes(g.side)"
+                                    class="px-4 py-2 rounded-lg border-2 transition text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-[#1E1E1E]"
+                                    :style="selectedSides.includes(g.side) ? 'border-color: #E5A100; background-color: rgba(229, 161, 0, 0.1);' : 'border-color: #8A8A86;'"
+                                    :class="{'hover:bg-card': !selectedSides.includes(g.side) && sideChips.length > 1, 'opacity-60 cursor-not-allowed': analyzing || sideChips.length <= 1}">
+                                <span class="text-sm font-semibold text-primary"><span x-show="selectedSides.includes(g.side) && sideChips.length > 1" aria-hidden="true">✓ </span><span x-text="sideLabel(g.side)"></span></span>
+                                <span class="text-xs text-secondary ml-1" x-text="`${g.tracks.length} tracks • ${g.totalSeconds !== null ? formatDuration(g.totalSeconds) : 'length unknown'}`"></span>
+                                <span x-show="isMatchedScope([g.side]) && sideChips.length > 1" class="block text-xs font-medium" style="color: #0A6B4B;">✓ matches recording length</span>
+                            </button>
+                        </template>
+                    </div>
+                    <div class="mt-3 flex flex-wrap items-center gap-3">
+                        <button type="button" @click="snapToDiscogs()" :disabled="analyzing || targetTracks.length < 1"
+                                class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold"
+                                :class="{'opacity-60 cursor-not-allowed': analyzing || targetTracks.length < 1}"
+                                title="Place the boundaries using the Discogs track lengths of the chosen sides">🧲 Snap to Discogs</button>
+                        <p class="text-xs text-secondary flex-1" style="min-width: 12rem;">Changing the sides re-runs track detection. Snap to Discogs places the boundaries again from the Discogs lengths (Undo brings your boundaries back).</p>
+                    </div>
+                </div>
+
+                <!-- Release or sides changed after hand edits: ask before re-placing the cuts -->
+                <div x-show="editBanner" x-cloak role="status" class="mt-4 p-3 rounded-lg flex flex-wrap items-center gap-3" style="background-color: rgba(229, 161, 0, 0.15); border: 1px solid #E5A100;">
+                    <p class="text-sm text-primary flex-1" style="min-width: 12rem;">You've adjusted the track boundaries by hand. Snap them to these Discogs lengths, or keep your edits?</p>
+                    <div class="flex gap-2">
+                        <button type="button" @click="snapToDiscogs()" :disabled="analyzing" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold">Snap to Discogs</button>
+                        <button type="button" @click="keepMyEdits()" class="px-3 py-1.5 rounded-lg text-sm text-primary" style="background-color: #F0EFEB;">Keep my edits</button>
                     </div>
                 </div>
             </div>
@@ -830,7 +883,7 @@
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div x-show="waveformLoading" class="text-center text-secondary py-8 text-lg">Loading waveform...</div>
                 <div x-show="!waveform && !waveformLoading" class="text-center text-muted py-8">Waveform will appear after analysis completes</div>
-                <p class="text-sm text-muted">💡 Tip: Drag the colored regions to adjust track boundaries, or right-click to add splits</p>
+                <p class="text-sm text-muted">💡 Tip: Drag the colored regions to adjust track boundaries, or right-click to add splits.<span x-show="expectedBoundaries.length > 0" x-cloak> Dashed red lines mark where the Discogs lengths expect each break.</span></p>
             </div>
         </div>
 
@@ -841,9 +894,6 @@
                     <div x-show="detectedTracks.length > 0" x-cloak class="bg-card rounded-lg shadow p-6">
                         <h3 class="text-lg font-semibold text-primary mb-4">
                             Detected Tracks (<span x-text="activeTrackCount"></span> of <span x-text="detectedTracks.length"></span> active)
-                            <span x-show="detectedTracks[0]?.durationBased" class="text-xs text-muted ml-2">
-                                (Duration-based splitting)
-                            </span>
                         </h3>
                         <div x-show="currentPlayingTrack" class="mb-4 p-4 rounded-lg" style="background-color: rgba(229, 161, 0, 0.1);">
                             <div class="flex items-center justify-between mb-2">
@@ -905,21 +955,21 @@
                                     <p class="font-semibold text-primary mb-1">Track Count Mismatch</p>
                                     <p class="text-sm text-secondary mb-2">
                                         Detected <span class="font-semibold" x-text="detectedTracks.filter(t => !t.ignored).length"></span> tracks,
-                                        but Discogs shows <span class="font-semibold" x-text="selectedRelease?.tracks.length"></span> tracks.
+                                        but the selected side(s) of this release have <span class="font-semibold" x-text="targetTracks.length"></span> tracks.
                                     </p>
                                     <p class="text-xs text-muted mb-2">
                                         💡 Scroll up to the waveform and right-click to add splits, or right-click a track region to ignore it.
                                     </p>
                                     <div class="flex flex-wrap gap-2">
-                                        <button @click="smartRescan(selectedRelease.tracks.length)" :disabled="analyzing" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold" :class="{'opacity-60 cursor-not-allowed': analyzing}">
-                                            <span x-show="!analyzing" x-text="`🎯 Smart rescan for ${selectedRelease?.tracks.length} tracks`"></span>
+                                        <button @click="smartRescan(targetTracks.length)" :disabled="analyzing" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                                            <span x-show="!analyzing" x-text="`🎯 Smart rescan for ${targetTracks.length} tracks`"></span>
                                             <span x-show="analyzing" class="flex items-center gap-2">
                                                 <div class="spinner"></div>
                                                 Rescanning…
                                             </span>
                                         </button>
-                                        <button @click="offerDurationBasedSplitting()" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold">
-                                            ✂️ Try duration-based splitting
+                                        <button @click="snapToDiscogs()" :disabled="analyzing || targetTracks.length < 1" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold" :class="{'opacity-60 cursor-not-allowed': analyzing}" title="Place the boundaries using the Discogs track lengths">
+                                            🧲 Snap to Discogs
                                         </button>
                                     </div>
                                     <p x-show="rescanNotice" x-cloak class="mt-2 text-sm text-primary" x-text="rescanNotice"></p>
