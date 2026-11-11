@@ -16,6 +16,7 @@ from io import BytesIO
 
 import requests
 import discogs_client
+from discogs_client.exceptions import HTTPError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp3 import MP3
 from mutagen.id3 import (
@@ -373,7 +374,7 @@ class MetadataHandler:
 
         return name
 
-    def search_basic(self, query: str, max_results: int = 5) -> List[dict]:
+    def search_basic(self, query: str, max_results: int = 5, page: int = 1) -> List[dict]:
         """
         Search Discogs with ONE request and build basic results from the raw
         search payloads (no per-release fetch).
@@ -384,7 +385,8 @@ class MetadataHandler:
 
         Args:
             query: Search query
-            max_results: Maximum number of results to return
+            max_results: Results per page
+            page: 1-based page of ``max_results`` results; past the last page is []
 
         Returns:
             List of dicts (id, artist, title, year, label, format, country,
@@ -394,9 +396,14 @@ class MetadataHandler:
         results = self.client.search(query, type="release")
         # Page size goes on the list, not in the query: the library appends its own
         # per_page (default 50) to each page URL, so a per_page search field would
-        # send Discogs two page sizes.
+        # send Discogs two page sizes (and page 2 would start at result 51).
         results.per_page = max(1, int(max_results))
-        hits = results.page(1)
+        try:
+            hits = results.page(page)
+        except HTTPError as e:
+            if page > 1 and e.status_code == 404:  # Discogs' answer past the last page
+                return []
+            raise
 
         basic = []
         for result in hits[:max_results]:
