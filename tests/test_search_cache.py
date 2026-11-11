@@ -7,6 +7,8 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 
+import pytest
+from discogs_client.exceptions import HTTPError
 from fastapi.testclient import TestClient
 
 import backend.api as api
@@ -45,7 +47,8 @@ def _hit(i, **over):
 
 class FakePages:
     """discogs_client's paginated search list: lazy until ``page()``, which is one
-    request using the list's ``per_page`` (50 unless the caller sets it)."""
+    request using the list's ``per_page`` (50 unless the caller sets it); a page
+    past the end is a 404, as Discogs answers."""
 
     def __init__(self, client):
         self.client = client
@@ -54,6 +57,8 @@ class FakePages:
     def page(self, index):
         self.client.page_calls.append((index, self.per_page))
         start = (index - 1) * self.per_page
+        if index > 1 and start >= len(self.client.hits):
+            raise HTTPError("Page not found", 404)
         return self.client.hits[start:start + self.per_page]
 
 
@@ -121,7 +126,7 @@ def test_search_basic_fallbacks():
 
 def test_search_page_size_is_not_sent_as_a_search_field():
     # The library appends its own per_page to every page URL, so a per_page search
-    # field would send Discogs two page sizes.
+    # field would send Discogs two page sizes and later pages would start at 51.
     client = FakeClient([_hit(i) for i in range(1, 30)])
     make(client).search_basic("q", 12)
     assert "per_page" not in client.search_calls[0][1]
@@ -133,17 +138,68 @@ def test_search_basic_skips_hits_without_an_id():
     assert [r["id"] for r in handler.search_basic("q", 5)] == [2]
 
 
+def test_search_later_page_is_one_request_for_the_next_results():
+    client = FakeClient([_hit(i) for i in range(1, 30)])
+    out = make(client).search_basic("q", 12, page=2)
+    assert [r["id"] for r in out] == list(range(13, 25))
+    assert client.page_calls == [(2, 12)]
+
+
+def test_search_past_the_last_page_is_empty():
+    client = FakeClient([_hit(i) for i in range(1, 13)])
+    assert make(client).search_basic("q", 12, page=2) == []
+
+
 def test_search_endpoint_returns_cards_without_tracklists(monkeypatch):
     calls = []
 
     class Handler:
-        def search_basic(self, query, max_results=5):
-            calls.append((query, max_results))
+        def search_basic(self, query, max_results=5, page=1):
+            calls.append((query, max_results, page))
             return [{"id": 1, "artist": "A", "title": "T"}]
 
     monkeypatch.setattr(api, "metadata_handler", Handler())
     with TestClient(api.app) as client:
         response = client.post("/api/search", json={"query": "q", "max_results": 12})
     assert response.status_code == 200
-    assert calls == [("q", 12)]
-    assert response.json() == {"results": [{"id": 1, "artist": "A", "title": "T", "tracks": None}]}
+    assert calls == [("q", 12, 1)]
+    assert response.json() == {
+        "results": [{"id": 1, "artist": "A", "title": "T", "tracks": None}],
+        "has_more": False,
+    }
+
+
+def _search_endpoint(monkeypatch, found):
+    calls = []
+
+    class Handler:
+        def search_basic(self, query, max_results=5, page=1):
+            calls.append((query, max_results, page))
+            return [{"id": page * 100 + i} for i in range(found)]
+
+    monkeypatch.setattr(api, "metadata_handler", Handler())
+    return calls
+
+
+@pytest.mark.parametrize("page, found, has_more", [
+    (1, 12, True), (2, 12, True),
+    (api.SEARCH_MAX_PAGES, 12, False),   # the last page we fetch, even when Discogs has more
+    (1, 7, False),                       # a short page is Discogs' last
+])
+def test_search_endpoint_pages(monkeypatch, page, found, has_more):
+    calls = _search_endpoint(monkeypatch, found)
+    with TestClient(api.app) as client:
+        response = client.post("/api/search", json={"query": "q", "max_results": 12, "page": page})
+    assert response.status_code == 200
+    assert calls == [("q", 12, page)]
+    body = response.json()
+    assert len(body["results"]) == found and body["has_more"] is has_more
+
+
+def test_search_endpoint_refuses_pages_beyond_the_limit(monkeypatch):
+    calls = _search_endpoint(monkeypatch, 12)
+    with TestClient(api.app) as client:
+        for page in (0, api.SEARCH_MAX_PAGES + 1):
+            response = client.post("/api/search", json={"query": "q", "max_results": 12, "page": page})
+            assert response.status_code == 422
+    assert calls == [], "never reaches Discogs"

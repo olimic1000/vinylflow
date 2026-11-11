@@ -714,6 +714,21 @@
                     <button @click="searchDiscogs()" :disabled="searchLoading" class="px-6 py-2 btn-primary rounded-lg font-semibold" :class="{'opacity-60 cursor-not-allowed': searchLoading}">Search</button>
                 </div>
 
+                <!-- Exact version: a Discogs release link or number skips the search -->
+                <div class="flex flex-wrap items-center gap-2 mb-4">
+                    <label for="discogs-release-id" class="text-sm text-secondary">Know the exact pressing?</label>
+                    <input id="discogs-release-id" type="text" x-model="releaseIdInput" @keyup.enter="openReleaseById()"
+                           placeholder="Discogs release link or number, e.g. 2874426"
+                           class="flex-1 min-w-0 px-3 py-1.5 border focus-primary rounded-lg text-sm" style="border-color: #8A8A86; min-width: 14rem;">
+                    <button type="button" @click="openReleaseById()" :disabled="releaseIdLoading || analyzing || !releaseIdInput.trim()"
+                            class="px-4 py-1.5 rounded-lg text-sm font-semibold border-2" style="border-color: #E5A100; color: #3D3D3D;"
+                            :class="{'opacity-60 cursor-not-allowed': releaseIdLoading || analyzing || !releaseIdInput.trim()}">
+                        <span x-show="!releaseIdLoading">Use this release</span>
+                        <span x-show="releaseIdLoading" class="flex items-center gap-2"><span class="spinner"></span>Loading…</span>
+                    </button>
+                </div>
+                <p x-show="releaseIdNotice" x-cloak role="alert" class="-mt-2 mb-4 p-2 rounded-lg text-sm text-primary" style="background-color: rgba(229, 161, 0, 0.15);" x-text="releaseIdNotice"></p>
+
                 <!-- Loading Animation -->
                 <div x-show="searchLoading" role="status" class="flex items-center justify-center gap-3 py-8">
                     <div class="spinner"></div>
@@ -782,6 +797,16 @@
                             <a @click.stop :href="`https://www.discogs.com${result.uri}`" target="_blank" rel="noopener noreferrer" class="text-xs underline hover:no-underline mt-2 inline-block" style="color: #8A5F00;">View on Discogs ↗</a>
                         </div>
                     </template>
+                </div>
+
+                <!-- Next page of the same query (at most SEARCH_MAX_PAGES fetches per search) -->
+                <div x-show="searchResults.length > 0 && !searchLoading && (searchHasMore || searchMoreError || searchMoreNotice)" x-cloak class="mt-4 flex flex-wrap items-center gap-3">
+                    <button x-show="searchHasMore" @click="loadMoreResults()" :disabled="searchMoreLoading" data-testid="load-more-results"
+                            class="px-4 py-2 rounded-lg text-primary hover:bg-page disabled:cursor-not-allowed disabled:opacity-60" style="background-color: #F0EFEB;">
+                        <span x-text="searchMoreLoading ? 'Loading more results…' : 'Load more results'"></span>
+                    </button>
+                    <p x-show="searchMoreError" class="text-sm text-primary" role="alert" x-text="searchMoreError"></p>
+                    <p x-show="searchMoreNotice" role="status" class="text-sm text-secondary" x-text="searchMoreNotice"></p>
                 </div>
             </div>
         </div>
