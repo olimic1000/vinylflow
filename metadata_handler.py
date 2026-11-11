@@ -24,6 +24,7 @@ from mutagen.id3 import (
 from mutagen.aiff import AIFF
 from PIL import Image
 from config import DEFAULT_TRACK_NUMBERING
+from album_description import DIGITIZED_COMMENT, AlbumDescriptions
 
 from release_credits import (
     VARIOUS_ARTISTS,
@@ -65,7 +66,7 @@ class TagSet:
     year: Optional[int]
     label: Optional[str]
     release_id: int
-    comment: str = "Digitized from vinyl"
+    comment: str = DIGITIZED_COMMENT
     cover_data: Optional[bytes] = None
     disc_number: Optional[str] = None
     vinyl_position: Optional[str] = None
@@ -319,6 +320,7 @@ class MetadataHandler:
         self._rate_limit_lock = threading.Lock()
         self._release_cache: "OrderedDict[int, DiscogsRelease]" = OrderedDict()
         self._release_cache_lock = threading.Lock()
+        self.album_descriptions = AlbumDescriptions()
 
     RELEASE_CACHE_SIZE = 128
 
@@ -532,6 +534,7 @@ class MetadataHandler:
         cover_data: Optional[bytes] = None,
         output_format: str = "flac",
         track_numbering: str = DEFAULT_TRACK_NUMBERING,
+        comment: Optional[str] = None,
     ) -> bool:
         """
         Write metadata tags to an audio file.
@@ -544,16 +547,17 @@ class MetadataHandler:
             cover_data: Optional cover art bytes to embed
             output_format: One of 'flac', 'mp3', 'aiff'
             track_numbering: "sequential_disc_per_lp" or "vinyl"
+            comment: Comment tag text; None keeps the default ("Digitized from vinyl").
 
         Returns:
             True if successful
         """
         if output_format == "flac":
-            return self._tag_flac(file_path, track, release, cover_data, track_numbering)
+            return self._tag_flac(file_path, track, release, cover_data, track_numbering, comment)
         elif output_format == "mp3":
-            return self._tag_mp3(file_path, track, release, cover_data, track_numbering)
+            return self._tag_mp3(file_path, track, release, cover_data, track_numbering, comment)
         elif output_format == "aiff":
-            return self._tag_aiff(file_path, track, release, cover_data, track_numbering)
+            return self._tag_aiff(file_path, track, release, cover_data, track_numbering, comment)
         else:
             print(f"Unsupported output format for tagging: {output_format}")
             return False
@@ -607,6 +611,7 @@ class MetadataHandler:
         release: DiscogsRelease,
         cover_data: Optional[bytes],
         track_numbering: str = DEFAULT_TRACK_NUMBERING,
+        comment: Optional[str] = None,
     ) -> Optional[TagSet]:
         """Compute the TagSet for one track.  Returns None if the Discogs
         track lookup fails — caller treats that as a tag-write failure."""
@@ -660,6 +665,7 @@ class MetadataHandler:
             disc_total=disc_total,
             album_artist=VARIOUS_ARTISTS if various else release.artist,
             compilation=various,
+            comment=comment or DIGITIZED_COMMENT,
             **classical,
         )
 
@@ -789,6 +795,12 @@ class MetadataHandler:
                 encoding=3, mime="image/jpeg", type=3, desc="Cover", data=tags.cover_data,
             )
 
+    @staticmethod
+    def _comment_kwargs(comment: Optional[str]) -> dict:
+        """``comment=`` only when set, so the default call to ``_build_tag_set`` stays unchanged
+        (existing test doubles of it have a fixed positional signature)."""
+        return {"comment": comment} if comment else {}
+
     def _tag_flac(
         self,
         file_path: Path,
@@ -796,8 +808,9 @@ class MetadataHandler:
         release: DiscogsRelease,
         cover_data: Optional[bytes] = None,
         track_numbering: str = DEFAULT_TRACK_NUMBERING,
+        comment: Optional[str] = None,
     ) -> bool:
-        tags = self._build_tag_set(track, release, cover_data, track_numbering)
+        tags = self._build_tag_set(track, release, cover_data, track_numbering, **self._comment_kwargs(comment))
         if tags is None:
             return False
         try:
@@ -819,13 +832,14 @@ class MetadataHandler:
         cover_data: Optional[bytes],
         open_audio,
         track_numbering: str = DEFAULT_TRACK_NUMBERING,
+        comment: Optional[str] = None,
     ) -> bool:
         """Shared ID3 tagger used by ``_tag_mp3`` and ``_tag_aiff``.
 
         ``open_audio(path)`` returns the Mutagen wrapper instance; the
         only difference between the MP3 and AIFF paths.
         """
-        tags = self._build_tag_set(track, release, cover_data, track_numbering)
+        tags = self._build_tag_set(track, release, cover_data, track_numbering, **self._comment_kwargs(comment))
         if tags is None:
             return False
         try:
@@ -841,13 +855,15 @@ class MetadataHandler:
             print(f"Failed to tag {file_path}: {e}")
             return False
 
-    def _tag_mp3(self, file_path, track, release, cover_data=None, track_numbering=DEFAULT_TRACK_NUMBERING):
+    def _tag_mp3(self, file_path, track, release, cover_data=None, track_numbering=DEFAULT_TRACK_NUMBERING,
+                 comment=None):
         return self._tag_id3_format(
-            file_path, track, release, cover_data, lambda p: MP3(p, ID3=ID3), track_numbering,
+            file_path, track, release, cover_data, lambda p: MP3(p, ID3=ID3), track_numbering, comment,
         )
 
-    def _tag_aiff(self, file_path, track, release, cover_data=None, track_numbering=DEFAULT_TRACK_NUMBERING):
-        return self._tag_id3_format(file_path, track, release, cover_data, AIFF, track_numbering)
+    def _tag_aiff(self, file_path, track, release, cover_data=None, track_numbering=DEFAULT_TRACK_NUMBERING,
+                  comment=None):
+        return self._tag_id3_format(file_path, track, release, cover_data, AIFF, track_numbering, comment)
 
     def sanitize_filename(self, name: str) -> str:
         """Sanitize string for use in filename."""

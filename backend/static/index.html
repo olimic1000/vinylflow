@@ -430,6 +430,14 @@
                         <p class="text-xs mt-1" style="color: #8A8A86;" x-show="config.track_numbering === 'vinyl'">Raw vinyl position written as TRACKNUMBER (e.g. A1, B1); no track or disc totals.</p>
                         <p class="text-xs mt-1" style="color: #8A8A86;" x-show="config.track_numbering === 'sequential_disc_per_lp'">DISCNUMBER per physical record, TRACKNUMBER sequential across both sides (with track and disc totals) + VINYLPOSITION tag. Single LPs appear as 1 disc. Correct sort order in Jellyfin, Roon, Plex.</p>
                     </div>
+                    <div>
+                        <label class="flex items-center gap-2 text-sm font-medium text-secondary cursor-pointer">
+                            <input type="checkbox" x-model="config.album_description" class="w-4 h-4 rounded" style="accent-color: #E5A100;">
+                            Add album description from Wikipedia
+                        </label>
+                        <!-- #5E5E5A: AA grey (6.2:1 on the card), as on the search cards -->
+                        <p class="text-xs mt-1" style="color: #5E5E5A;">Saves the opening paragraph of the album's Wikipedia article in the Comment tag, followed by "Digitized from vinyl". It describes the album, not your pressing. Looks the album up by its Discogs number on Wikidata and Wikipedia.</p>
+                    </div>
 
                     <!-- Discogs Token Section -->
                     <div class="border-t pt-4 mt-4" style="border-color: #8A8A86;">
@@ -804,6 +812,35 @@
                     <div class="flex-1 min-w-0">
                         <p class="font-bold text-primary" x-text="selectedRelease ? `${selectedRelease.artist} - ${selectedRelease.title}` : ''"></p>
                         <p class="text-sm text-secondary" x-text="selectedRelease ? `${selectedRelease.year} • ${selectedRelease.label}` : ''"></p>
+                        <!-- Album description: text-secondary (10:1 on the tint) and #8A5F00 link (5:1); x-text only -->
+                        <div x-show="albumDescriptionVisible" x-cloak class="mt-2 text-sm text-secondary" data-testid="album-description" aria-live="polite">
+                            <p class="font-medium">About the album (Wikipedia)</p>
+                            <p x-show="albumDescription.status === 'loading'">Looking up album description…</p>
+                            <template x-if="albumDescription.status === 'found'">
+                                <div>
+                                    <p id="album-description-text" x-text="albumDescription.text" :class="albumDescriptionExpanded ? '' : 'line-clamp-3'"></p>
+                                    <button type="button" @click="albumDescriptionExpanded = !albumDescriptionExpanded"
+                                            :aria-expanded="albumDescriptionExpanded ? 'true' : 'false'" aria-controls="album-description-text"
+                                            class="underline hover:no-underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                            style="--tw-ring-color: #8A5F00;"
+                                            x-text="albumDescriptionExpanded ? 'Show less' : 'Show more'"></button>
+                                    <p>
+                                        From Wikipedia:
+                                        <a :href="albumDescription.url" target="_blank" rel="noopener noreferrer"
+                                           class="underline hover:no-underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                           style="color: #8A5F00; --tw-ring-color: #8A5F00;"><span x-text="albumDescription.title"></span> ↗</a>
+                                        · Saved in the Comment tag
+                                    </p>
+                                </div>
+                            </template>
+                            <p x-show="albumDescription.status === 'none'">No Wikipedia description found. The comment will be "Digitized from vinyl".</p>
+                            <p x-show="albumDescription.status === 'error'">
+                                Couldn't reach Wikipedia
+                                <button type="button" @click="loadAlbumDescription()"
+                                        class="ml-1 underline hover:no-underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                        style="--tw-ring-color: #8A5F00;">Retry</button>
+                            </p>
+                        </div>
                         <!-- #8A5F00: 5.2:1 on this amber tint (the cards' #E5A100 would be 1.96:1) -->
                         <a x-show="selectedRelease?.id" :href="selectedRelease ? `https://www.discogs.com/release/${selectedRelease.id}` : '#'"
                            target="_blank" rel="noopener noreferrer" data-testid="release-discogs-link"

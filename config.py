@@ -97,6 +97,19 @@ class Config:
         # Track numbering scheme
         self.track_numbering = self._resolve_track_numbering(json_settings)
 
+        # Wikipedia lead paragraph in the Comment tag: off by default (no outbound traffic unasked)
+        self.album_description = self._as_bool(
+            json_settings.get("ALBUM_DESCRIPTION", os.getenv("ALBUM_DESCRIPTION")), False
+        )
+
+    @staticmethod
+    def _as_bool(value, default: bool) -> bool:
+        if value is None or value == "":
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
     def _resolve_track_numbering(self, json_settings: dict) -> str:
         """The numbering scheme, keeping an older install on the scheme it was using.
 
@@ -213,6 +226,9 @@ class Config:
 
     def save_track_numbering(self, scheme: str) -> bool:
         return self._write_settings({'TRACK_NUMBERING': scheme})
+
+    def save_album_description(self, enabled: bool) -> bool:
+        return self._write_settings({'ALBUM_DESCRIPTION': bool(enabled)})
 
     def reload(self):
         """
