@@ -18,6 +18,7 @@ class OutputSpec:
     restoration_level: int = 0
     hum_freq: int = 50
     track_numbering: str = "sequential_disc_per_lp"
+    album_description: bool = False  # Wikipedia lead paragraph in the Comment tag
 
 
 @dataclass(frozen=True)
