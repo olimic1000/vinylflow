@@ -30,6 +30,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from audio_processor import OUTPUT_FORMATS, AudioProcessor, Track
+from album_description import STATUS_ERROR, STATUS_FOUND, compose_comment
 from metadata_handler import MetadataHandler
 
 from .events import OutputSpec, ProcessingRun, ProgressEvent
@@ -73,6 +74,12 @@ def run(
         session.mark_processing(run_record)
 
         tracks = _build_tracks(session)
+
+        comment = None
+        if spec.album_description:
+            comment = _lookup_album_comment(
+                metadata_handler, release.id, getattr(release, "master_id", None), on_progress
+            )
 
         album_folder = Path(spec.output_dir) / metadata_handler.create_album_folder_name(release)
         ext = OUTPUT_FORMATS[spec.output_format]["extension"]
@@ -130,9 +137,11 @@ def run(
                 hum_freq=spec.hum_freq,
             )
 
+            tag_extras = {"comment": comment} if comment else {}  # only when found: default call unchanged
             metadata_handler.tag_file(
                 temp_output, track, release, cover_data, spec.output_format,
                 track_numbering=spec.track_numbering,
+                **tag_extras,
             )
 
             temp_output.rename(final_path)
@@ -161,6 +170,28 @@ def run(
         if session.state == SessionState.PROCESSING:
             session.mark_failed(str(e))
         raise
+
+
+def _lookup_album_comment(metadata_handler, release_id, master_id, on_progress):
+    """The Comment tag text for this export, or None to keep the default call and comment.
+
+    A lookup error only warns (``Warning:`` prefix); it never fails the job.
+    """
+    on_progress(
+        ProgressEvent(phase="fetching_description", fraction=0.25, message="Fetching album description...")
+    )
+    result = metadata_handler.album_descriptions.lookup(release_id, master_id)
+    if result.status == STATUS_FOUND:
+        return compose_comment(result.text)
+    if result.status == STATUS_ERROR:
+        on_progress(
+            ProgressEvent(
+                phase="fetching_description",
+                fraction=0.25,
+                message="Warning: Album description unavailable; comment left as 'Digitized from vinyl'",
+            )
+        )
+    return None
 
 
 def _same_file(path: Path, source: Path) -> bool:

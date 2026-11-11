@@ -221,6 +221,88 @@ def test_re_processing_a_complete_session(session, spec):
     assert session.last_run.output_files == ["B1-track.flac", "B2-track.flac"]
 
 
+# ---- album description ----
+
+class FakeDescriptions:
+    """Stands in for ``AlbumDescriptions``: returns a canned result and records the lookups."""
+
+    def __init__(self, result) -> None:
+        self.result = result
+        self.lookups: list[tuple[Any, Any]] = []
+
+    def lookup(self, release_id, master_id):
+        self.lookups.append((release_id, master_id))
+        return self.result
+
+
+class DescribingMetadata(FakeMetadata):
+    """FakeMetadata whose ``tag_file`` also accepts (and records) ``comment``.  The plain
+    FakeMetadata deliberately has no such parameter, to prove the default path never passes it."""
+
+    def __init__(self, release, descriptions) -> None:
+        super().__init__(release)
+        self.album_descriptions = descriptions
+        self.comments: list[Any] = []
+
+    def tag_file(self, file_path, track, release, cover_data, output_format, track_numbering="vinyl",
+                 comment=None):
+        self.comments.append(comment)
+
+
+def run_described(session, spec, metadata):
+    events: list[ProgressEvent] = []
+    pipeline.run(session=session, spec=spec, release_id=99, audio_processor=FakeAudio(),
+                 metadata_handler=metadata, on_progress=events.append)
+    return events
+
+
+def described_spec(tmp_path: Path) -> OutputSpec:
+    return OutputSpec(output_format="flac", output_dir=tmp_path / "out", album_description=True)
+
+
+def test_description_found_tags_every_file_with_composed_comment(session, tmp_path):
+    from album_description import DescriptionResult
+    descriptions = FakeDescriptions(DescriptionResult("found", "About it.", "T", "https://en.wikipedia.org/wiki/T"))
+    release = FakeRelease(id=99)
+    release.master_id = 5
+    metadata = DescribingMetadata(release, descriptions)
+    events = run_described(session, described_spec(tmp_path), metadata)
+    assert metadata.comments == ["About it.\nDigitized from vinyl"] * 2
+    assert descriptions.lookups == [(99, 5)]
+    fetching = [e for e in events if e.phase == "fetching_description"]
+    assert [e.fraction for e in fetching] == [0.25]
+    assert session.state == SessionState.COMPLETE
+
+
+def test_description_error_keeps_default_comment_warns_and_succeeds(session, tmp_path):
+    from album_description import DescriptionResult
+    metadata = DescribingMetadata(FakeRelease(id=99), FakeDescriptions(DescriptionResult("error", None, None, None)))
+    events = run_described(session, described_spec(tmp_path), metadata)
+    assert metadata.comments == [None, None]
+    warnings = [e for e in events if e.message.startswith("Warning:")]
+    assert len(warnings) == 1 and warnings[0].fraction == 0.25
+    assert "Album description unavailable" in warnings[0].message
+    assert session.state == SessionState.COMPLETE
+
+
+def test_description_none_keeps_default_comment_without_warning(session, tmp_path):
+    from album_description import DescriptionResult
+    metadata = DescribingMetadata(FakeRelease(id=99), FakeDescriptions(DescriptionResult("none", None, None, None)))
+    events = run_described(session, described_spec(tmp_path), metadata)
+    assert metadata.comments == [None, None]
+    assert not [e for e in events if e.message.startswith("Warning:")]
+
+
+def test_description_off_never_looks_up_or_passes_comment(session, spec):
+    from album_description import DescriptionResult
+    descriptions = FakeDescriptions(DescriptionResult("found", "X", "T", "u"))
+    metadata = DescribingMetadata(FakeRelease(id=99), descriptions)
+    events = run_described(session, spec, metadata)
+    assert descriptions.lookups == []
+    assert metadata.comments == [None, None]
+    assert "fetching_description" not in [e.phase for e in events]
+
+
 # --- an export never overwrites its source -------------------------------------------------
 
 def _case_insensitive(directory: Path) -> bool:

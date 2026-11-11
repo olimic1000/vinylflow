@@ -288,6 +288,8 @@ DEFAULT_FLAC_COMPRESSION=8
 
 *Upgrading:* an existing `config/settings.json` without a saved scheme is set to `vinyl` on the first start, so your library keeps sorting one way; only new installs get the sequential default. An install configured only through `.env` or environment variables has no such file, so set `TRACK_NUMBERING=vinyl` there to keep the old numbering.
 
+**Album description (off by default)**: Settings (⚙️) → "Add album description from Wikipedia", or `ALBUM_DESCRIPTION=true`. When on, the Comment tag holds the album's English Wikipedia opening paragraph followed by "Digitized from vinyl" on a new line; the Release card previews it before you export. Only the VinylFlow backend makes the requests, to Wikidata and Wikipedia, and the only thing sent about your record is the Discogs master (or release) number of the selected release, used to find the article. If no single article is found, or Wikipedia can't be reached, the comment stays "Digitized from vinyl" and the export still succeeds. With the setting off, nothing is requested.
+
 ### Silence Detection Tips
 
 | Problem | Fix |

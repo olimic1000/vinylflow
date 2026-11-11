@@ -39,6 +39,7 @@ vinylflow/
 ├── audio_processor.py      # Silence detection, track splitting, ffmpeg wrappers
 ├── import_folder.py        # Pure import-folder path logic: listing, name resolution (no traversal/symlink escape), overlap check
 ├── track_boundaries.py     # Pure track-boundary math (gaps, envelope, music span, guided placement, refine_cuts)
+├── album_description.py    # Wikipedia lead paragraph for the Comment tag, found via Wikidata by Discogs master/release id (cached)
 ├── metadata_handler.py     # Discogs fetch, cover art download, audio tagging
 ├── desktop_launcher.py     # Entry point — sets up dirs/env vars, starts FastAPI, opens window
 ├── VinylFlow.spec          # PyInstaller spec (macOS .app + Windows .exe)
@@ -100,7 +101,8 @@ audio_processor.py  metadata_handler.py  config.py    Discogs API
 | GET | `/api/audio/{file_id}` | Serve audio for playback |
 | POST | `/api/search` | Discogs search `{query, max_results}` -> `{results}`: basic cards with `tracks: null` (one Discogs request, no per-release fetch); the UI uses 12 per search |
 | GET | `/api/release/{release_id}` | Full release + tracklist (server-side cached); fills a search card |
-| POST | `/api/process` | Start background processing job |
+| GET | `/api/release/{release_id}/description` | `{status: found/none/error, text, title, url}` (album's Wikipedia lead paragraph; `{status: disabled}` without any lookup when the setting is off) |
+| POST | `/api/process` | Start background processing job (`album_description` optional: None = the setting) |
 | GET | `/api/process/{job_id}` | Poll job status |
 | GET/DELETE | `/api/queue`, `/api/queue/{file_id}` | Manage upload queue |
 | GET/PUT | `/api/config` | Read/write audio settings |
@@ -222,6 +224,7 @@ Also: guard `@click.away` with `!$event.ctrlKey` so Ctrl+click (which triggers `
 - **Tagging:** Mutagen handles all three formats; cover art embedded as bytes
 - **Numbering:** `sequential_disc_per_lp` writes DISCNUMBER + TRACKNUMBER with `TRACKTOTAL`/`DISCTOTAL` (ID3 `n/total` in TRCK/TPOS). Numbering follows the release tracklist, so a side exported on its own continues after side A; a skipped track leaves a gap. DISCTOTAL = the highest LP the release reaches. `vinyl` writes no totals. Only one repeated letter is a side (`_disc_of`): `CD1` / `DVD1` tracks keep their position as TRACKNUMBER, with no disc or totals.
 - **Default numbering** is `sequential_disc_per_lp` (`config.DEFAULT_TRACK_NUMBERING`, `OutputSpec`, the frontend `config` default); the `vinyl` scheme stays selectable in Settings. A non-empty settings.json without `TRACK_NUMBERING` predates that default and is pinned to `vinyl` on load (`Config._resolve_track_numbering`), unless the environment sets it; new installs therefore record the default on their first save (`_write_settings`).
+- **Album description** (setting `album_description`, key `ALBUM_DESCRIPTION`, default off; `PUT /api/config` accepts it): COMMENT / COMM is "Digitized from vinyl", or with the setting on, the album's English Wikipedia lead paragraph + LF + "Digitized from vinyl" (`album_description.compose_comment`). Lookup: Wikidata `haswbstatement:P1954=<master>` (else `P2206=<release>` only when the master search has no hits) -> exactly one item with an enwiki sitelink (several = none, never guessed) -> REST `page/summary` (`type == "standard"`). In-memory LRU per release id (`found`/`none` cached, `error` retried; lock never held across HTTP), 12 s chain budget, stops at the first connection error. Only the backend contacts Wikidata/Wikipedia (descriptive User-Agent). The pipeline looks it up when `OutputSpec.album_description` (from `ProcessRequest.album_description`, None = setting) and passes `comment=` to `tag_file` only when found; an error is a `Warning:` progress event, never a failed job. Release card preview: `loadAlbumDescription` (from `selectRelease`, `saveConfig`, Retry; stale replies dropped), shown only while `albumDescription.releaseId === selectedRelease.id`.
 
 ---
 
