@@ -15,6 +15,21 @@ const RELEASE_DETAIL_CONCURRENCY = 2;
 const SIDE_FIT_TOLERANCE = 0.15;
 // Candidates this close (as a fraction) to the best are ties; the full album / a whole disc wins them
 const SIDE_FIT_TIE = 0.01;
+// Dashed ghost markers on the waveform: where the Discogs lengths expect each break (not draggable).
+// Opaque #9C2418; contrast (WCAG): 7.4:1 on the card (#FAF9F6), 5.1:1 at worst on a 30 % region tint
+// over the card, and 3.3:1 at worst over a region tint on the waveform bars (#93C5FD), so 3:1 for
+// graphics holds everywhere. (#B02A1E gave only 2.8:1 over the pink and purple regions on the bars.)
+const EXPECTED_MARKER_COLOR = '#9C2418';
+
+// Keep WaveSurfer objects out of Alpine's reactive proxies. Through a proxy,
+// WaveSurfer's identity checks fail (a removed region compares proxy vs raw and
+// stays in the plugin's list, so the next remove() throws and aborts the caller).
+function markRaw(obj) {
+    if (obj && typeof obj === 'object') {
+        Object.defineProperty(obj, '__v_skip', { value: true, configurable: true });
+    }
+    return obj;
+}
 
 /** A search result card; tracks: null = tracklist not loaded yet (filled in progressively). */
 function newSearchCard(result) {
@@ -91,7 +106,17 @@ function vinylApp() {
         _pendingPickId: null,     // Card clicked while its tracklist loads; a later pick clears it
         selectedRelease: null,
         trackMappingReversed: false,
-        customMapping: [],
+        customMapping: [],   // detected track index -> index into selectedRelease.tracks (a side can be a subset)
+
+        // Which side(s) of the selected release the recording covers (guided detection places that many tracks)
+        selectedSides: [],        // Side keys ('A', 'B', '' = unlettered)
+        suggestedSides: [],       // Sides auto-picked when the release was selected
+        sidesSuggestionReason: '',   // 'length' | 'default' | 'single' | '' (how suggestedSides was chosen)
+
+        // Guided detection and hand edits
+        expectedBoundaries: [],   // Seconds where Discogs lengths put each break (ghost markers)
+        boundariesEdited: false,  // True once the user hand-edits boundaries (until detection replaces them)
+        editBanner: false,        // Show "You've adjusted boundaries by hand" choice
 
         // Smart Rescan
         expectedTracks: null,
@@ -848,7 +873,12 @@ function vinylApp() {
                 selectedRelease: this.selectedRelease,
                 trackCountMismatch: this.trackCountMismatch,
                 trackMappingReversed: this.trackMappingReversed,
-                customMapping: [...this.customMapping]
+                customMapping: [...this.customMapping],
+                selectedSides: [...this.selectedSides],
+                suggestedSides: [...this.suggestedSides],
+                sidesSuggestionReason: this.sidesSuggestionReason,
+                expectedBoundaries: [...this.expectedBoundaries],
+                boundariesEdited: this.boundariesEdited
             };
         },
 
@@ -860,16 +890,26 @@ function vinylApp() {
             this.trackCountMismatch = snapshot.trackCountMismatch;
             this.trackMappingReversed = snapshot.trackMappingReversed;
             this.customMapping = [...snapshot.customMapping];
-            this.addTrackRegions();
+            this.selectedSides = [...snapshot.selectedSides];
+            this.suggestedSides = [...snapshot.suggestedSides];
+            this.sidesSuggestionReason = snapshot.sidesSuggestionReason;
+            this.expectedBoundaries = [...snapshot.expectedBoundaries];
+            this.boundariesEdited = snapshot.boundariesEdited;
+            this.editBanner = false;
+            this.addTrackRegions();   // draws the ghost markers too
         },
 
-        /** Reset the fields snapshotEdits() covers (no tracks, no release, no mapping) */
+        /** Reset the fields snapshotEdits() covers (no tracks, no release, no mapping, no sides) */
         clearEditState() {
             this.detectedTracks = [];
             this.selectedRelease = null;
             this.trackCountMismatch = false;
             this.trackMappingReversed = false;
             this.customMapping = [];
+            this.selectedSides = [];
+            this.suggestedSides = [];
+            this.sidesSuggestionReason = '';
+            this.resetEditState();
         },
 
         /** Search results and query, for the flows that clear them (re-analyze, removing the open file) */
@@ -910,11 +950,9 @@ function vinylApp() {
             if (this.currentFile && !(this.currentFile.musicDuration > 0)) {
                 this.fetchScan(fileId);
             }
-            this.detectedTracks = [];
+            this.clearEditState();
             this.resetSearchResults();
-            this.selectedRelease = null;
             this._pendingPickId = null;
-            this.trackCountMismatch = false;
             this.searchNotice = '';
             // A search of the previous file is superseded: its reply (and its tracklist
             // loads) are dropped by the sequence check, and its loading flag must not
@@ -1090,11 +1128,7 @@ function vinylApp() {
                     throw new Error(data.detail || 'Analysis failed');
                 }
 
-                this.detectedTracks = data.tracks.map(track => ({
-                    ...track,
-                    editing: false,
-                    ignored: false
-                }));
+                this.setDetectedTracks(data.tracks);
                 this.processingMessage = '';
 
                 const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
@@ -1102,11 +1136,11 @@ function vinylApp() {
                     file.status = 'analyzed';
                 }
 
-                // A release may have been picked before detection ran (Discogs first):
-                // its mapping and track-count check need the tracks that just arrived.
-                // The release itself and the search results are left alone.
+                // A release may be picked already (Discogs first): its mapping and track-count
+                // check need the tracks that just arrived. The release, its sides and the
+                // search results are left alone.
                 if (this.selectedRelease) {
-                    this.resetMappingToDetected();
+                    this.resetMappingToTargets();
                 }
 
                 if (this.detectedTracks.length === 0) {
@@ -1121,9 +1155,9 @@ function vinylApp() {
                 this.notifyError('Analysis failed', error);
                 this.processingMessage = '';
                 // With a release picked, show the count mismatch (and its Smart Rescan /
-                // duration-based options) instead of an empty mapping.
+                // Snap to Discogs options) instead of an empty mapping.
                 if (this.selectedRelease) {
-                    this.resetMappingToDetected();
+                    this.resetMappingToTargets();
                 }
             } finally {
                 this.analyzing = false;
@@ -1166,8 +1200,8 @@ function vinylApp() {
         },
 
         /**
-         * Undo of a flow that replaced the whole analysis (re-analyze,
-         * duration-based splitting); its Undo toast checks undoBlockedReason first.
+         * Undo of a flow that replaced the whole analysis (re-analyze); its Undo toast
+         * checks undoBlockedReason first.
          */
         async restoreSnapshotWithWaveform(snapshot) {
             this.currentPlayingTrack = null;
@@ -1216,11 +1250,8 @@ function vinylApp() {
                     throw new Error(data.detail || 'Smart rescan failed');
                 }
 
-                this.detectedTracks = data.tracks.map(track => ({
-                    ...track,
-                    editing: false,
-                    ignored: false
-                }));
+                // A new detection: hand edits and ghost markers of the old one no longer apply.
+                this.setDetectedTracks(data.tracks);
                 this.processingMessage = '';
 
                 const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
@@ -1228,9 +1259,8 @@ function vinylApp() {
                     file.status = 'analyzed';
                 }
 
-                // Boundary edits from the old analysis no longer apply.
                 if (this.selectedRelease) {
-                    this.resetMappingToDetected();
+                    this.resetMappingToTargets();
                 }
 
                 this.destroyWaveform();
@@ -1399,33 +1429,321 @@ function vinylApp() {
         /**
          * Select a release from search results.  Only a release whose tracklist has
          * loaded can be selected (everything downstream reads release.tracks).
-         * Detection runs after the pick when there are no tracks yet; analyzeFile
-         * builds the mapping once they arrive.
+         * Picks the side(s) the recording most likely covers, then places exactly that
+         * many tracks with guided detection (or asks first when boundaries were edited
+         * by hand, see afterTargetsChanged).
          */
         selectRelease(release) {
             if (!Array.isArray(release?.tracks)) return;
-            this._pendingPickId = null;   // this pick replaces any card still loading
+            this._pendingPickId = null;   // this pick replaces any card still loading, even when refused below
+            if (this.analyzing) {
+                this.notify('Wait for track detection to finish before picking a release.', { type: 'warning', timeout: 5000 });
+                return;
+            }
             this.selectedRelease = release;
-            this.resetMappingToDetected();
-            if (this.detectedTracks.length === 0) {
-                this.analyzeFile();
+            const suggestion = this.suggestSides(
+                release,
+                this.currentFile?.musicDuration || this.currentFile?.duration
+            );
+            this.selectedSides = suggestion.sides;
+            this.suggestedSides = suggestion.sides;
+            this.sidesSuggestionReason = suggestion.reason;
+
+            this.resetMappingToTargets();
+            this.afterTargetsChanged();
+        },
+
+        /**
+         * Release sides as chips (with counts/lengths) for the selected release
+         */
+        get sideChips() {
+            return this.releaseSides(this.selectedRelease);
+        },
+
+        /**
+         * Scope presets for the selected release: "Full album" plus one per
+         * disc (sides pair up in order: A/B = disc 1, C/D = disc 2 ...).
+         * Disc presets only exist when the release has more than 2 sides.
+         */
+        get sidePresets() {
+            return this.presetsFor(this.sideChips);
+        },
+
+        /** Does the current selection exactly equal this side set? */
+        sidesEqualSelection(sides) {
+            return sides.length === this.selectedSides.length &&
+                sides.every(key => this.selectedSides.includes(key));
+        },
+
+        /** Is this exact side set what the auto-suggestion picked by length? */
+        isMatchedScope(sides) {
+            return this.sidesSuggestionReason === 'length' &&
+                sides.length === this.suggestedSides.length &&
+                sides.every(key => this.suggestedSides.includes(key));
+        },
+
+        /** Muted note shown when the scope was defaulted rather than matched by length */
+        get defaultScopeNote() {
+            if (this.sidesSuggestionReason !== 'default' || this.sideChips.length <= 1) return '';
+            if (!this.sidesEqualSelection(this.suggestedSides)) return '';
+            return 'Defaulted to the full album. Pick a disc or side if this recording holds less.';
+        },
+
+        /** Apply a scope preset and re-run detection */
+        applyPreset(sides) {
+            if (this.analyzing) return;
+            this.selectedSides = this.sideChips.map(g => g.side).filter(key => sides.includes(key));
+            this.resetMappingToTargets();
+            this.afterTargetsChanged();
+        },
+
+        /**
+         * Toggle a side chip (multi-select, at least one side stays selected)
+         * and re-run detection for the new track count.
+         */
+        toggleSide(side) {
+            if (this.analyzing) return;
+
+            const isSelected = this.selectedSides.includes(side);
+            if (isSelected && this.selectedSides.length === 1) return;
+
+            const wanted = isSelected
+                ? this.selectedSides.filter(key => key !== side)
+                : [...this.selectedSides, side];
+            // Keep release order regardless of click order
+            this.selectedSides = this.sideChips.map(g => g.side).filter(key => wanted.includes(key));
+
+            this.resetMappingToTargets();
+            this.afterTargetsChanged();
+        },
+
+        /**
+         * Release tracks on the selected sides, in release order, each carrying its
+         * releaseIdx into selectedRelease.tracks.
+         */
+        get targetTracks() {
+            if (!this.selectedRelease) return [];
+            return this.releaseSides(this.selectedRelease)
+                .filter(g => this.selectedSides.includes(g.side))
+                .flatMap(g => g.tracks)
+                .sort((a, b) => a.releaseIdx - b.releaseIdx);
+        },
+
+        /**
+         * Point customMapping at targetTracks (detected track i -> i-th target; clamped to
+         * the last target when there are more detected tracks than targets), un-reverse,
+         * and recompute the track-count warning.  customMapping holds indices into
+         * selectedRelease.tracks, so a side that is a subset maps correctly.  Run whenever
+         * the release, the sides or the detected tracks change.
+         */
+        resetMappingToTargets() {
+            const targets = this.targetTracks;
+            const lastIdx = targets.length ? targets[targets.length - 1].releaseIdx : null;
+            this.trackMappingReversed = false;
+            this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) =>
+                targets[i]?.releaseIdx ?? lastIdx ?? i
+            );
+            this.trackCountMismatch = !!this.selectedRelease &&
+                this.activeTrackCount !== targets.length;
+        },
+
+        /**
+         * Install a detection result.  Detection replaces any hand edits, so the edit
+         * state starts over and the ghost markers (Discogs-expected breaks, if any) are new.
+         */
+        setDetectedTracks(tracks, { expected = [] } = {}) {
+            this.detectedTracks = tracks.map(track => ({
+                ...track,
+                editing: false,
+                ignored: false
+            }));
+            this.boundariesEdited = false;
+            this.editBanner = false;
+            this.expectedBoundaries = [...expected];
+        },
+
+        /** Forget the edit flag, the banner and the ghost markers */
+        resetEditState() {
+            this.boundariesEdited = false;
+            this.editBanner = false;
+            this.expectedBoundaries = [];
+        },
+
+        /**
+         * Record that the user changed boundaries by hand.  Anything that installs tracks
+         * without detection (e.g. imported labels) must call this too, or picking a release
+         * re-detects over them.
+         */
+        markEdited() {
+            this.boundariesEdited = true;
+        },
+
+        /**
+         * Re-run guided detection after the release or the sides changed, unless the user
+         * hand-edited the boundaries: then keep them and ask (editBanner).
+         */
+        afterTargetsChanged() {
+            if (this.boundariesEdited && this.detectedTracks.length > 0) {
+                this.editBanner = true;
+                this.clearExpectedMarkers();
+                return Promise.resolve(false);
+            }
+            return this.redetectForTargets();
+        },
+
+        /**
+         * Snap the boundaries to the Discogs lengths of the chosen sides: guided detection
+         * again, replacing hand edits.  An Undo toast puts the previous boundaries back.
+         */
+        async snapToDiscogs() {
+            if (this.analyzing || !this.selectedRelease || this.targetTracks.length < 1) return;
+
+            const fileId = this.currentFileId;
+            const snapshot = this.snapshotEdits();
+            this.editBanner = false;
+
+            const ok = await this.redetectForTargets();
+            if (this.currentFileId !== fileId) return;
+            if (ok) {
+                this.notifyUndo('Snapped the boundaries to the Discogs lengths.',
+                    () => this.undoSnap(snapshot), { fileId, type: 'success' });
+            } else if (this.detectedTracks.length === 0 && snapshot.detectedTracks.length > 0) {
+                // Found nothing (redetectForTargets already warned): keep the hand edits rather
+                // than leave an empty editor with nothing to undo.
+                this.rescanNotice = '';
+                await this.restoreSnapshotWithWaveform(snapshot);
+            }
+        },
+
+        /** Undo of Snap to Discogs: the boundaries, mapping, sides and markers from before */
+        async undoSnap(snapshot) {
+            this.rescanNotice = '';   // "Placed N tracks" described the snap, not the restored edits
+            if (this.waveform || snapshot.detectedTracks.length === 0) {
+                this.restoreEdits(snapshot);
+            } else {
+                // A snap can leave no waveform (it found nothing): build one for the restored tracks
+                await this.restoreSnapshotWithWaveform(snapshot);
             }
         },
 
         /**
-         * Map detected track i to release track i, un-reverse, and recompute the
-         * track-count warning.  Run whenever the release or the detected tracks change.
+         * "Keep my edits" on the hand-edit banner: the boundaries stay, the mapping
+         * follows the new release / sides.
          */
-        resetMappingToDetected() {
-            this.trackMappingReversed = false;
-            this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
-            const activeTrackCount = this.detectedTracks.filter(t => !t.ignored).length;
-            this.trackCountMismatch = !!this.selectedRelease && activeTrackCount !== this.selectedRelease.tracks.length;
+        keepMyEdits() {
+            this.editBanner = false;
+            this.resetMappingToTargets();
+        },
+
+        /**
+         * Place exactly as many tracks as the chosen sides have (POST /api/analyze-guided):
+         * Discogs lengths where known, side changes as hints.  Resolves true when tracks
+         * were placed.
+         */
+        async redetectForTargets() {
+            const targets = this.targetTracks;
+            if (targets.length < 1 || !this.currentFileId || this.analyzing) return false;
+
+            const fileId = this.currentFileId;
+            let succeeded = false;
+            this.analyzing = true;
+            this.rescanNotice = '';
+            this.processingMessage = 'Placing track boundaries...';
+            this.currentPlayingTrack = null;
+            this.stopWaveform();
+            if (this.$refs.audioPlayer) {
+                this.$refs.audioPlayer.pause();
+                this.$refs.audioPlayer.currentTime = 0;
+            }
+
+            try {
+                const response = await fetch('/api/analyze-guided', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_id: fileId,
+                        expected_tracks: targets.length,
+                        durations: targets.map(track => this.parseTrackDuration(track.duration)),
+                        side_breaks: this.sideBreaks(targets)
+                    })
+                });
+                const data = await response.json();
+
+                if (!response.ok || !data.tracks) {
+                    throw new Error(data.detail || 'Boundary detection failed');
+                }
+
+                this.setDetectedTracks(data.tracks, {
+                    // Only a length-driven placement has expected breaks to show
+                    expected: data.method === 'durations'
+                        ? (data.boundaries || []).map(b => b.expected).filter(time => Number.isFinite(time))
+                        : []
+                });
+                this.processingMessage = '';
+
+                const file = this.uploadedFiles.find(f => f.id === fileId);
+                if (file) {
+                    file.status = 'analyzed';
+                }
+                this.applyScan(fileId, data);
+
+                if (this.selectedRelease) {
+                    this.resetMappingToTargets();
+                }
+
+                // initWaveform keeps an existing waveform, and with it the old regions
+                this.destroyWaveform();
+                if (data.tracks.length === 0) {
+                    // No waveform either, or the retry's tracks would get no regions
+                    this.notify('No tracks were found in this recording. Try another release or adjust the silence settings.', { type: 'warning' });
+                } else {
+                    await this.$nextTick();
+                    await this.initWaveform();
+                }
+
+                if (data.method === 'durations') {
+                    const snapped = (data.boundaries || []).filter(b => b.snapped).length;
+                    this.rescanNotice = `✅ Placed ${data.tracks.length} tracks from Discogs lengths (${snapped} of ${(data.boundaries || []).length} boundaries snapped to silence).`;
+                } else {
+                    this.rescanNotice = data.matched
+                        ? `✅ Placed ${data.tracks.length} tracks by track count (Discogs lengths unavailable).`
+                        : `⚠️ Couldn't find exactly ${targets.length} tracks — closest result is ${data.tracks.length}. Right-click the waveform to add or remove splits manually.`;
+                }
+                // Nothing found is not a success: the caller must not offer an Undo of it
+                succeeded = data.tracks.length > 0;
+            } catch (error) {
+                console.error('Guided detection failed:', error);
+                this.notifyError('Boundary detection failed', error);
+                this.processingMessage = '';
+                this.clearExpectedMarkers();   // they belonged to the previous sides
+                // With no tracks, show the count mismatch and its options instead of an empty mapping
+                if (this.selectedRelease) {
+                    this.resetMappingToTargets();
+                }
+            } finally {
+                this.analyzing = false;
+            }
+            return succeeded;
+        },
+
+        /**
+         * Indices (into `targets`) where a lettered side changes (A2 -> B1 is [2]): the
+         * backend anchors each side on a long silence near that point.  Numeric-only
+         * positions ("1", "2") never imply a flip.
+         */
+        sideBreaks(targets) {
+            const sideOf = track => /^([A-Za-z]+)/.exec(String(track.position || '').trim())?.[1]?.toUpperCase();
+            return targets.flatMap((track, index) => {
+                if (!index) return [];
+                const before = sideOf(targets[index - 1]);
+                const after = sideOf(track);
+                return before && after && before !== after ? [index] : [];
+            });
         },
 
         /**
          * The count warning, except while the first detection runs: a pick starts it, and
-         * "0 detected" is no finding yet (its duration-splitting button would race it too).
+         * "0 detected" is no finding yet (its Snap to Discogs button would race it too).
          * With tracks present it stays up during a Smart Rescan, whose spinner lives in it.
          */
         get showTrackCountMismatch() {
@@ -1437,11 +1755,18 @@ function vinylApp() {
          * detection/waveform so another release can be picked.
          */
         changeRelease() {
+            // A running detection would install its tracks and markers on a release that is gone
+            if (this.analyzing) return;
             this.selectedRelease = null;
             this._pendingPickId = null;   // a card still loading must not bring a release back
+            this.selectedSides = [];
+            this.suggestedSides = [];
+            this.sidesSuggestionReason = '';
             this.trackMappingReversed = false;
             this.trackCountMismatch = false;
             this.customMapping = [];
+            this.editBanner = false;
+            this.clearExpectedMarkers();   // they belong to the release's lengths
         },
 
         /**
@@ -1756,112 +2081,22 @@ function vinylApp() {
         },
 
         /**
-         * Offer duration-based splitting when silence detection fails
-         */
-        async offerDurationBasedSplitting() {
-            // Check if Discogs has duration information
-            const hasDiscogsDurations = this.selectedRelease.tracks.every(t => t.duration);
-
-            if (!hasDiscogsDurations) {
-                this.notify("Duration-based splitting isn't available: Discogs has no track lengths for this release. Adjust the boundaries by hand or pick another release.", { type: 'warning' });
-                return;
-            }
-
-            // The button is the user's explicit choice, so no confirmation:
-            // the previous boundaries come back with Undo (see below).
-            await this.analyzeFileDurationBased();
-        },
-
-        /**
-         * Analyze file using duration-based splitting from Discogs track lengths
-         */
-        async analyzeFileDurationBased() {
-            if (!this.currentFileId || !this.selectedRelease) return;
-
-            this.processingMessage = 'Creating duration-based splits...';
-            const fileId = this.currentFileId;
-            const snapshot = this.snapshotEdits();
-
-            try {
-                // Extract durations from Discogs tracks
-                const durations = this.selectedRelease.tracks.map(t => {
-                    // Parse duration string: "5:24" -> 324 seconds
-                    if (!t.duration) return 0;
-
-                    const parts = t.duration.split(':');
-                    if (parts.length === 2) {
-                        return parseInt(parts[0]) * 60 + parseInt(parts[1]);
-                    } else if (parts.length === 3) {
-                        return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
-                    }
-                    return 0;
-                }).filter(d => d > 0);
-
-                if (durations.length !== this.selectedRelease.tracks.length) {
-                    throw new Error('Could not parse all track durations from Discogs');
-                }
-
-                // Call backend API
-                const response = await fetch('/api/analyze-duration-based', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        file_id: this.currentFileId,
-                        discogs_durations: durations
-                    })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(data.detail || 'Duration-based analysis failed');
-                }
-
-                // Update detected tracks (same format as regular analysis)
-                this.detectedTracks = data.tracks.map(track => ({
-                    ...track,
-                    editing: false,
-                    ignored: false,
-                    durationBased: true  // Flag for UI indication
-                }));
-
-                this.processingMessage = '';
-
-                // Update file status
-                const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
-                if (file) {
-                    file.status = 'analyzed (duration-based)';
-                }
-
-                // The mapping and count check follow the new tracks. Reachable with no tracks at all
-                // (a pick whose detection found none), when every one would export as "Unknown".
-                this.resetMappingToDetected();
-
-                // initWaveform keeps an existing waveform, and with it the old regions
-                this.destroyWaveform();
-                await this.initWaveform();
-
-                this.notifyUndo(`Created ${this.detectedTracks.length} tracks from the Discogs lengths. Review the boundaries before exporting.`,
-                    () => this.restoreSnapshotWithWaveform(snapshot), { fileId, type: 'success' });
-
-            } catch (error) {
-                console.error('Duration-based analysis failed:', error);
-                this.notifyError('Duration-based analysis failed', error);
-                this.processingMessage = '';
-            }
-        },
-
-        /**
          * Reverse track mapping order
          */
         reverseMapping() {
             this.trackMappingReversed = !this.trackMappingReversed;
 
             if (this.trackMappingReversed) {
+                // Reverse within the chosen sides' tracks (indices into selectedRelease.tracks)
+                const targets = this.targetTracks;
                 const numTracks = this.detectedTracks.length;
-                this.customMapping = Array.from({ length: numTracks }, (_, i) => numTracks - 1 - i);
+                this.customMapping = Array.from({ length: numTracks }, (_, i) => {
+                    if (!targets.length) return numTracks - 1 - i;
+                    const target = Math.min(Math.max(numTracks - 1 - i, 0), targets.length - 1);
+                    return targets[target].releaseIdx;
+                });
             } else {
-                this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
+                this.resetMappingToTargets();
             }
         },
 
@@ -1921,6 +2156,7 @@ function vinylApp() {
             this.detectedTracks[idx].start = newStart;
             const end = this.detectedTracks[idx].end;
             this.detectedTracks[idx].duration = end - newStart;
+            this.markEdited();
         },
 
         /**
@@ -1937,6 +2173,7 @@ function vinylApp() {
             if (idx + 1 < this.detectedTracks.length) {
                 this.detectedTracks[idx + 1].start = newEnd;
             }
+            this.markEdited();
         },
 
         /**
@@ -1968,7 +2205,7 @@ function vinylApp() {
                 // have a fixed CSS height (see index.html) — a min-height
                 // floor lets the canvas/container feedback loop grow the
                 // waveform forever on fractional-DPI Windows displays (#63).
-                this.waveform = WaveSurfer.create({
+                this.waveform = markRaw(WaveSurfer.create({
                     container: '#waveform',
                     waveColor: '#93c5fd',
                     progressColor: '#93c5fd',
@@ -1977,7 +2214,7 @@ function vinylApp() {
                     normalize: true,
                     barWidth: 2,
                     barGap: 1
-                });
+                }));
 
                 // With MediaElement + provided peaks, load() resolves without
                 // fetching the audio — a later fetch failure only surfaces as
@@ -1987,7 +2224,7 @@ function vinylApp() {
                     this.waveformLoading = false;
                 });
 
-                this.waveformRegions = this.waveform.registerPlugin(WaveSurfer.Regions.create());
+                this.waveformRegions = markRaw(this.waveform.registerPlugin(WaveSurfer.Regions.create()));
 
                 const peaksResponse = await fetch(`/api/waveform-peaks/${this.currentFileId}`);
                 if (!peaksResponse.ok) {
@@ -2128,6 +2365,50 @@ function vinylApp() {
                     console.error(`Failed to create region for Track ${track.number}:`, e);
                 }
             });
+
+            this.addExpectedMarkers(totalDuration);
+        },
+
+        /**
+         * Thin dashed, non-interactive markers at the Discogs-expected breaks.  Their ids
+         * start with "expected-", so nothing treats them as tracks.  A dashed line (not
+         * colour alone) tells them from the cuts.
+         */
+        addExpectedMarkers(totalDuration) {
+            if (!this.waveformRegions) return;
+            const total = totalDuration || this.waveform?.getDuration?.() || Infinity;
+            this.expectedBoundaries.forEach((time, i) => {
+                if (!(time > 0 && time < total)) return;
+                try {
+                    const marker = this.waveformRegions.addRegion({
+                        start: time,
+                        color: EXPECTED_MARKER_COLOR,
+                        drag: false,
+                        resize: false,
+                        id: `expected-${i + 1}`
+                    });
+                    if (marker && marker.element && marker.element.style) {
+                        marker.element.style.pointerEvents = 'none';
+                        marker.element.style.borderLeft = `2px dashed ${EXPECTED_MARKER_COLOR}`;
+                        marker.element.style.backgroundColor = 'transparent';
+                    }
+                } catch (e) {
+                    console.error('Failed to create expected-boundary marker:', e);
+                }
+            });
+        },
+
+        /** Drop the ghost markers (data and drawn regions) */
+        clearExpectedMarkers() {
+            this.expectedBoundaries = [];
+            if (!this.waveformRegions) return;
+            try {
+                this.waveformRegions.getRegions()
+                    .filter(region => String(region.id).startsWith('expected-'))
+                    .forEach(region => region.remove());
+            } catch (e) {
+                console.error('Error clearing expected markers:', e);
+            }
         },
 
         /**
@@ -2172,15 +2453,13 @@ function vinylApp() {
             // Replace the split track with two new tracks, then renumber cleanly
             this.detectedTracks.splice(trackIndex, 1, newTrack1, newTrack2);
             this.renumberTracks();
+            this.markEdited();
 
             // Refresh waveform regions
             this.addTrackRegions();
 
             // Clear any selected release (track count changed)
-            if (this.selectedRelease) {
-                this.selectedRelease = null;
-                this.trackCountMismatch = false;
-            }
+            this.dropReleaseAfterEdit();
         },
 
         /**
@@ -2233,15 +2512,13 @@ function vinylApp() {
             // Replace the split track with two new tracks, then renumber cleanly
             this.detectedTracks.splice(trackIndex, 1, newTrack1, newTrack2);
             this.renumberTracks();
+            this.markEdited();
 
             // Refresh waveform regions
             this.addTrackRegions();
 
             // Clear any selected release (track count changed)
-            if (this.selectedRelease) {
-                this.selectedRelease = null;
-                this.trackCountMismatch = false;
-            }
+            this.dropReleaseAfterEdit();
         },
 
         /**
@@ -2262,17 +2539,32 @@ function vinylApp() {
             // Remove the track, then renumber cleanly
             this.detectedTracks.splice(trackIndex, 1);
             this.renumberTracks();
+            this.markEdited();
 
             // Refresh waveform regions
             this.addTrackRegions();
 
             // Clear any selected release (track count changed)
-            if (this.selectedRelease) {
-                this.selectedRelease = null;
-                this.trackCountMismatch = false;
-            }
+            this.dropReleaseAfterEdit();
 
             this.notifyUndo(`Deleted track ${trackNumber}.`, () => this.restoreEdits(snapshot), { fileId });
+        },
+
+        /**
+         * Splitting or deleting a track changes the track count, so the selected release is
+         * dropped, with everything that belonged to it: its sides, mapping and the ghost
+         * markers of its lengths.  (Undo of a delete restores them from its snapshot.)
+         */
+        dropReleaseAfterEdit() {
+            if (!this.selectedRelease) return;
+            this.selectedRelease = null;
+            this.selectedSides = [];
+            this.suggestedSides = [];
+            this.sidesSuggestionReason = '';
+            this.trackCountMismatch = false;
+            this.trackMappingReversed = false;
+            this.customMapping = [];
+            this.clearExpectedMarkers();
         },
 
         renumberTracks() {
@@ -2325,6 +2617,11 @@ function vinylApp() {
             const track = this.detectedTracks.find(t => t.number === trackNumber);
 
             if (track) {
+                // setOptions() (colour, a neighbour pushed along) fires this event too: only a
+                // real move of the cut is a hand edit.
+                if (Math.abs(track.start - region.start) > 1e-6 || Math.abs(track.end - region.end) > 1e-6) {
+                    this.markEdited();
+                }
                 track.start = region.start;
                 track.end = region.end;
                 track.duration = region.end - region.start;
@@ -2522,11 +2819,10 @@ function vinylApp() {
             this.stopProcessPolling();
             this.successMessage = '';
             this.isProcessing = false;
-            this.detectedTracks = [];
+            this.clearEditState();
             this.resetSearchResults();
             this.searchLoading = false;
             this.searchSeq++;
-            this.selectedRelease = null;
             this.searchQuery = '';
             this.processingProgress = 0;
             this.processingMessage = '';

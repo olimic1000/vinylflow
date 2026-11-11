@@ -104,4 +104,95 @@ assert.strictEqual(filter.filteredResults.length, 5);
 filter.onlyWithLengths = true;
 assert.deepStrictEqual(filter.filteredResults.map(r => r.id), [1, 30]);
 
-console.log('release helpers ok');
+// ---- side picker: presets, the chosen sides' tracks, and the mapping into the release ----
+const presets = vinylApp();
+presets.selectedRelease = fourSides; presets.selectedSides = ['A', 'B'];
+let presetList = presets.sidePresets;
+assert.deepStrictEqual(presetList.map(p => p.label), ['Full album', 'Disc 1 (A/B)', 'Disc 2 (C/D)']);
+assert.strictEqual(presetList[0].trackCount, 8); assert.strictEqual(presetList[0].totalSeconds, 5280); assert.strictEqual(presetList[1].totalSeconds, 2400);
+assert.ok(presets.sidesEqualSelection(presetList[1].sides)); assert.ok(!presets.sidesEqualSelection(presetList[0].sides));
+presets.selectedRelease = fourNoLengths; assert.strictEqual(presets.sidePresets[0].totalSeconds, null);
+presets.selectedRelease = twoSides; assert.deepStrictEqual(presets.sidePresets.map(p => p.label), ['Full album'], 'two sides: no disc presets');
+presets.selectedRelease = numeric; assert.deepStrictEqual(presets.sidePresets, [], 'one side: nothing to pick');
+
+const subset = vinylApp();
+subset.selectedRelease = twoSides; subset.selectedSides = ['B'];
+subset.detectedTracks = [1, 2, 3, 4, 5].map(number => ({ number, ignored: false }));
+assert.deepStrictEqual(subset.targetTracks.map(t => t.releaseIdx), [3, 4]);
+subset.resetMappingToTargets();
+assert.deepStrictEqual(subset.customMapping, [3, 4, 4, 4, 4], 'extra tracks clamp to the last target');
+assert.strictEqual(subset.trackCountMismatch, true);
+subset.detectedTracks = [1, 2].map(number => ({ number, ignored: false }));
+subset.resetMappingToTargets();
+assert.deepStrictEqual(subset.customMapping, [3, 4]); assert.strictEqual(subset.trackCountMismatch, false);
+subset.reverseMapping();
+assert.deepStrictEqual(subset.customMapping, [4, 3]); assert.strictEqual(subset.trackMappingReversed, true);
+subset.reverseMapping();
+assert.deepStrictEqual(subset.customMapping, [3, 4]); assert.strictEqual(subset.trackMappingReversed, false);
+subset.selectedSides = ['B', 'A'];
+assert.deepStrictEqual(subset.targetTracks.map(t => t.releaseIdx), [0, 1, 2, 3, 4], 'release order, whatever the click order');
+subset.selectedRelease = null;
+assert.deepStrictEqual(subset.targetTracks, []);
+assert.deepStrictEqual(subset.sideBreaks(vinylApp().releaseSides(twoSides).flatMap(g => g.tracks)), [3]);
+assert.deepStrictEqual(subset.sideBreaks(vinylApp().releaseSides(numeric).flatMap(g => g.tracks)), [], 'numeric positions are no flip');
+
+// ---- picking: the suggestion decides the sides; chips and presets re-run guided detection ----
+(async () => {
+    const tick = () => new Promise(resolve => setImmediate(resolve));
+    const requested = [];
+    global.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        requested.push(`${url}:${body.expected_tracks}`);
+        return { ok: true, json: async () => ({ method: 'count', matched: true, boundaries: [],
+            tracks: Array.from({ length: body.expected_tracks }, (_, i) => ({ number: i + 1, start: i * 10, end: i * 10 + 10, duration: 10 })) }) };
+    };
+    const wire = (instance, seconds) => {
+        instance.currentFileId = 'f'; instance.uploadedFiles = [{ id: 'f', filename: 'a.wav' }];
+        instance.currentFile = { duration: seconds };
+        instance.$nextTick = async () => {}; instance.$refs = {}; instance.initWaveform = async () => {};
+        return instance;
+    };
+
+    const picker = wire(vinylApp(), 700);
+    picker.selectRelease(twoSides); await tick();
+    assert.deepStrictEqual(picker.selectedSides, ['A']);
+    assert.strictEqual(picker.sidesSuggestionReason, 'length');
+    assert.ok(picker.isMatchedScope(['A'])); assert.ok(!picker.isMatchedScope(['B']));
+    assert.strictEqual(picker.defaultScopeNote, '');
+    assert.strictEqual(requested[requested.length - 1], '/api/analyze-guided:3');
+    picker.toggleSide('B'); await tick();
+    assert.deepStrictEqual(picker.selectedSides, ['A', 'B']);
+    picker.toggleSide('A'); await tick();
+    assert.deepStrictEqual(picker.selectedSides, ['B']);
+    picker.toggleSide('B'); await tick();
+    assert.deepStrictEqual(picker.selectedSides, ['B'], 'the last side cannot be switched off');
+    assert.deepStrictEqual(requested.slice(1), ['/api/analyze-guided:5', '/api/analyze-guided:2']);
+
+    // no length decides: full album, with a note saying so
+    const unmatched = wire(vinylApp(), 3000);
+    unmatched.selectRelease(fourNoLengths); await tick();
+    assert.deepStrictEqual(unmatched.selectedSides, ['A', 'B', 'C', 'D']);
+    assert.strictEqual(unmatched.sidesSuggestionReason, 'default');
+    assert.ok(unmatched.defaultScopeNote.startsWith('Defaulted to the full album'));
+    const before = requested.length;
+    unmatched.applyPreset(['C', 'D']); await tick();
+    assert.deepStrictEqual(unmatched.selectedSides, ['C', 'D']);
+    assert.strictEqual(unmatched.defaultScopeNote, '', 'the note is gone once the user chose');
+    assert.deepStrictEqual(requested.slice(before), ['/api/analyze-guided:4']);
+
+    // a release with no tracks has nothing to place; one sided numeric release picks its only side
+    const none = wire(vinylApp(), 700); none.detectedTracks = [{ ignored: false }];
+    const count = requested.length;
+    none.selectRelease(empty); await tick();
+    assert.strictEqual(requested.length, count);
+    const single = wire(vinylApp(), 420);
+    single.selectRelease(numeric); await tick();
+    assert.deepStrictEqual(single.selectedSides, ['']); assert.strictEqual(single.targetTracks.length, 3);
+
+    // chips do nothing while a detection runs
+    picker.analyzing = true; picker.selectedSides = ['A'];
+    picker.toggleSide('B'); picker.applyPreset(['A', 'B']);
+    assert.deepStrictEqual(picker.selectedSides, ['A']);
+
+    console.log('release helpers ok');
+})().catch(error => { console.error(error); process.exit(1); });

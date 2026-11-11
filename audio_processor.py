@@ -19,7 +19,6 @@ from typing import List, Tuple, Optional
 from track_boundaries import (
     Track,
     boundaries_for_track_count,
-    boundaries_from_durations,
     boundaries_from_gaps,
     envelope_from_pcm,
     gaps_from_envelope,
@@ -403,29 +402,6 @@ class AudioProcessor:
                 best_tracks, best_info = tracks, info
 
         return self.refine_tracks(db, best_tracks), best_info
-
-    def split_tracks_duration_based(
-        self, file_path: Path, durations: List[float], verbose=False
-    ) -> List[Track]:
-        """
-        Create track splits based on provided durations (for when silence detection fails).
-
-        Args:
-            file_path: Path to audio file (unused; kept for caller compatibility)
-            durations: List of track durations from Discogs
-            verbose: Print detailed output
-
-        Returns:
-            List of Track objects
-        """
-        tracks = boundaries_from_durations(durations)
-
-        if verbose:
-            print(f"\nCreated {len(tracks)} duration-based tracks:")
-            for track in tracks:
-                print(f"  {track}")
-
-        return tracks
 
     def _build_restoration_filters(self, restoration_level: int, hum_freq: int = 0) -> Optional[str]:
         """Build an ffmpeg -af filter chain for audio restoration.

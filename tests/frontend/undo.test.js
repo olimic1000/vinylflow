@@ -1,5 +1,5 @@
 // Undo flows: queue-file removal (delayed DELETE), track delete, re-analyze,
-// duration-based splitting.
+// Snap to Discogs.
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
@@ -193,26 +193,37 @@ function mkApp() {
     assert.deepStrictEqual(a.detectedTracks.map(x => x.end), [10]);
     assert.ok(a.toasts.some(x => x.type === 'warning'));
 
-    // ---- duration-based splitting: no confirm dialog; runs, then offers Undo ----
+    // ---- Snap to Discogs: runs without a confirm dialog, then offers Undo ----
     a = mkApp();
     a.detectedTracks = [trk(1, 0, 100)];
-    a.selectedRelease = { id: 1, tracks: [{ duration: '1:00' }, { duration: '1:00' }] };
-    global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ tracks: [trk(1, 0, 60), trk(2, 60, 120)] }) });
-    await a.offerDurationBasedSplitting();
+    a.selectedRelease = { id: 1, tracks: [{ position: 'A1', duration: '1:00' }, { position: 'A2', duration: '1:00' }] };
+    a.selectedSides = ['A'];
+    a.resetMappingToTargets();
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ tracks: [trk(1, 0, 60), trk(2, 60, 120)], method: 'durations', matched: true, boundaries: [{ expected: 60, snapped: true }] }) });
+    await a.snapToDiscogs();
     assert.deepStrictEqual(a.detectedTracks.map(x => x.end), [60, 120]);
+    assert.deepStrictEqual(a.expectedBoundaries, [60]);
+    assert.deepStrictEqual(a.customMapping, [0, 1]);
     const dt = a.toasts[a.toasts.length - 1];
     assert.strictEqual(dt.action.label, 'Undo');
     a.runToastAction(dt.id);
-    await sleep(5);
     assert.deepStrictEqual(a.detectedTracks.map(x => x.end), [100]);
-    // missing Discogs lengths: a warning, no request
+    assert.deepStrictEqual(a.expectedBoundaries, []);
+    assert.deepStrictEqual(a.customMapping, [0]);
+    assert.strictEqual(a.trackCountMismatch, true, 'one detected track, two on the side');
+    // after switching files the Undo refuses instead of clobbering
+    await a.snapToDiscogs();
+    const staleSnap = a.toasts[a.toasts.length - 1];
+    a.currentFileId = 'f3'; a.detectedTracks = [trk(1, 0, 10)];
+    a.runToastAction(staleSnap.id);
+    assert.deepStrictEqual(a.detectedTracks.map(x => x.end), [10]);
+    assert.ok(a.toasts.some(x => x.type === 'warning'));
+    // no release: nothing to snap to, no request
     a = mkApp();
-    a.selectedRelease = { id: 1, tracks: [{ duration: '1:00' }, { duration: '' }] };
     let called = false;
     global.fetch = async () => { called = true; return { ok: true, json: async () => ({}) }; };
-    await a.offerDurationBasedSplitting();
+    await a.snapToDiscogs();
     assert.strictEqual(called, false);
-    assert.strictEqual(a.toasts[0].type, 'warning');
 
     // ---- a failed re-analysis keeps the previous boundaries (there was no confirm) ----
     a = mkApp();
