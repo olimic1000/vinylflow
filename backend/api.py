@@ -23,7 +23,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Query, WebSocket, 
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from backend.security import SameOriginMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -300,9 +300,14 @@ class GuidedAnalyzeRequest(BaseModel):
     side_breaks: Optional[List[int]] = None
 
 
+# Discogs search pages one query may fetch ("Load more"); must match SEARCH_MAX_PAGES in app.js.
+SEARCH_MAX_PAGES = 3
+
+
 class SearchRequest(BaseModel):
     query: str
     max_results: int = 5
+    page: int = Field(1, ge=1, le=SEARCH_MAX_PAGES)
 
 
 class TrackMapping(BaseModel):
@@ -1373,13 +1378,15 @@ async def search_discogs(request: SearchRequest):
     """Search Discogs; basic cards only (``tracks: null`` = not loaded yet).
 
     Full tracklists come from GET /api/release/{id}, which the UI calls per card.
+    ``has_more``: a full page below SEARCH_MAX_PAGES, so "Load more" may ask for the next one.
     """
     try:
         # One search round-trip (rate-limit sleep inside) -- keep it off the event loop.
         basic = await asyncio.to_thread(
-            metadata_handler.search_basic, request.query, request.max_results
+            metadata_handler.search_basic, request.query, request.max_results, request.page
         )
-        return {"results": [{**result, "tracks": None} for result in basic]}
+        has_more = request.page < SEARCH_MAX_PAGES and len(basic) >= request.max_results
+        return {"results": [{**result, "tracks": None} for result in basic], "has_more": has_more}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

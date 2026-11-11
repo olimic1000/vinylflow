@@ -224,7 +224,7 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
     assert.strictEqual(app.searchLoading, true, 'selectFile returns while the search runs');
     const search = server.calledWith('/api/search');
     assert.strictEqual(search.length, 1);
-    assert.deepStrictEqual(search[0].body, { query: 'Pink Floyd Animals', max_results: 12 });
+    assert.deepStrictEqual(search[0].body, { query: 'Pink Floyd Animals', max_results: 12, page: 1 });
 
     // ---- trap 3: calling searchDiscogs again while it runs does not send a second request ----
     app.searchDiscogs();
