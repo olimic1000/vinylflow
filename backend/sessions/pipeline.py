@@ -15,6 +15,7 @@ need the calling event loop to stay responsive while ffmpeg runs.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from datetime import datetime
@@ -35,6 +36,8 @@ from metadata_handler import MetadataHandler
 
 from .events import OutputSpec, ProcessingRun, ProgressEvent
 from .session import Session, SessionState
+
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[ProgressEvent], None]
 
@@ -75,12 +78,6 @@ def run(
 
         tracks = _build_tracks(session)
 
-        comment = None
-        if spec.album_description:
-            comment = _lookup_album_comment(
-                metadata_handler, release.id, getattr(release, "master_id", None), on_progress
-            )
-
         album_folder = Path(spec.output_dir) / metadata_handler.create_album_folder_name(release)
         ext = OUTPUT_FORMATS[spec.output_format]["extension"]
         # Every (temp, final) path this export writes, decided before anything is written: none
@@ -96,6 +93,12 @@ def run(
             raise RuntimeError(OVERWRITES_SOURCE)
 
         album_folder.mkdir(parents=True, exist_ok=True)
+
+        comment = None
+        if spec.album_description:
+            comment = _lookup_album_comment(
+                metadata_handler, release.id, getattr(release, "master_id", None), on_progress
+            )
 
         on_progress(
             ProgressEvent(
@@ -180,10 +183,15 @@ def _lookup_album_comment(metadata_handler, release_id, master_id, on_progress):
     on_progress(
         ProgressEvent(phase="fetching_description", fraction=0.25, message="Fetching album description...")
     )
-    result = metadata_handler.album_descriptions.lookup(release_id, master_id)
-    if result.status == STATUS_FOUND:
+    try:
+        result = metadata_handler.album_descriptions.lookup(release_id, master_id)
+    except Exception:
+        # lookup() is meant never to raise; a bug in it must show in the log, not fail the export.
+        logger.exception("Album description lookup for release %s raised", release_id)
+        result = None
+    if result is not None and result.status == STATUS_FOUND:
         return compose_comment(result.text)
-    if result.status == STATUS_ERROR:
+    if result is None or result.status == STATUS_ERROR:
         on_progress(
             ProgressEvent(
                 phase="fetching_description",

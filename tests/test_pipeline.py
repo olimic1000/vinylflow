@@ -303,6 +303,21 @@ def test_description_off_never_looks_up_or_passes_comment(session, spec):
     assert "fetching_description" not in [e.phase for e in events]
 
 
+class RaisingDescriptions:
+    def lookup(self, release_id, master_id):
+        raise RuntimeError("bug in the lookup")
+
+
+def test_description_lookup_bug_warns_and_logs_but_the_export_succeeds(session, tmp_path, caplog):
+    metadata = DescribingMetadata(FakeRelease(id=99), RaisingDescriptions())
+    with caplog.at_level("ERROR"):
+        events = run_described(session, described_spec(tmp_path), metadata)
+    assert session.state == SessionState.COMPLETE
+    assert metadata.comments == [None, None]
+    assert [e for e in events if e.message.startswith("Warning:") and "Album description unavailable" in e.message]
+    assert "bug in the lookup" in caplog.text
+
+
 # --- an export never overwrites its source -------------------------------------------------
 
 def _case_insensitive(directory: Path) -> bool:
@@ -351,3 +366,37 @@ def test_an_export_that_would_overwrite_its_source_fails_and_writes_nothing(tmp_
     assert [p.name for p in album.iterdir()] == [name], "no track, temp or cover file written"
     assert s.state == SessionState.FAILED
     assert events[-1].phase == "error" and "Choose a different output folder" in events[-1].message
+
+
+def test_a_refused_overwrite_makes_no_description_lookup(tmp_path):
+    from album_description import DescriptionResult
+    album = tmp_path / "out" / "Test Artist - Test Album"
+    album.mkdir(parents=True)
+    src = album / "A1-track.flac"
+    src.write_bytes(b"ORIGINAL" * 100)
+    s = SessionStore().create(
+        session_id="sess-desc", source_audio=src.resolve(), source_filename=src.name,
+        source_duration=120.0, source_size=src.stat().st_size, in_place=True,
+    )
+    s.set_boundaries([FakeBoundary(1, 0.0, 60.0), FakeBoundary(2, 60.0, 120.0)])
+    s.set_mappings({1: "A1", 2: "A2"})
+    descriptions = FakeDescriptions(DescriptionResult("found", "X", "T", "u"))
+    with pytest.raises(RuntimeError, match="would overwrite the recording"):
+        run_described(s, described_spec(tmp_path), DescribingMetadata(FakeRelease(id=99), descriptions))
+    assert descriptions.lookups == []
+
+
+def test_an_unwritable_output_folder_fails_before_any_description_lookup(tmp_path):
+    from album_description import DescriptionResult
+    blocker = tmp_path / "out"
+    blocker.write_text("a file where the output folder should be")  # mkdir fails
+    s = SessionStore().create(
+        session_id="sess-mkdir", source_audio=tmp_path / "src.wav", source_filename="src.wav",
+        source_duration=120.0, source_size=1, in_place=True,
+    )
+    s.set_boundaries([FakeBoundary(1, 0.0, 60.0)])
+    s.set_mappings({1: "A1"})
+    descriptions = FakeDescriptions(DescriptionResult("found", "X", "T", "u"))
+    with pytest.raises(OSError):
+        run_described(s, described_spec(tmp_path), DescribingMetadata(FakeRelease(id=99), descriptions))
+    assert descriptions.lookups == []

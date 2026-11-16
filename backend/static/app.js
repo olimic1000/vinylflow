@@ -1810,7 +1810,15 @@ function vinylApp() {
                 result = { status: 'error' };
             }
             // Stale reply: another release was selected, or the setting was switched off meanwhile.
-            if (this.selectedRelease?.id !== releaseId || this.config.album_description !== true) return;
+            if (this.selectedRelease?.id !== releaseId || this.config.album_description !== true) {
+                // Dropping the reply of the lookup that still owns the state (release cleared, e.g.
+                // by delete track, and about to be restored by Undo) would leave "loading" forever,
+                // and restoreEdits skips the reload for the same release id: go back to idle.
+                if (this.albumDescription.releaseId === releaseId && this.albumDescription.status === 'loading') {
+                    this.albumDescription = { releaseId: null, status: 'idle', text: '', title: '', url: '' };
+                }
+                return;
+            }
             this.albumDescription = {
                 releaseId, status: result.status || 'error',
                 text: result.text || '', title: result.title || '', url: result.url || ''

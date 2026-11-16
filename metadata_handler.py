@@ -166,9 +166,12 @@ class DiscogsRelease:
         # on any key the payload lacks, one more Discogs request. Plain fakes set attributes.
         payload = getattr(release, "data", None)
         if not isinstance(payload, dict):
-            payload = {"genres": getattr(release, "genres", None), "extraartists": getattr(release, "credits", None)}
+            payload = {"genres": getattr(release, "genres", None), "extraartists": getattr(release, "credits", None),
+                       "master_id": getattr(release, "master_id", None)}
         self.genres = list(payload.get("genres") or [])
         self.credits = parse_credits(payload.get("extraartists"))
+        # From the raw payload too: attribute reads of a missing key would refresh from Discogs.
+        self.master_id = payload.get("master_id") or None
 
         # Get label
         labels = getattr(release, "labels", [])

@@ -332,7 +332,7 @@ class ProcessRequest(BaseModel):
     output_format: str = "flac"  # 'flac', 'mp3', or 'aiff'
     restoration_level: int = 0   # 0=none, 1=light clean, 2=full restore
     hum_freq: int = 50           # Electrical hum frequency in Hz (50=EU, 60=US)
-    album_description: Optional[bool] = None  # Wikipedia lead paragraph in the Comment tag; None = server setting
+    album_description: Optional[bool] = None  # Wikipedia lead paragraph in the Comment tag; the request can only turn the saved setting off
 
 
 class ConfigUpdate(BaseModel):
@@ -1403,8 +1403,8 @@ _PHASE_TO_UI_STEP = {
 
 
 def _wants_album_description(request: ProcessRequest) -> bool:
-    """The request's choice, else the saved setting (``None`` = not chosen)."""
-    return config.album_description if request.album_description is None else request.album_description
+    """The saved setting, which a request may only turn off (``False``); it can never switch it on."""
+    return bool(config.album_description) and request.album_description is not False
 
 
 async def process_file_background(request: ProcessRequest):

@@ -334,3 +334,27 @@ def test_every_request_has_user_agent_and_timeout():
     for _url, _params, headers, timeout in web.calls:
         assert headers["User-Agent"] == DESCRIPTION_USER_AGENT
         assert timeout and timeout > 0
+
+
+def test_non_string_article_title_is_none_not_an_exception():
+    web = happy_web()
+    web.entities = FakeResponse(200, {"entities": {"Q1": {"sitelinks": {"enwiki": {"title": ["x"]}}}}})
+    assert AlbumDescriptions(http_get=web).lookup(1, 10).status == "none"
+
+
+def test_any_os_error_is_error_not_an_exception():
+    """requests.RequestException is an OSError, but a bad CA bundle path raises a plain one."""
+    web = happy_web()
+    web.search = {"haswbstatement:P1954=10": OSError("Could not find a suitable TLS CA certificate bundle")}
+    assert AlbumDescriptions(http_get=web).lookup(1, 10).status == "error"
+
+
+def test_a_failed_lookup_is_logged_without_urls_titles_or_paths(caplog):
+    """The log names the exception class and host only: transport error text can carry the
+    request URL (the album title) or a local path."""
+    web = happy_web()
+    web.summaries = {SUMMARY_PREFIX + "Some_Album": requests.ConnectionError("down: /Users/you/ca.pem Some_Album")}
+    with caplog.at_level("WARNING", logger="album_description"):
+        AlbumDescriptions(http_get=web).lookup(77, 10)
+    assert "77" in caplog.text and "ConnectionError" in caplog.text and "en.wikipedia.org" in caplog.text
+    assert "Some_Album" not in caplog.text and "/Users/you" not in caplog.text

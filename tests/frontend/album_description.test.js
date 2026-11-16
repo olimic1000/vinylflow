@@ -3,6 +3,9 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+// The runner judges exit codes only: a test left awaiting an unanswered fake fetch would exit 0.
+let finished = false;
+process.on('exit', () => { if (!finished) { console.error('album description tests did not finish (an unexpected request is still pending)'); process.exitCode = 1; } });
 const vinylApp = new Function(fs.readFileSync(path.join(__dirname, '../../backend/static/app.js'), 'utf8') + ';return vinylApp;')();
 
 const release = id => ({ id, artist: 'A', title: 'T', year: 1970, label: 'L', tracks: [{ position: 'A1', title: 'One', duration: '3:00' }] });
@@ -153,5 +156,28 @@ const found = { status: 'found', text: 'An album.', title: 'T (album)', url: 'ht
         assert.strictEqual(app.albumDescriptionVisible, true);
     }
 
+    // Reviewer's steps: select A, clear the release while the lookup runs, its reply lands
+    // (dropped as stale), then Undo puts A back: the preview must not stay on "Looking up...".
+    {
+        const app = mk({ enabled: true });
+        let resolveFirst;
+        let requests = 0;
+        app.replies[url(5)] = () => (++requests === 1
+            ? new Promise(resolve => { resolveFirst = () => resolve(found); })
+            : Promise.resolve(found));
+        app.selectedRelease = release(5);
+        const first = app.loadAlbumDescription();
+        const snapshot = app.snapshotEdits();
+        app.selectedRelease = null;            // delete track / re-analyze clears the release
+        resolveFirst();
+        await first;
+        app.restoreEdits(snapshot);            // Undo
+        await new Promise(resolve => setImmediate(resolve));
+        assert.strictEqual(app.fetches.filter(u => u === url(5)).length, 2, 'Undo requests the description again');
+        assert.strictEqual(app.albumDescription.status, 'found');
+        assert.strictEqual(app.albumDescriptionVisible, true);
+    }
+
+    finished = true;
     console.log('album description ok');
 })().catch(error => { console.error(error); process.exit(1); });
