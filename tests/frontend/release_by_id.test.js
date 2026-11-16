@@ -1,4 +1,6 @@
 // Pick the exact Discogs release by ID or pasted link, skipping search.
+let finished = false;   // the runner judges exit codes only: a test stuck on an unanswered fake fetch must not pass
+process.on('exit', () => { if (!finished) { console.error('release_by_id.test.js did not finish (an unexpected request is still pending)'); process.exitCode = 1; } });
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
@@ -20,6 +22,49 @@ assert.deepStrictEqual(parse('https://www.discogs.com/release/123/edit'), { id: 
 assert.deepStrictEqual(parse('https://www.discogs.com/master/45678-Some-Album?release=9'), { master: 45678 });
 assert.deepStrictEqual(parse('https://www.discogs.com/zh-hans/sell/release/77?ev=rb'), { id: 77 });
 for (const bad of ['', 'abc', 'https://example.com/release/1', 'discogs.com/artist/12']) assert.strictEqual(parse(bad), null, bad);
+
+// The whole input must be the link (anchored), ids are 1-10 digits without a leading zero.
+const accepted = [
+    ['https://www.discogs.com/release/2874426-Foo-Bar', { id: 2874426 }],
+    ['https://www.discogs.com/pt_BR/release/2874426', { id: 2874426 }],
+    ['https://www.discogs.com/Artist-Title/release/2874426', { id: 2874426 }],
+    ['https://www.discogs.com/sell/release/2874426?ev=rb', { id: 2874426 }],
+    ['https://m.discogs.com/release/5#notes', { id: 5 }],
+    ['http://discogs.com/release/5/', { id: 5 }],
+    ['[r2874426]', { id: 2874426 }],
+    ['r2874426', { id: 2874426 }],
+    ['m123', { master: 123 }],
+    ['https://www.discogs.com/master/123-Foo', { master: 123 }],
+    ['https://api.discogs.com/releases/2874426', { id: 2874426 }],
+    ['https://api.discogs.com/releases/2874426?x=1', { id: 2874426 }],
+    ['api.discogs.com/masters/45', { master: 45 }],
+    ['1234567890', { id: 1234567890 }],
+    // pasted from prose: one wrapping layer and trailing punctuation are stripped
+    ['<https://www.discogs.com/release/5>', { id: 5 }],
+    ['"https://www.discogs.com/release/5"', { id: 5 }],
+    ["'https://www.discogs.com/release/5'", { id: 5 }],
+    ['(https://www.discogs.com/release/5)', { id: 5 }],
+    ['https://www.discogs.com/release/5.', { id: 5 }],
+    ['https://www.discogs.com/release/5)', { id: 5 }],
+    ['https://www.discogs.com/release/5-Foo,', { id: 5 }],
+    ['"https://www.discogs.com/release/5-Foo",', { id: 5 }],
+    ['(https://www.discogs.com/master/9).', { master: 9 }],
+    ['https://www.discogs.com/master/9!', { master: 9 }],
+    ['https://api.discogs.com/releases/5;', { id: 5 }],
+];
+for (const [input, expected] of accepted) assert.deepStrictEqual(parse(input), expected, input);
+const rejected = [
+    'notdiscogs.com/release/5', 'https://notdiscogs.com/release/5',
+    'example.com/?u=discogs.com/release/8', 'see https://www.discogs.com/release/8',
+    'https://www.discogs.com/release/12345678901',   // 11 digits: not truncated to 10
+    '12345678901', 'r12345678901',
+    '0', 'm0', 'r0', 'release/0', 'https://www.discogs.com/release/0', 'https://www.discogs.com/master/0',
+    'https://api.discogs.com/releases/0', 'https://api.discogs.com/releases/5x', 'https://api.discogs.com/releases/12345678901',
+    'https://www.discogs.com/release/5-Foo is the one I own', 'https://www.discogs.com/release/5/edit now',
+    'https://api.discogs.com/releases/5 please', 'see <https://www.discogs.com/release/5>',
+    'https://www.discogs.com/release/5x', 'https://www.discogs.com/release/05',
+];
+for (const bad of rejected) assert.strictEqual(parse(bad), null, bad);
 
 (async () => {
     const release = { id: 2874426, artist: 'The 5th Dimension', title: 'The Age Of Aquarius', year: 1969, label: 'Soul City',
@@ -60,5 +105,6 @@ for (const bad of ['', 'abc', 'https://example.com/release/1', 'discogs.com/arti
     app.analyzing = true; app.releaseIdInput = '2874426';
     await app.openReleaseById();
     assert.strictEqual(fetches.length, 3, 'nothing starts while detection runs');
+    finished = true;
     console.log('release by id ok');
 })().catch(error => { console.error(error); process.exit(1); });

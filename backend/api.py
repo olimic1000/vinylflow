@@ -301,11 +301,13 @@ class GuidedAnalyzeRequest(BaseModel):
 
 # Discogs search pages one query may fetch ("Load more"); must match SEARCH_MAX_PAGES in app.js.
 SEARCH_MAX_PAGES = 3
+# Largest page size one search request may ask for.
+SEARCH_MAX_RESULTS = 100
 
 
 class SearchRequest(BaseModel):
     query: str
-    max_results: int = 5
+    max_results: int = Field(5, ge=1, le=SEARCH_MAX_RESULTS)
     page: int = Field(1, ge=1, le=SEARCH_MAX_PAGES)
 
 

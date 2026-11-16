@@ -40,20 +40,42 @@ function newSearchCard(result) {
     return { ...result, tracks: result.tracks ?? null, detailStatus: 'pending', opening: false };
 }
 
+// A Discogs id: 1-10 digits, no leading zero (so 0, m0 and release/0 are not references).
+const DISCOGS_ID = '[1-9]\\d{0,9}';
+const DISCOGS_BARE_RELEASE = new RegExp(`^\\[?r?(${DISCOGS_ID})\\]?$`, 'i');
+const DISCOGS_BARE_MASTER = new RegExp(`^\\[?m(${DISCOGS_ID})\\]?$`, 'i');
+// Website link: scheme and www./m. optional, any path prefix segments (language, sell, old
+// Artist-Title slug), then release/<id> or master/<id> ending the input or followed by - / ? #.
+const DISCOGS_WEB_LINK = new RegExp(
+    `^(?:https?://)?(?:www\\.|m\\.)?discogs\\.com/(?:[^\\s/?#]+/)*(release|master)/(${DISCOGS_ID})(?:[-/?#]\\S*)?$`, 'i');
+// API link: api.discogs.com/releases/<id> or /masters/<id>, ending the input or followed by / ? #.
+const DISCOGS_API_LINK = new RegExp(
+    `^(?:https?://)?api\\.discogs\\.com/(release|master)s/(${DISCOGS_ID})(?:[/?#]\\S*)?$`, 'i');
+
 /**
  * A Discogs release reference typed or pasted by the user: "2874426", "r2874426",
- * "[r2874426]" or a discogs.com link ending in release/<id> or master/<id> (any path
- * before it: a language prefix like /pt_BR/, /sell/, or the old artist-slug form).
+ * "[r2874426]", "m123" (master), or a link that is the whole input: discogs.com/release/<id>
+ * or /master/<id> (optional http(s)://, www. or m.; any path before it such as /pt_BR/,
+ * /sell/ or the old artist-slug form; a "-slug", "/", "?" or "#" may follow the id), or
+ * api.discogs.com/releases/<id> / masters/<id>. Ids have at most 10 digits and are never 0;
+ * anything else (other hosts, text around the link, longer ids) is null. One wrapping layer
+ * (<>, quotes, parentheses) and trailing . , ; : ! ? ) are stripped first, for links pasted from prose.
  * Returns {id}, {master: id} for a master release (not one exact version), or null.
  */
 function parseDiscogsRelease(text) {
-    const s = String(text || '').trim();
-    let m = s.match(/^\[?r?(\d{1,10})\]?$/i);
+    let s = String(text || '').trim();
+    // Pasted from prose: drop one wrapping layer (<>, quotes, parentheses) and trailing punctuation.
+    // Punctuation after the wrapper goes first ("…/release/5",), but not ")", which may close it.
+    s = s.replace(/[.,;:!?]+$/, '');
+    const wrapped = s.match(/^(?:<(.*)>|"(.*)"|'(.*)'|\((.*)\))$/s);
+    if (wrapped) s = (wrapped[1] ?? wrapped[2] ?? wrapped[3] ?? wrapped[4]).trim();
+    s = s.replace(/[.,;:!?)]+$/, '');
+    let m = s.match(DISCOGS_BARE_RELEASE);
     if (m) return { id: Number(m[1]) };
-    m = s.match(/discogs\.com\/(?:[^\s?#]+?\/)?(release|master)\/(\d{1,10})/i);
-    if (m) return m[1].toLowerCase() === 'release' ? { id: Number(m[2]) } : { master: Number(m[2]) };
-    m = s.match(/^\[?m(\d{1,10})\]?$/i);
+    m = s.match(DISCOGS_BARE_MASTER);
     if (m) return { master: Number(m[1]) };
+    m = s.match(DISCOGS_WEB_LINK) || s.match(DISCOGS_API_LINK);
+    if (m) return m[1].toLowerCase() === 'release' ? { id: Number(m[2]) } : { master: Number(m[2]) };
     return null;
 }
 
@@ -128,7 +150,7 @@ function vinylApp() {
         searchHasMore: false,     // Discogs has another page and the fetch limit allows it
         searchMoreLoading: false,
         searchMoreError: '',
-        searchMoreNotice: '',     // "No more results." after a Load more that added nothing
+        searchMoreNotice: '',     // After a Load more that added nothing: "No more results." (Load more gone) or "No new results on this page."
         onlyWithLengths: false,   // Result filter: hide releases without track lengths
         detailsSettled: false,    // True once every result's tracklist load finished or failed
         searchSeq: 0,             // Bumped by every search and file switch: stale replies are dropped
@@ -1430,7 +1452,8 @@ function vinylApp() {
                     this.searchResults = [...this.searchResults, ...added];
                     this.loadAllReleaseDetails(seq, added.map(r => r.id));
                 } else {
-                    this.searchMoreNotice = 'No more results.';
+                    // A full page of already shown ids leaves has_more true: Load more stays, so don't say "no more"
+                    this.searchMoreNotice = this.searchHasMore ? 'No new results on this page.' : 'No more results.';
                 }
             } catch (error) {
                 if (seq !== this.searchSeq) return;

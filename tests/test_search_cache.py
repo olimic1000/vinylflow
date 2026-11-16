@@ -203,3 +203,21 @@ def test_search_endpoint_refuses_pages_beyond_the_limit(monkeypatch):
             response = client.post("/api/search", json={"query": "q", "max_results": 12, "page": page})
             assert response.status_code == 422
     assert calls == [], "never reaches Discogs"
+
+
+@pytest.mark.parametrize("max_results", [0, -1, api.SEARCH_MAX_RESULTS + 1])
+def test_search_endpoint_refuses_out_of_range_page_sizes(monkeypatch, max_results):
+    calls = _search_endpoint(monkeypatch, 12)
+    with TestClient(api.app) as client:
+        response = client.post("/api/search", json={"query": "q", "max_results": max_results})
+    assert response.status_code == 422
+    assert calls == [], "never reaches Discogs"
+
+
+@pytest.mark.parametrize("max_results", [1, 12, api.SEARCH_MAX_RESULTS])
+def test_search_endpoint_accepts_page_sizes_in_range(monkeypatch, max_results):
+    calls = _search_endpoint(monkeypatch, 3)
+    with TestClient(api.app) as client:
+        response = client.post("/api/search", json={"query": "q", "max_results": max_results})
+    assert response.status_code == 200
+    assert calls == [("q", max_results, 1)]
