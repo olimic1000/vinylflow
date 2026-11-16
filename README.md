@@ -29,7 +29,7 @@ VinylFlow does it in **3 minutes**. Upload your recording, pick the album from t
 ## Features
 
 - **Automatic silence detection** — intelligently finds track boundaries in your recording
-- **Duration-based splitting** — fallback for seamlessly mixed tracks with no gaps
+- **Guided detection** — the Discogs track lengths are aligned to the gaps between songs, so one wrong length no longer shifts later cuts; a side picker (full album, per disc, per side) sets how many tracks to place, and **Snap to Discogs** places them again on demand
 - **Discogs first** — selecting a recording searches Discogs from its file name right away; result cards show artwork, track count, whether Discogs lists track lengths, and how well the lengths fit your recording
 - **Multiple output formats** — FLAC (lossless), MP3 (320kbps), or AIFF (lossless)
 - **Multiple input formats** — WAV and AIFF recordings supported
@@ -369,7 +369,7 @@ Try adjusting silence detection in Settings (⚙️), or pick a Discogs release 
 - Vinyl-style track numbering (A1, A2, B1, B2)
 - FLAC, MP3, and AIFF output
 - WAV and AIFF input
-- Duration-based splitting fallback
+- Guided detection from Discogs lengths, with a side picker and Snap to Discogs
 - WebSocket real-time progress
 - Docker one-command setup
 - **Web-based first-run setup** — no more hidden `.env` files!

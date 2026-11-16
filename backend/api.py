@@ -281,6 +281,10 @@ class AnalyzeRequest(BaseModel):
     file_id: str
 
 
+# Most tracks one rescan / guided detection may place; keep in step with MAX_GUIDED_TRACKS in app.js
+MAX_EXPECTED_TRACKS = 99
+
+
 class RescanRequest(BaseModel):
     file_id: str
     expected_tracks: int
@@ -839,8 +843,8 @@ async def rescan_file(request: RescanRequest):
     analysis yields the expected number of tracks.  Falls back to the
     closest result when no setting matches exactly.
     """
-    if not 1 <= request.expected_tracks <= 99:
-        raise HTTPException(status_code=422, detail="expected_tracks must be between 1 and 99")
+    if not 1 <= request.expected_tracks <= MAX_EXPECTED_TRACKS:
+        raise HTTPException(status_code=422, detail=f"expected_tracks must be between 1 and {MAX_EXPECTED_TRACKS}")
 
     session = session_store.get(request.file_id)
     if session is None:
@@ -962,8 +966,8 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
     place the tracks.  Count-based detection may find fewer tracks than asked
     for: ``matched`` is then False.
     """
-    if not 1 <= request.expected_tracks <= 99:
-        raise HTTPException(status_code=422, detail="expected_tracks must be between 1 and 99")
+    if not 1 <= request.expected_tracks <= MAX_EXPECTED_TRACKS:
+        raise HTTPException(status_code=422, detail=f"expected_tracks must be between 1 and {MAX_EXPECTED_TRACKS}")
 
     if request.durations is not None and len(request.durations) != request.expected_tracks:
         raise HTTPException(status_code=422, detail="durations must have one entry per expected track")

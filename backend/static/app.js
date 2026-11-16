@@ -5,6 +5,8 @@
 
 // Toast stack cap: past it the oldest toast without an action makes room (an Undo is never evicted)
 const MAX_TOASTS = 5;
+// Most tracks one guided detection places; must match MAX_EXPECTED_TRACKS in backend/api.py
+const MAX_GUIDED_TRACKS = 99;
 // How long an Undo toast stays (ms)
 const UNDO_TOAST_MS = 8000;
 // Discogs results per search (one page; each card's tracklist loads separately)
@@ -115,6 +117,8 @@ function vinylApp() {
 
         // Guided detection and hand edits
         expectedBoundaries: [],   // Seconds where Discogs lengths put each break (ghost markers)
+        maxGuidedTracks: MAX_GUIDED_TRACKS,   // for templates
+        boundaryEditCount: 0,     // Bumped by every hand edit and Undo restore, so a guided reply started before one is discarded
         boundariesEdited: false,  // True once the user hand-edits boundaries (until detection replaces them)
         editBanner: false,        // Show "You've adjusted boundaries by hand" choice
 
@@ -310,6 +314,11 @@ function vinylApp() {
                     break;
 
                 case 'error':
+                    // Detection broadcasts (analyze / rescan / guided) are `recoverable: true`, export
+                    // failures `recoverable: false`.  Only an export failure may end the export state:
+                    // another recording can be exporting while this one is being detected, and the
+                    // detection code shows its own failure.
+                    if (data.recoverable === true) break;
                     if (data.file_id === this.currentFileId) {
                         this.stopProcessPolling();
                         this.isProcessing = false;
@@ -895,6 +904,7 @@ function vinylApp() {
             this.sidesSuggestionReason = snapshot.sidesSuggestionReason;
             this.expectedBoundaries = [...snapshot.expectedBoundaries];
             this.boundariesEdited = snapshot.boundariesEdited;
+            this.boundaryEditCount++;   // an Undo replaces the boundaries outside detection
             this.editBanner = false;
             this.addTrackRegions();   // draws the ghost markers too
         },
@@ -1110,7 +1120,7 @@ function vinylApp() {
          * Analyze file for silence detection
          */
         async analyzeFile() {
-            if (!this.currentFileId || this.analyzing) return;
+            if (!this.currentFileId || this.analyzing || this.currentFileExporting) return;
 
             this.analyzing = true;
             this.rescanNotice = '';
@@ -1169,7 +1179,7 @@ function vinylApp() {
          * toast restores the previous boundaries and release.
          */
         async reanalyzeFile() {
-            if (!this.currentFileId || this.analyzing) return;
+            if (!this.currentFileId || this.analyzing || this.currentFileExporting) return;
 
             const fileId = this.currentFileId;
             const snapshot = this.snapshotEdits();
@@ -1219,9 +1229,9 @@ function vinylApp() {
          */
         async smartRescan(target) {
             target = parseInt(target, 10);
-            if (!this.currentFileId || this.analyzing) return;
-            if (!target || target < 1 || target > 99) {
-                this.rescanNotice = 'Enter how many songs the recording contains (1–99) first.';
+            if (!this.currentFileId || this.analyzing || this.currentFileExporting) return;
+            if (!target || target < 1 || target > MAX_GUIDED_TRACKS) {
+                this.rescanNotice = `Enter how many songs the recording contains (1–${MAX_GUIDED_TRACKS}) first.`;
                 return;
             }
 
@@ -1436,6 +1446,10 @@ function vinylApp() {
         selectRelease(release) {
             if (!Array.isArray(release?.tracks)) return;
             this._pendingPickId = null;   // this pick replaces any card still loading, even when refused below
+            if (this.currentFileExporting) {
+                this.notify('This recording is exporting. Pick a release when the export has finished.', { type: 'warning', timeout: 5000 });
+                return;
+            }
             if (this.analyzing) {
                 this.notify('Wait for track detection to finish before picking a release.', { type: 'warning', timeout: 5000 });
                 return;
@@ -1451,6 +1465,17 @@ function vinylApp() {
 
             this.resetMappingToTargets();
             this.afterTargetsChanged();
+        },
+
+        /**
+         * True while the open recording itself is being exported.  Not `isProcessing` alone: that
+         * flag is global, and another recording may be opened and detected during an export.
+         * Re-detecting the exporting recording would make the server reject the request with a
+         * WebSocket `error` for that file, which the export handler shows as a failed export.
+         */
+        get currentFileExporting() {
+            return this.isProcessing
+                && this.uploadedFiles.find(f => f.id === this.currentFileId)?.status === 'processing';
         },
 
         /**
@@ -1491,7 +1516,8 @@ function vinylApp() {
 
         /** Apply a scope preset and re-run detection */
         applyPreset(sides) {
-            if (this.analyzing) return;
+            // An export keeps the session busy: the backend would reject it and report the export as failed
+            if (this.analyzing || this.currentFileExporting) return;
             this.selectedSides = this.sideChips.map(g => g.side).filter(key => sides.includes(key));
             this.resetMappingToTargets();
             this.afterTargetsChanged();
@@ -1502,7 +1528,7 @@ function vinylApp() {
          * and re-run detection for the new track count.
          */
         toggleSide(side) {
-            if (this.analyzing) return;
+            if (this.analyzing || this.currentFileExporting) return;
 
             const isSelected = this.selectedSides.includes(side);
             if (isSelected && this.selectedSides.length === 1) return;
@@ -1576,6 +1602,7 @@ function vinylApp() {
          */
         markEdited() {
             this.boundariesEdited = true;
+            this.boundaryEditCount++;
         },
 
         /**
@@ -1596,18 +1623,20 @@ function vinylApp() {
          * again, replacing hand edits.  An Undo toast puts the previous boundaries back.
          */
         async snapToDiscogs() {
-            if (this.analyzing || !this.selectedRelease || this.targetTracks.length < 1) return;
+            if (this.analyzing || this.currentFileExporting || !this.selectedRelease || this.targetTracks.length < 1) return;
 
             const fileId = this.currentFileId;
             const snapshot = this.snapshotEdits();
+            const editCount = this.boundaryEditCount;
             this.editBanner = false;
 
             const ok = await this.redetectForTargets();
             if (this.currentFileId !== fileId) return;
+            // The user edited during detection (the reply was dropped): their state stands, even an emptied one
             if (ok) {
                 this.notifyUndo('Snapped the boundaries to the Discogs lengths.',
                     () => this.undoSnap(snapshot), { fileId, type: 'success' });
-            } else if (this.detectedTracks.length === 0 && snapshot.detectedTracks.length > 0) {
+            } else if (this.boundaryEditCount === editCount && this.detectedTracks.length === 0 && snapshot.detectedTracks.length > 0) {
                 // Found nothing (redetectForTargets already warned): keep the hand edits rather
                 // than leave an empty editor with nothing to undo.
                 this.rescanNotice = '';
@@ -1642,9 +1671,20 @@ function vinylApp() {
          */
         async redetectForTargets() {
             const targets = this.targetTracks;
-            if (targets.length < 1 || !this.currentFileId || this.analyzing) return false;
+            if (targets.length < 1 || !this.currentFileId || this.analyzing || this.currentFileExporting) return false;
+            if (targets.length > MAX_GUIDED_TRACKS) {
+                this.rescanNotice = `⚠️ The chosen sides hold ${targets.length} tracks; detection places at most ${MAX_GUIDED_TRACKS} at a time.${this.sideChips.length > 1 ? ' Pick a disc or side.' : ''}`;
+                this.clearExpectedMarkers();   // they belonged to the previous sides
+                return false;
+            }
 
             const fileId = this.currentFileId;
+            // A reply is stale if the file, the release or the boundaries changed while it was computed
+            const releaseId = this.selectedRelease?.id ?? null;
+            const editCount = this.boundaryEditCount;
+            const isSuperseded = () => this.currentFileId !== fileId
+                || (this.selectedRelease?.id ?? null) !== releaseId
+                || this.boundaryEditCount !== editCount;
             let succeeded = false;
             this.analyzing = true;
             this.rescanNotice = '';
@@ -1671,6 +1711,12 @@ function vinylApp() {
 
                 if (!response.ok || !data.tracks) {
                     throw new Error(data.detail || 'Boundary detection failed');
+                }
+
+                if (isSuperseded()) {
+                    this.processingMessage = '';
+                    this.discardSupersededDetection(fileId, releaseId);
+                    return false;
                 }
 
                 this.setDetectedTracks(data.tracks, {
@@ -1713,8 +1759,12 @@ function vinylApp() {
                 succeeded = data.tracks.length > 0;
             } catch (error) {
                 console.error('Guided detection failed:', error);
-                this.notifyError('Boundary detection failed', error);
                 this.processingMessage = '';
+                if (isSuperseded()) {   // the failed run belonged to state the user has since changed
+                    this.discardSupersededDetection(fileId, releaseId);
+                    return false;
+                }
+                this.notifyError('Boundary detection failed', error);
                 this.clearExpectedMarkers();   // they belonged to the previous sides
                 // With no tracks, show the count mismatch and its options instead of an empty mapping
                 if (this.selectedRelease) {
@@ -1724,6 +1774,18 @@ function vinylApp() {
                 this.analyzing = false;
             }
             return succeeded;
+        },
+
+        /**
+         * A guided reply arrived after the user changed things.  Same file and release means a
+         * hand edit during detection: the edits stay, the ghost markers of the previous sides go
+         * and the "adjusted by hand" banner asks what to do (as afterTargetsChanged would).  A
+         * different file or release made the reply irrelevant: drop it silently.
+         */
+        discardSupersededDetection(fileId, releaseId) {
+            if (this.currentFileId !== fileId || (this.selectedRelease?.id ?? null) !== releaseId) return;
+            this.clearExpectedMarkers();
+            this.editBanner = this.detectedTracks.length > 0;
         },
 
         /**
@@ -1755,8 +1817,9 @@ function vinylApp() {
          * detection/waveform so another release can be picked.
          */
         changeRelease() {
-            // A running detection would install its tracks and markers on a release that is gone
-            if (this.analyzing) return;
+            // A running detection would install its tracks and markers on a release that is gone;
+            // an export of this recording needs its release, and selectRelease is refused meanwhile
+            if (this.analyzing || this.currentFileExporting) return;
             this.selectedRelease = null;
             this._pendingPickId = null;   // a card still loading must not bring a release back
             this.selectedSides = [];
@@ -2084,6 +2147,7 @@ function vinylApp() {
          * Reverse track mapping order
          */
         reverseMapping() {
+            if (this.analyzing) return;
             this.trackMappingReversed = !this.trackMappingReversed;
 
             if (this.trackMappingReversed) {
@@ -2104,6 +2168,7 @@ function vinylApp() {
          * Update custom mapping when user changes dropdown
          */
         updateCustomMapping() {
+            if (this.analyzing) return;   // the select is disabled while detecting; see toggleTrackIgnored
             this.trackMappingReversed = false;
         },
 
@@ -2582,6 +2647,7 @@ function vinylApp() {
          * Toggle track ignored status and update region color
          */
         toggleTrackIgnored(track) {
+            if (this.analyzing) return;   // a running detection would discard it or mistake it for a boundary edit
             track.ignored = !track.ignored;
 
             if (this.waveformRegions) {

@@ -656,7 +656,7 @@
                         <!-- Skip Discogs: silence-only detection (secondary action).  With a release
                              already picked, the same button retries a detection that failed. -->
                         <template x-if="!detectedTracks.length && currentFile">
-                            <button @click="selectedRelease ? redetectForTargets() : analyzeFile()" :disabled="analyzing" class="mt-3 px-3 py-1.5 rounded-lg text-xs text-secondary hover:bg-page" style="background-color: #F0EFEB;" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                            <button @click="selectedRelease ? redetectForTargets() : analyzeFile()" :disabled="analyzing || currentFileExporting" class="mt-3 px-3 py-1.5 rounded-lg text-xs text-secondary hover:bg-page" style="background-color: #F0EFEB;" :class="{'opacity-60 cursor-not-allowed': analyzing || currentFileExporting}">
                                 <span x-show="!analyzing" x-text="selectedRelease ? 'Retry track detection' : 'Skip Discogs — detect tracks by silence only'"></span>
                                 <span x-show="analyzing" class="flex items-center gap-2">
                                     <div class="spinner"></div>
@@ -673,7 +673,7 @@
 
                         <!-- Re-Analyze Button -->
                         <template x-if="detectedTracks.length > 0 && !selectedRelease">
-                            <button @click="reanalyzeFile()" :disabled="analyzing" class="mt-3 px-4 py-2 btn-primary rounded-lg font-semibold text-sm" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                            <button @click="reanalyzeFile()" :disabled="analyzing || currentFileExporting" class="mt-3 px-4 py-2 btn-primary rounded-lg font-semibold text-sm" :class="{'opacity-60 cursor-not-allowed': analyzing || currentFileExporting}">
                                 <span x-show="!analyzing">🔄 Re-Analyze Tracks</span>
                                 <span x-show="analyzing" class="flex items-center gap-2">
                                     <div class="spinner"></div>
@@ -688,7 +688,7 @@
                                 <p class="text-xs text-secondary mb-2">Wrong number of tracks? Enter how many songs the recording has and Smart Rescan will adjust detection automatically.</p>
                                 <div class="flex items-center gap-2">
                                     <input type="number" min="1" max="99" x-model="expectedTracks" placeholder="e.g. 6" class="w-20 px-3 py-2 border focus-primary rounded-lg text-sm" style="border-color: #8A8A86;" @keyup.enter="smartRescan(expectedTracks)">
-                                    <button @click="smartRescan(expectedTracks)" :disabled="analyzing" class="px-4 py-2 btn-primary rounded-lg font-semibold text-sm" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                                    <button @click="smartRescan(expectedTracks)" :disabled="analyzing || currentFileExporting" class="px-4 py-2 btn-primary rounded-lg font-semibold text-sm" :class="{'opacity-60 cursor-not-allowed': analyzing || currentFileExporting}">
                                         <span x-show="!analyzing">🎯 Smart Rescan</span>
                                         <span x-show="analyzing" class="flex items-center gap-2">
                                             <div class="spinner"></div>
@@ -791,7 +791,7 @@
             <div class="bg-card rounded-lg shadow p-6">
                 <div class="flex justify-between items-center mb-4">
                     <h3 class="text-lg font-semibold text-primary">💿 Release</h3>
-                    <button @click="changeRelease()" :disabled="analyzing" class="px-4 py-2 rounded-lg text-primary hover:bg-page" :class="{'opacity-60 cursor-not-allowed': analyzing}" style="background-color: #F0EFEB;">← Change release</button>
+                    <button @click="changeRelease()" :disabled="analyzing || currentFileExporting" class="px-4 py-2 rounded-lg text-primary hover:bg-page" :class="{'opacity-60 cursor-not-allowed': analyzing || currentFileExporting}" style="background-color: #F0EFEB;">← Change release</button>
                 </div>
                 <div class="p-4 rounded-lg flex items-start gap-4" style="background-color: rgba(229, 161, 0, 0.1);">
                     <!-- Hidden when the release has no cover or it fails to load (onload re-shows it:
@@ -817,14 +817,15 @@
                         <h4 class="text-sm font-medium text-secondary" x-text="sideChips.length > 1 ? 'What does this recording contain?' : 'Tracks on this release'"></h4>
                         <span class="text-xs text-secondary" x-text="`Recording: ${formatDuration(currentFile?.duration)}` + (currentFile?.musicDuration > 0 ? ` (music ${formatDuration(currentFile.musicDuration)})` : '')"></span>
                     </div>
+                    <p x-show="currentFileExporting" x-cloak class="mb-3 text-xs text-secondary">Unavailable while this recording is exporting.</p>
                     <!-- Scope presets: full album / per disc -->
                     <div x-show="sidePresets.length > 0" class="flex flex-wrap gap-2 mb-3">
                         <template x-for="preset in sidePresets" :key="preset.label">
-                            <button type="button" @click="applyPreset(preset.sides)" :disabled="analyzing"
+                            <button type="button" @click="applyPreset(preset.sides)" :disabled="analyzing || currentFileExporting"
                                     :aria-pressed="sidesEqualSelection(preset.sides)"
                                     class="px-4 py-2 rounded-lg border-2 transition text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-[#1E1E1E]"
                                     :style="sidesEqualSelection(preset.sides) ? 'border-color: #E5A100; background-color: rgba(229, 161, 0, 0.1);' : 'border-color: #8A8A86;'"
-                                    :class="{'hover:bg-card': !sidesEqualSelection(preset.sides), 'opacity-60 cursor-not-allowed': analyzing}">
+                                    :class="{'hover:bg-card': !sidesEqualSelection(preset.sides), 'opacity-60 cursor-not-allowed': analyzing || currentFileExporting}">
                                 <span class="text-sm font-semibold text-primary"><span x-show="sidesEqualSelection(preset.sides)" aria-hidden="true">✓ </span><span x-text="preset.label"></span></span>
                                 <span class="text-xs text-secondary ml-1" x-text="`${preset.trackCount} tracks • ${preset.totalSeconds !== null ? formatDuration(preset.totalSeconds) : 'length unknown'}`"></span>
                                 <span x-show="isMatchedScope(preset.sides)" class="block text-xs font-medium" style="color: #0A6B4B;">✓ matches recording length</span>
@@ -835,11 +836,11 @@
                     <p x-show="sideChips.length > 1" class="mb-2 text-xs text-secondary">Fine-tune by side:</p>
                     <div class="flex flex-wrap gap-2">
                         <template x-for="g in sideChips" :key="g.side">
-                            <button type="button" @click="toggleSide(g.side)" :disabled="analyzing || sideChips.length <= 1"
+                            <button type="button" @click="toggleSide(g.side)" :disabled="analyzing || currentFileExporting || sideChips.length <= 1"
                                     :aria-pressed="selectedSides.includes(g.side)"
                                     class="px-4 py-2 rounded-lg border-2 transition text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-[#1E1E1E]"
                                     :style="selectedSides.includes(g.side) ? 'border-color: #E5A100; background-color: rgba(229, 161, 0, 0.1);' : 'border-color: #8A8A86;'"
-                                    :class="{'hover:bg-card': !selectedSides.includes(g.side) && sideChips.length > 1, 'opacity-60 cursor-not-allowed': analyzing || sideChips.length <= 1}">
+                                    :class="{'hover:bg-card': !selectedSides.includes(g.side) && sideChips.length > 1, 'opacity-60 cursor-not-allowed': analyzing || currentFileExporting || sideChips.length <= 1}">
                                 <span class="text-sm font-semibold text-primary"><span x-show="selectedSides.includes(g.side) && sideChips.length > 1" aria-hidden="true">✓ </span><span x-text="sideLabel(g.side)"></span></span>
                                 <span class="text-xs text-secondary ml-1" x-text="`${g.tracks.length} tracks • ${g.totalSeconds !== null ? formatDuration(g.totalSeconds) : 'length unknown'}`"></span>
                                 <span x-show="isMatchedScope([g.side]) && sideChips.length > 1" class="block text-xs font-medium" style="color: #0A6B4B;">✓ matches recording length</span>
@@ -847,9 +848,9 @@
                         </template>
                     </div>
                     <div class="mt-3 flex flex-wrap items-center gap-3">
-                        <button type="button" @click="snapToDiscogs()" :disabled="analyzing || targetTracks.length < 1"
+                        <button type="button" @click="snapToDiscogs()" :disabled="analyzing || currentFileExporting || targetTracks.length < 1"
                                 class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold"
-                                :class="{'opacity-60 cursor-not-allowed': analyzing || targetTracks.length < 1}"
+                                :class="{'opacity-60 cursor-not-allowed': analyzing || currentFileExporting || targetTracks.length < 1}"
                                 title="Place the boundaries using the Discogs track lengths of the chosen sides">🧲 Snap to Discogs</button>
                         <p class="text-xs text-secondary flex-1" style="min-width: 12rem;">Changing the sides re-runs track detection. Snap to Discogs places the boundaries again from the Discogs lengths (Undo brings your boundaries back).</p>
                     </div>
@@ -859,7 +860,7 @@
                 <div x-show="editBanner" x-cloak role="status" class="mt-4 p-3 rounded-lg flex flex-wrap items-center gap-3" style="background-color: rgba(229, 161, 0, 0.15); border: 1px solid #E5A100;">
                     <p class="text-sm text-primary flex-1" style="min-width: 12rem;">You've adjusted the track boundaries by hand. Snap them to these Discogs lengths, or keep your edits?</p>
                     <div class="flex gap-2">
-                        <button type="button" @click="snapToDiscogs()" :disabled="analyzing" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold">Snap to Discogs</button>
+                        <button type="button" @click="snapToDiscogs()" :disabled="analyzing || currentFileExporting" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold">Snap to Discogs</button>
                         <button type="button" @click="keepMyEdits()" class="px-3 py-1.5 rounded-lg text-sm text-primary" style="background-color: #F0EFEB;">Keep my edits</button>
                     </div>
                 </div>
@@ -907,8 +908,8 @@
                                 <div class="p-3 bg-page rounded" :class="{ 'opacity-50': track.ignored }">
                                     <div class="flex justify-between items-center mb-2">
                                         <div class="flex items-center gap-2">
-                                            <input type="checkbox" :checked="track.ignored" @change="toggleTrackIgnored(track)" class="w-4 h-4 rounded" style="accent-color: #D94032;" title="Ignore this track">
-                                            <label class="text-xs text-muted cursor-pointer" @click="toggleTrackIgnored(track)">Ignore</label>
+                                            <input type="checkbox" :checked="track.ignored" @change="toggleTrackIgnored(track)" :disabled="analyzing" :class="{'opacity-60 cursor-not-allowed': analyzing}" class="w-4 h-4 rounded" style="accent-color: #D94032;" title="Ignore this track">
+                                            <label class="text-xs text-muted cursor-pointer" :class="{'opacity-60 cursor-not-allowed': analyzing}" @click="toggleTrackIgnored(track)">Ignore</label>
                                             <button @click="playPreview(track.number)" :disabled="track.ignored" class="px-3 py-1 btn-primary rounded text-sm" title="Play 30-second preview">▶️ Play</button>
                                             <span class="font-medium text-primary" :class="{ 'line-through text-muted': track.ignored }">Track <span x-text="track.number"></span></span>
                                         </div>
@@ -943,7 +944,7 @@
                         <div class="flex justify-between items-center mb-4">
                             <h3 class="text-lg font-semibold text-primary">🎚️ Track Mapping</h3>
                             <div class="flex gap-2">
-                                <button @click="reverseMapping()" class="px-4 py-2 rounded-lg text-primary hover:bg-page" style="background-color: #F0EFEB;">↕️ Reverse</button>
+                                <button @click="reverseMapping()" :disabled="analyzing" :class="{'opacity-60 cursor-not-allowed': analyzing}" class="px-4 py-2 rounded-lg text-primary hover:bg-page" style="background-color: #F0EFEB;">↕️ Reverse</button>
                             </div>
                         </div>
 
@@ -961,14 +962,14 @@
                                         💡 Scroll up to the waveform and right-click to add splits, or right-click a track region to ignore it.
                                     </p>
                                     <div class="flex flex-wrap gap-2">
-                                        <button @click="smartRescan(targetTracks.length)" :disabled="analyzing" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold" :class="{'opacity-60 cursor-not-allowed': analyzing}">
+                                        <button x-show="targetTracks.length <= maxGuidedTracks" @click="smartRescan(targetTracks.length)" :disabled="analyzing || currentFileExporting" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold" :class="{'opacity-60 cursor-not-allowed': analyzing || currentFileExporting}">
                                             <span x-show="!analyzing" x-text="`🎯 Smart rescan for ${targetTracks.length} tracks`"></span>
                                             <span x-show="analyzing" class="flex items-center gap-2">
                                                 <div class="spinner"></div>
                                                 Rescanning…
                                             </span>
                                         </button>
-                                        <button @click="snapToDiscogs()" :disabled="analyzing || targetTracks.length < 1" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold" :class="{'opacity-60 cursor-not-allowed': analyzing}" title="Place the boundaries using the Discogs track lengths">
+                                        <button @click="snapToDiscogs()" :disabled="analyzing || currentFileExporting || targetTracks.length < 1" class="px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold" :class="{'opacity-60 cursor-not-allowed': analyzing || currentFileExporting}" title="Place the boundaries using the Discogs track lengths">
                                             🧲 Snap to Discogs
                                         </button>
                                     </div>
@@ -1017,7 +1018,7 @@
                                         <span class="text-secondary text-sm ml-2">(<span x-text="formatDuration(track.duration)"></span>)</span>
                                     </div>
                                     <div>
-                                        <select x-model="customMapping[idx]" @change="updateCustomMapping()" class="w-full px-3 py-2 border focus-primary rounded-md text-sm" style="border-color: #8A8A86;">
+                                        <select x-model="customMapping[idx]" @change="updateCustomMapping()" :disabled="analyzing" :class="{'opacity-60 cursor-not-allowed': analyzing}" class="w-full px-3 py-2 border focus-primary rounded-md text-sm" style="border-color: #8A8A86;">
                                             <template x-for="(dt, dtIdx) in (selectedRelease?.tracks || [])" :key="dtIdx">
                                                 <option :value="dtIdx" x-text="`${dt.position} - ${dt.title}`"></option>
                                             </template>
