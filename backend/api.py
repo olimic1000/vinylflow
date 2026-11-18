@@ -341,6 +341,7 @@ class ConfigUpdate(BaseModel):
     min_track_length: Optional[float] = None
     output_dir: Optional[str] = None
     track_numbering: Optional[str] = None
+    hide_support_ask: Optional[bool] = None
     album_description: Optional[bool] = None
 
 
@@ -1556,6 +1557,7 @@ async def get_config():
         "track_numbering": config.track_numbering,
         "album_description": config.album_description,
         "import_dir": str(_import_dir()) if _import_dir() else None,  # read-only
+        "hide_support_ask": config.hide_support_ask,
     }
 
 
@@ -1576,6 +1578,10 @@ async def update_config(updates: ConfigUpdate):
         if updates.track_numbering in TRACK_NUMBERING_SCHEMES:
             config.track_numbering = updates.track_numbering
             config.save_track_numbering(updates.track_numbering)
+    if updates.hide_support_ask is not None:
+        config.hide_support_ask = updates.hide_support_ask
+        config.save_hide_support_ask(updates.hide_support_ask)
+
     if updates.album_description is not None:
         config.album_description = updates.album_description
         config.save_album_description(updates.album_description)
