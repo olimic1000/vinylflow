@@ -332,6 +332,7 @@ class ProcessRequest(BaseModel):
     output_format: str = "flac"  # 'flac', 'mp3', or 'aiff'
     restoration_level: int = 0   # 0=none, 1=light clean, 2=full restore
     hum_freq: int = 50           # Electrical hum frequency in Hz (50=EU, 60=US)
+    album_description: Optional[bool] = None  # Wikipedia lead paragraph in the Comment tag; the request can only turn the saved setting off
 
 
 class ConfigUpdate(BaseModel):
@@ -340,6 +341,7 @@ class ConfigUpdate(BaseModel):
     min_track_length: Optional[float] = None
     output_dir: Optional[str] = None
     track_numbering: Optional[str] = None
+    album_description: Optional[bool] = None
 
 
 class DiscogsSetupRequest(BaseModel):
@@ -1346,6 +1348,20 @@ async def get_release(release_id: int):
     return _serialize_release(release)
 
 
+@app.get("/api/release/{release_id}/description")
+async def get_release_description(release_id: int):
+    """The album's Wikipedia lead paragraph (cached); ``disabled`` without any lookup when the setting is off."""
+    if not config.album_description:
+        return {"status": "disabled"}
+    release = await asyncio.to_thread(metadata_handler.get_release_by_id, release_id)
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release not found or Discogs unavailable")
+    result = await asyncio.to_thread(
+        metadata_handler.album_descriptions.lookup, release.id, getattr(release, "master_id", None)
+    )
+    return {"status": result.status, "text": result.text, "title": result.title, "url": result.url}
+
+
 @app.post("/api/process")
 async def process_file(request: ProcessRequest):
     """
@@ -1386,6 +1402,11 @@ _PHASE_TO_UI_STEP = {
 }
 
 
+def _wants_album_description(request: ProcessRequest) -> bool:
+    """The saved setting, which a request may only turn off (``False``); it can never switch it on."""
+    return bool(config.album_description) and request.album_description is not False
+
+
 async def process_file_background(request: ProcessRequest):
     """Run the Pipeline for ``request`` and bridge progress events to the
     WebSocket broadcaster.
@@ -1412,6 +1433,7 @@ async def process_file_background(request: ProcessRequest):
         restoration_level=request.restoration_level,
         hum_freq=request.hum_freq,
         track_numbering=config.track_numbering,
+        album_description=_wants_album_description(request),
     )
 
     loop = asyncio.get_running_loop()
@@ -1532,6 +1554,7 @@ async def get_config():
         "flac_compression": audio_processor.flac_compression,
         "output_dir": config.default_output_dir,
         "track_numbering": config.track_numbering,
+        "album_description": config.album_description,
         "import_dir": str(_import_dir()) if _import_dir() else None,  # read-only
     }
 
@@ -1553,6 +1576,9 @@ async def update_config(updates: ConfigUpdate):
         if updates.track_numbering in TRACK_NUMBERING_SCHEMES:
             config.track_numbering = updates.track_numbering
             config.save_track_numbering(updates.track_numbering)
+    if updates.album_description is not None:
+        config.album_description = updates.album_description
+        config.save_album_description(updates.album_description)
 
     return await get_config()
 

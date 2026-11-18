@@ -206,8 +206,13 @@ function vinylApp() {
             track_numbering: 'sequential_disc_per_lp',
             min_track_length: 30,
             flac_compression: 8,
-            output_dir: ''
+            output_dir: '',
+            album_description: false   // Wikipedia lead paragraph in the Comment tag (off by default)
         },
+
+        // Wikipedia description preview on the Release card (see loadAlbumDescription)
+        albumDescription: { releaseId: null, status: 'idle', text: '', title: '', url: '' },
+        albumDescriptionExpanded: false,   // "Show more" in the preview
 
         // Supported input file extensions
         supportedExtensions: ['.wav', '.aiff', '.aif'],
@@ -466,6 +471,7 @@ function vinylApp() {
                 const data = await response.json();
                 this.config = data;
                 this.showSettings = false;
+                this.loadAlbumDescription();   // the setting may have just been switched on or off
                 this.notify('Settings saved.', { type: 'success' });
             } catch (error) {
                 console.error('Failed to save config:', error);
@@ -947,6 +953,10 @@ function vinylApp() {
             this.detectedTracks = snapshot.detectedTracks.map(track => ({ ...track }));
             this.selectedRelease = snapshot.selectedRelease;
             if (snapshot.selectedRelease) this._pendingPickId = null;   // a card still loading must not replace it
+            // The preview is keyed by release id: load it for a different release the Undo put back
+            if (snapshot.selectedRelease && snapshot.selectedRelease.id !== this.albumDescription.releaseId) {
+                this.loadAlbumDescription();
+            }
             this.trackCountMismatch = snapshot.trackCountMismatch;
             this.trackMappingReversed = snapshot.trackMappingReversed;
             this.customMapping = [...snapshot.customMapping];
@@ -1570,6 +1580,7 @@ function vinylApp() {
                 return;
             }
             this.selectedRelease = release;
+            this.loadAlbumDescription();
             const suggestion = this.suggestSides(
                 release,
                 this.currentFile?.musicDuration || this.currentFile?.duration
@@ -1768,6 +1779,50 @@ function vinylApp() {
                 // A snap can leave no waveform (it found nothing): build one for the restored tracks
                 await this.restoreSnapshotWithWaveform(snapshot);
             }
+        },
+
+        /** True when the loaded description belongs to the release now selected and is worth showing. */
+        get albumDescriptionVisible() {
+            const state = this.albumDescription;
+            return !!this.selectedRelease && state.releaseId === this.selectedRelease.id
+                && ['loading', 'found', 'none', 'error'].includes(state.status);
+        },
+
+        /**
+         * Fetch the Wikipedia description of the selected release for the preview. Skipped (no
+         * request) when the setting is off. A reply for a release that is no longer selected is
+         * ignored. Never touches detection or tracks. Called explicitly, not from a watcher.
+         */
+        async loadAlbumDescription() {
+            const releaseId = this.selectedRelease?.id;
+            this.albumDescriptionExpanded = false;
+            if (!releaseId || this.config.album_description !== true) {
+                this.albumDescription = { releaseId: null, status: 'idle', text: '', title: '', url: '' };
+                return;
+            }
+            this.albumDescription = { releaseId, status: 'loading', text: '', title: '', url: '' };
+            let result;
+            try {
+                const response = await fetch(`/api/release/${releaseId}/description`);
+                // A 404 means the release itself can't be loaded; the preview treats it as an error.
+                result = response.ok ? await response.json() : { status: 'error' };
+            } catch (error) {
+                result = { status: 'error' };
+            }
+            // Stale reply: another release was selected, or the setting was switched off meanwhile.
+            if (this.selectedRelease?.id !== releaseId || this.config.album_description !== true) {
+                // Dropping the reply of the lookup that still owns the state (release cleared, e.g.
+                // by delete track, and about to be restored by Undo) would leave "loading" forever,
+                // and restoreEdits skips the reload for the same release id: go back to idle.
+                if (this.albumDescription.releaseId === releaseId && this.albumDescription.status === 'loading') {
+                    this.albumDescription = { releaseId: null, status: 'idle', text: '', title: '', url: '' };
+                }
+                return;
+            }
+            this.albumDescription = {
+                releaseId, status: result.status || 'error',
+                text: result.text || '', title: result.title || '', url: result.url || ''
+            };
         },
 
         /**
@@ -2950,6 +3005,8 @@ function vinylApp() {
                         track_boundaries: trackBoundaries,
                         output_format: this.outputFormat,
                         restoration_level: this.restorationLevel
+                        // album_description is left out: the server uses the saved setting, so a box
+                        // ticked in Settings and then cancelled never turns the lookups on
                     })
                 });
 

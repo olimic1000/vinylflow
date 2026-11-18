@@ -221,6 +221,103 @@ def test_re_processing_a_complete_session(session, spec):
     assert session.last_run.output_files == ["B1-track.flac", "B2-track.flac"]
 
 
+# ---- album description ----
+
+class FakeDescriptions:
+    """Stands in for ``AlbumDescriptions``: returns a canned result and records the lookups."""
+
+    def __init__(self, result) -> None:
+        self.result = result
+        self.lookups: list[tuple[Any, Any]] = []
+
+    def lookup(self, release_id, master_id):
+        self.lookups.append((release_id, master_id))
+        return self.result
+
+
+class DescribingMetadata(FakeMetadata):
+    """FakeMetadata whose ``tag_file`` also accepts (and records) ``comment``.  The plain
+    FakeMetadata deliberately has no such parameter, to prove the default path never passes it."""
+
+    def __init__(self, release, descriptions) -> None:
+        super().__init__(release)
+        self.album_descriptions = descriptions
+        self.comments: list[Any] = []
+
+    def tag_file(self, file_path, track, release, cover_data, output_format, track_numbering="vinyl",
+                 comment=None):
+        self.comments.append(comment)
+
+
+def run_described(session, spec, metadata):
+    events: list[ProgressEvent] = []
+    pipeline.run(session=session, spec=spec, release_id=99, audio_processor=FakeAudio(),
+                 metadata_handler=metadata, on_progress=events.append)
+    return events
+
+
+def described_spec(tmp_path: Path) -> OutputSpec:
+    return OutputSpec(output_format="flac", output_dir=tmp_path / "out", album_description=True)
+
+
+def test_description_found_tags_every_file_with_composed_comment(session, tmp_path):
+    from album_description import DescriptionResult
+    descriptions = FakeDescriptions(DescriptionResult("found", "About it.", "T", "https://en.wikipedia.org/wiki/T"))
+    release = FakeRelease(id=99)
+    release.master_id = 5
+    metadata = DescribingMetadata(release, descriptions)
+    events = run_described(session, described_spec(tmp_path), metadata)
+    assert metadata.comments == ["About it.\nDigitized from vinyl"] * 2
+    assert descriptions.lookups == [(99, 5)]
+    fetching = [e for e in events if e.phase == "fetching_description"]
+    assert [e.fraction for e in fetching] == [0.25]
+    assert session.state == SessionState.COMPLETE
+
+
+def test_description_error_keeps_default_comment_warns_and_succeeds(session, tmp_path):
+    from album_description import DescriptionResult
+    metadata = DescribingMetadata(FakeRelease(id=99), FakeDescriptions(DescriptionResult("error", None, None, None)))
+    events = run_described(session, described_spec(tmp_path), metadata)
+    assert metadata.comments == [None, None]
+    warnings = [e for e in events if e.message.startswith("Warning:")]
+    assert len(warnings) == 1 and warnings[0].fraction == 0.25
+    assert "Album description unavailable" in warnings[0].message
+    assert session.state == SessionState.COMPLETE
+
+
+def test_description_none_keeps_default_comment_without_warning(session, tmp_path):
+    from album_description import DescriptionResult
+    metadata = DescribingMetadata(FakeRelease(id=99), FakeDescriptions(DescriptionResult("none", None, None, None)))
+    events = run_described(session, described_spec(tmp_path), metadata)
+    assert metadata.comments == [None, None]
+    assert not [e for e in events if e.message.startswith("Warning:")]
+
+
+def test_description_off_never_looks_up_or_passes_comment(session, spec):
+    from album_description import DescriptionResult
+    descriptions = FakeDescriptions(DescriptionResult("found", "X", "T", "u"))
+    metadata = DescribingMetadata(FakeRelease(id=99), descriptions)
+    events = run_described(session, spec, metadata)
+    assert descriptions.lookups == []
+    assert metadata.comments == [None, None]
+    assert "fetching_description" not in [e.phase for e in events]
+
+
+class RaisingDescriptions:
+    def lookup(self, release_id, master_id):
+        raise RuntimeError("bug in the lookup")
+
+
+def test_description_lookup_bug_warns_and_logs_but_the_export_succeeds(session, tmp_path, caplog):
+    metadata = DescribingMetadata(FakeRelease(id=99), RaisingDescriptions())
+    with caplog.at_level("ERROR"):
+        events = run_described(session, described_spec(tmp_path), metadata)
+    assert session.state == SessionState.COMPLETE
+    assert metadata.comments == [None, None]
+    assert [e for e in events if e.message.startswith("Warning:") and "Album description unavailable" in e.message]
+    assert "bug in the lookup" in caplog.text
+
+
 # --- an export never overwrites its source -------------------------------------------------
 
 def _case_insensitive(directory: Path) -> bool:
@@ -269,3 +366,37 @@ def test_an_export_that_would_overwrite_its_source_fails_and_writes_nothing(tmp_
     assert [p.name for p in album.iterdir()] == [name], "no track, temp or cover file written"
     assert s.state == SessionState.FAILED
     assert events[-1].phase == "error" and "Choose a different output folder" in events[-1].message
+
+
+def test_a_refused_overwrite_makes_no_description_lookup(tmp_path):
+    from album_description import DescriptionResult
+    album = tmp_path / "out" / "Test Artist - Test Album"
+    album.mkdir(parents=True)
+    src = album / "A1-track.flac"
+    src.write_bytes(b"ORIGINAL" * 100)
+    s = SessionStore().create(
+        session_id="sess-desc", source_audio=src.resolve(), source_filename=src.name,
+        source_duration=120.0, source_size=src.stat().st_size, in_place=True,
+    )
+    s.set_boundaries([FakeBoundary(1, 0.0, 60.0), FakeBoundary(2, 60.0, 120.0)])
+    s.set_mappings({1: "A1", 2: "A2"})
+    descriptions = FakeDescriptions(DescriptionResult("found", "X", "T", "u"))
+    with pytest.raises(RuntimeError, match="would overwrite the recording"):
+        run_described(s, described_spec(tmp_path), DescribingMetadata(FakeRelease(id=99), descriptions))
+    assert descriptions.lookups == []
+
+
+def test_an_unwritable_output_folder_fails_before_any_description_lookup(tmp_path):
+    from album_description import DescriptionResult
+    blocker = tmp_path / "out"
+    blocker.write_text("a file where the output folder should be")  # mkdir fails
+    s = SessionStore().create(
+        session_id="sess-mkdir", source_audio=tmp_path / "src.wav", source_filename="src.wav",
+        source_duration=120.0, source_size=1, in_place=True,
+    )
+    s.set_boundaries([FakeBoundary(1, 0.0, 60.0)])
+    s.set_mappings({1: "A1"})
+    descriptions = FakeDescriptions(DescriptionResult("found", "X", "T", "u"))
+    with pytest.raises(OSError):
+        run_described(s, described_spec(tmp_path), DescribingMetadata(FakeRelease(id=99), descriptions))
+    assert descriptions.lookups == []
