@@ -1,5 +1,6 @@
 // Discogs-first flow: selecting a file searches by itself, cards fill in their tracklists,
-// and a release can be picked before any track is detected.  Discogs is faked (fetch).
+// and a release can be picked before any track is detected: the pick places the tracks with
+// guided detection.  Discogs is faked (fetch).
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
@@ -9,6 +10,8 @@ const vinylApp = new Function(src + ';return vinylApp;')();
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const track = (position, duration) => ({ position, title: 't' + position, duration });
 const detected = (count) => Array.from({ length: count }, (_, i) => ({ number: i + 1, start: i * 100, end: i * 100 + 100, duration: 100 }));
+// Reply of POST /api/analyze-guided
+const guided = (count, method = 'count') => ({ tracks: detected(count), method, matched: true, boundaries: [] });
 
 /**
  * Fake Discogs behind fetch.  Every reply is parked until the test releases it, so the
@@ -53,26 +56,27 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
         app.selectRelease(fullRelease(1));
         assert.strictEqual(app.analyzing, true);
         assert.strictEqual(app.showTrackCountMismatch, false, 'no warning during the first detection');
-        server.next('/api/analyze').answer(500, { detail: 'boom' });
+        assert.strictEqual(server.calledWith('/api/analyze-guided').length, 1, 'a pick places the tracks with guided detection');
+        server.next('/api/analyze-guided').answer(500, { detail: 'boom' });
         await tick(); await tick();
         assert.strictEqual(app.analyzing, false);
         assert.strictEqual(app.showTrackCountMismatch, true, 'a failed detection shows the warning and its options');
 
         // ...and a real mismatch stays visible during a Smart Rescan, whose spinner lives in it
         app.detectedTracks = detected(1);
-        app.resetMappingToDetected();
+        app.resetMappingToTargets();
         app.analyzing = true;
         assert.strictEqual(app.showTrackCountMismatch, true);
     }
 
-    // ---- duration splitting from the "release picked, nothing detected" state: the new tracks
+    // ---- Snap to Discogs from the "release picked, nothing detected" state: the new tracks
     // need a mapping, or every one would export as position "Unknown" ----
     {
         const server = fakeServer();
         const app = mkApp();
         app.selectFile('f1');
         app.selectRelease(fullRelease(1));
-        server.next('/api/analyze').answer(200, { tracks: [] });
+        server.next('/api/analyze-guided').answer(200, guided(0));
         await tick(); await tick();
         assert.strictEqual(app.detectedTracks.length, 0);
         assert.strictEqual(app.showTrackCountMismatch, true);
@@ -80,10 +84,10 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
         const waveformCalls = [];
         app.destroyWaveform = () => waveformCalls.push('destroy');
         app.initWaveform = async () => { waveformCalls.push('init'); };
-        const splitting = app.offerDurationBasedSplitting();
+        const snapping = app.snapToDiscogs();
         await tick();
-        server.next('/api/analyze-duration-based').answer(200, { tracks: detected(2) });
-        await splitting;
+        server.next('/api/analyze-guided').answer(200, guided(2, 'durations'));
+        await snapping;
         assert.deepStrictEqual(app.customMapping, [0, 1], 'each new track maps to its release track');
         assert.strictEqual(app.trackCountMismatch, false, 'the counts match now');
         assert.deepStrictEqual(waveformCalls, ['destroy', 'init'], 'initWaveform keeps an existing waveform, so it goes first');
@@ -98,11 +102,11 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
         let waveformInits = 0;
         app.initWaveform = async () => { waveformInits += 1; };
         app.selectRelease(fullRelease(1));
-        server.next('/api/analyze').answer(200, { tracks: [] });
+        server.next('/api/analyze-guided').answer(200, guided(0));
         await tick(); await tick();
         assert.strictEqual(waveformInits, 0, 'no tracks: no waveform');
-        app.analyzeFile();   // the "Retry track detection" button
-        server.next('/api/analyze').answer(200, { tracks: detected(2) });
+        app.redetectForTargets();   // the "Retry track detection" button, with a release picked
+        server.next('/api/analyze-guided').answer(200, guided(2));
         await tick(); await tick();
         assert.strictEqual(waveformInits, 1, 'the retry builds it, with its regions');
     }
@@ -248,7 +252,6 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
     assert.strictEqual(app.detailsSettled, true);
 
     // ---- trap 4: a card whose tracklist failed is retried by the click, and selected only once loaded ----
-    app.analyzing = true;   // keep the pick from also starting detection: this part tests selection only
     const failing = app.searchResults[2];
     const click = app.chooseResult(failing);
     assert.strictEqual(failing.opening, true);
@@ -262,7 +265,9 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
     await retry;
     assert.strictEqual(app.selectedRelease.id, 3);
     assert.ok(Array.isArray(app.selectedRelease.tracks));
-    app.selectedRelease = null; app.analyzing = false;
+    server.next('/api/analyze-guided').answer(200, guided(2));   // the pick placed the tracks
+    await tick(); await tick();
+    app.selectedRelease = null;
     app.selectRelease(card(9));      // no tracklist
     assert.strictEqual(app.selectedRelease, null, 'selectRelease refuses a release without tracks');
     app.selectRelease({ id: 9, tracks: undefined });
@@ -337,14 +342,16 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
     app.selectFile('f1');
     server.next('/api/search').answer(200, { results: [] });
     await tick();
-    const picked = fullRelease(11, [track('A1', '5:00'), track('A2', '5:00'), track('B1', '5:00')]);
+    const picked = fullRelease(11, [track('A1', '5:00'), track('A2', '5:00'), track('A3', '5:00')]);
     app.searchResults = [picked];
     app.chooseResult(picked);
     assert.strictEqual(app.selectedRelease, picked);
-    assert.strictEqual(server.calledWith('/api/analyze').length, 1, 'picking a release with no tracks runs plain silence detection');
+    assert.strictEqual(server.calls.filter(c => c.url === '/api/analyze').length, 0, 'a pick does not run plain silence detection');
+    assert.strictEqual(server.calledWith('/api/analyze-guided').length, 1, 'it places the tracks of the chosen sides');
+    assert.strictEqual(server.calledWith('/api/analyze-guided')[0].body.expected_tracks, 3);
     assert.strictEqual(app.analyzing, true);
     assert.deepStrictEqual(app.customMapping, []);
-    server.next('/api/analyze').answer(200, { tracks: detected(3) });
+    server.next('/api/analyze-guided').answer(200, guided(3, 'durations'));
     await tick(); await tick();
     assert.strictEqual(app.analyzing, false);
     assert.strictEqual(app.selectedRelease, picked, 'detection must not wipe the chosen release');
@@ -360,23 +367,23 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
     server.next('/api/search').answer(200, { results: [] });
     await tick();
     app.selectRelease(picked);
-    server.next('/api/analyze').answer(200, { tracks: detected(2) });
+    server.next('/api/analyze-guided').answer(200, guided(2));
     await tick(); await tick();
     assert.deepStrictEqual(app.customMapping, [0, 1]);
     assert.strictEqual(app.trackCountMismatch, true);
     app.reverseMapping();
     assert.deepStrictEqual(app.customMapping, [1, 0], 'Reverse keeps working on the recomputed mapping');
 
-    // a release picked while tracks already exist maps them at once and does not detect again
-    const n = server.calls.length;
+    // a release picked while tracks exist (not edited by hand) places them again for that release
     app.changeRelease();
     assert.strictEqual(app.selectedRelease, null);
     assert.strictEqual(app.detectedTracks.length, 2, 'Change release keeps the detection');
     assert.strictEqual(app.searchResults.length, 0);   // (this app never loaded results; the next block checks they survive)
     app.selectRelease(picked);
-    assert.deepStrictEqual(app.customMapping, [0, 1]);
-    assert.strictEqual(app.trackCountMismatch, true);
-    assert.strictEqual(server.calls.length, n, 'no second detection');
+    server.next('/api/analyze-guided').answer(200, guided(3, 'durations'));
+    await tick(); await tick();
+    assert.deepStrictEqual(app.customMapping, [0, 1, 2]);
+    assert.strictEqual(app.trackCountMismatch, false);
 
     // Change release keeps the search results for another pick
     app.searchResults = [picked, fullRelease(12)];
@@ -385,6 +392,8 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
 
     // Smart Rescan after a pick keeps recomputing the mapping through the same helper
     app.selectRelease(picked);
+    server.next('/api/analyze-guided').answer(200, guided(2));
+    await tick(); await tick();
     const rescan = app.smartRescan(3);
     server.next('/api/rescan').answer(200, { tracks: detected(3), matched: true });
     await rescan;
@@ -398,15 +407,15 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
     server.next('/api/search').answer(200, { results: [] });
     await tick();
     app.selectRelease(picked);
-    server.next('/api/analyze').answer(500, { detail: 'ffmpeg exploded' });
+    server.next('/api/analyze-guided').answer(500, { detail: 'ffmpeg exploded' });
     await tick(); await tick();
     assert.strictEqual(app.analyzing, false, 'the button is usable again');
     assert.strictEqual(app.selectedRelease, picked);
     assert.deepStrictEqual(app.detectedTracks, []);
-    assert.strictEqual(app.trackCountMismatch, true, 'the mismatch card offers Smart Rescan / duration splitting');
+    assert.strictEqual(app.trackCountMismatch, true, 'the mismatch card offers Smart Rescan / Snap to Discogs');
     assert.ok(app.toasts.some(t => t.type === 'error'));
-    app.analyzeFile();                                  // "Retry track detection"
-    server.next('/api/analyze').answer(200, { tracks: detected(3) });
+    app.redetectForTargets();                           // "Retry track detection"
+    server.next('/api/analyze-guided').answer(200, guided(3, 'durations'));
     await tick(); await tick();
     assert.deepStrictEqual(app.customMapping, [0, 1, 2]);
     assert.strictEqual(app.trackCountMismatch, false);
@@ -418,7 +427,7 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
     server.next('/api/search').answer(200, { results: [] });
     await tick();
     app.selectRelease(picked);
-    server.next('/api/analyze').answer(200, { tracks: [] });
+    server.next('/api/analyze-guided').answer(200, guided(0));
     await tick(); await tick();
     assert.strictEqual(app.analyzing, false);
     assert.strictEqual(app.selectedRelease, picked);
@@ -451,7 +460,7 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
     app.selectFile('f2');
     assert.strictEqual(app.currentFileId, 'f1', 'still on the recording being analyzed');
     assert.ok(app.toasts.some(t => t.type === 'warning'));
-    server.next('/api/analyze').answer(200, { tracks: detected(3) });
+    server.next('/api/analyze-guided').answer(200, guided(3, 'durations'));
     await tick(); await tick();
     app.selectFile('f2');
     assert.strictEqual(app.currentFileId, 'f2');
@@ -482,7 +491,8 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
         return html.slice(start, html.indexOf('<!-- Waveform Visualization', start));
     }).join('\n');
     const expressions = [...blocks.matchAll(/\s(?:x-[\w:.-]+|@[\w:.-]+|:[\w-]+)="([^"]*)"/g)].map(m => m[1]);
-    const keywords = new Set(['true', 'false', 'null', 'undefined', 'Math', 'result', 'event', '$event', 'this', 'x']);
+    // 'result', 'preset' and 'g' are x-for loop variables
+    const keywords = new Set(['true', 'false', 'null', 'undefined', 'Math', 'result', 'preset', 'g', 'event', '$event', 'this', 'x']);
     const fresh = vinylApp();
     const unknown = new Set();
     for (const expression of expressions) {

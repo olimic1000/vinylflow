@@ -281,9 +281,8 @@ class AnalyzeRequest(BaseModel):
     file_id: str
 
 
-class DurationBasedAnalyzeRequest(BaseModel):
-    file_id: str
-    discogs_durations: List[float]
+# Most tracks one rescan / guided detection may place; keep in step with MAX_GUIDED_TRACKS in app.js
+MAX_EXPECTED_TRACKS = 99
 
 
 class RescanRequest(BaseModel):
@@ -844,8 +843,8 @@ async def rescan_file(request: RescanRequest):
     analysis yields the expected number of tracks.  Falls back to the
     closest result when no setting matches exactly.
     """
-    if not 1 <= request.expected_tracks <= 99:
-        raise HTTPException(status_code=422, detail="expected_tracks must be between 1 and 99")
+    if not 1 <= request.expected_tracks <= MAX_EXPECTED_TRACKS:
+        raise HTTPException(status_code=422, detail=f"expected_tracks must be between 1 and {MAX_EXPECTED_TRACKS}")
 
     session = session_store.get(request.file_id)
     if session is None:
@@ -967,8 +966,8 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
     place the tracks.  Count-based detection may find fewer tracks than asked
     for: ``matched`` is then False.
     """
-    if not 1 <= request.expected_tracks <= 99:
-        raise HTTPException(status_code=422, detail="expected_tracks must be between 1 and 99")
+    if not 1 <= request.expected_tracks <= MAX_EXPECTED_TRACKS:
+        raise HTTPException(status_code=422, detail=f"expected_tracks must be between 1 and {MAX_EXPECTED_TRACKS}")
 
     if request.durations is not None and len(request.durations) != request.expected_tracks:
         raise HTTPException(status_code=422, detail="durations must have one entry per expected track")
@@ -1089,62 +1088,6 @@ async def analyze_guided(request: GuidedAnalyzeRequest):
                 "recoverable": True,
             }
         )
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/analyze-duration-based")
-async def analyze_duration_based(request: DurationBasedAnalyzeRequest):
-    """
-    Create track boundaries based on Discogs track durations.
-    Fallback method when silence detection fails.
-    """
-    session = session_store.get(request.file_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="File not found")
-    _require_source(session)
-
-    file_path = session.source_audio
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Audio file not found")
-
-    try:
-        # Use existing duration-based splitting method
-        processor = AudioProcessor(
-            silence_threshold=config.default_silence_threshold,
-            min_silence_duration=config.default_min_silence_duration,
-            min_track_length=config.default_min_track_length,
-        )
-
-        tracks = processor.split_tracks_duration_based(
-            file_path,
-            request.discogs_durations,
-            verbose=True
-        )
-
-        session.set_boundaries(tracks)
-
-        # Broadcast via WebSocket
-        await broadcast_message({
-            "type": "analysis_complete",
-            "file_id": request.file_id,
-            "track_count": len(tracks),
-            "method": "duration_based"
-        })
-
-        return {
-            "tracks": [
-                {
-                    "number": track.number,
-                    "start": track.start,
-                    "end": track.end,
-                    "duration": track.duration,
-                }
-                for track in tracks
-            ]
-        }
-
-    except Exception as e:
-        logger.error(f"Duration-based analysis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
