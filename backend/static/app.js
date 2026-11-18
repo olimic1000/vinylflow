@@ -11,6 +11,8 @@ const MAX_GUIDED_TRACKS = 99;
 const UNDO_TOAST_MS = 8000;
 // Discogs results per search (one page; each card's tracklist loads separately)
 const SEARCH_PAGE_SIZE = 12;
+// Fetches per query, the first included; must match SEARCH_MAX_PAGES in backend/api.py.
+const SEARCH_MAX_PAGES = 3;
 // Tracklists fetched at once while the result cards fill in (the server rate-limits Discogs anyway)
 const RELEASE_DETAIL_CONCURRENCY = 2;
 // A side set "fits" the recording when its total length is within this fraction of the music length
@@ -38,6 +40,45 @@ function newSearchCard(result) {
     return { ...result, tracks: result.tracks ?? null, detailStatus: 'pending', opening: false };
 }
 
+// A Discogs id: 1-10 digits, no leading zero (so 0, m0 and release/0 are not references).
+const DISCOGS_ID = '[1-9]\\d{0,9}';
+const DISCOGS_BARE_RELEASE = new RegExp(`^\\[?r?(${DISCOGS_ID})\\]?$`, 'i');
+const DISCOGS_BARE_MASTER = new RegExp(`^\\[?m(${DISCOGS_ID})\\]?$`, 'i');
+// Website link: scheme and www./m. optional, any path prefix segments (language, sell, old
+// Artist-Title slug), then release/<id> or master/<id> ending the input or followed by - / ? #.
+const DISCOGS_WEB_LINK = new RegExp(
+    `^(?:https?://)?(?:www\\.|m\\.)?discogs\\.com/(?:[^\\s/?#]+/)*(release|master)/(${DISCOGS_ID})(?:[-/?#]\\S*)?$`, 'i');
+// API link: api.discogs.com/releases/<id> or /masters/<id>, ending the input or followed by / ? #.
+const DISCOGS_API_LINK = new RegExp(
+    `^(?:https?://)?api\\.discogs\\.com/(release|master)s/(${DISCOGS_ID})(?:[/?#]\\S*)?$`, 'i');
+
+/**
+ * A Discogs release reference typed or pasted by the user: "2874426", "r2874426",
+ * "[r2874426]", "m123" (master), or a link that is the whole input: discogs.com/release/<id>
+ * or /master/<id> (optional http(s)://, www. or m.; any path before it such as /pt_BR/,
+ * /sell/ or the old artist-slug form; a "-slug", "/", "?" or "#" may follow the id), or
+ * api.discogs.com/releases/<id> / masters/<id>. Ids have at most 10 digits and are never 0;
+ * anything else (other hosts, text around the link, longer ids) is null. One wrapping layer
+ * (<>, quotes, parentheses) and trailing . , ; : ! ? ) are stripped first, for links pasted from prose.
+ * Returns {id}, {master: id} for a master release (not one exact version), or null.
+ */
+function parseDiscogsRelease(text) {
+    let s = String(text || '').trim();
+    // Pasted from prose: drop one wrapping layer (<>, quotes, parentheses) and trailing punctuation.
+    // Punctuation after the wrapper goes first ("…/release/5",), but not ")", which may close it.
+    s = s.replace(/[.,;:!?]+$/, '');
+    const wrapped = s.match(/^(?:<(.*)>|"(.*)"|'(.*)'|\((.*)\))$/s);
+    if (wrapped) s = (wrapped[1] ?? wrapped[2] ?? wrapped[3] ?? wrapped[4]).trim();
+    s = s.replace(/[.,;:!?)]+$/, '');
+    let m = s.match(DISCOGS_BARE_RELEASE);
+    if (m) return { id: Number(m[1]) };
+    m = s.match(DISCOGS_BARE_MASTER);
+    if (m) return { master: Number(m[1]) };
+    m = s.match(DISCOGS_WEB_LINK) || s.match(DISCOGS_API_LINK);
+    if (m) return m[1].toLowerCase() === 'release' ? { id: Number(m[2]) } : { master: Number(m[2]) };
+    return null;
+}
+
 function vinylApp() {
     return {
         // WebSocket connection
@@ -53,6 +94,9 @@ function vinylApp() {
         analyzing: false,
         searchLoading: false,
         searchNotice: '',
+        releaseIdInput: '',      // exact Discogs release: ID or pasted link
+        releaseIdNotice: '',
+        releaseIdLoading: false,
         trackCountMismatch: false,
         autoRetryAttempts: 0,
         maxAutoRetries: 3,
@@ -101,11 +145,18 @@ function vinylApp() {
         // Discogs Search
         searchQuery: '',
         searchResults: [],
+        searchedQuery: '',        // Query the shown results came from ("Load more" continues it, not the edited box)
+        searchPage: 0,            // Discogs result pages fetched for it
+        searchHasMore: false,     // Discogs has another page and the fetch limit allows it
+        searchMoreLoading: false,
+        searchMoreError: '',
+        searchMoreNotice: '',     // After a Load more that added nothing: "No more results." (Load more gone) or "No new results on this page."
         onlyWithLengths: false,   // Result filter: hide releases without track lengths
         detailsSettled: false,    // True once every result's tracklist load finished or failed
         searchSeq: 0,             // Bumped by every search and file switch: stale replies are dropped
         _detailInflight: {},      // `${searchSeq}:${releaseId}` -> promise of a tracklist load in progress
         _pendingPickId: null,     // Card clicked while its tracklist loads; a later pick clears it
+        _releaseIdCall: 0,        // Bumped per "exact pressing" lookup; only the latest resets releaseIdLoading
         selectedRelease: null,
         trackMappingReversed: false,
         customMapping: [],   // detected track index -> index into selectedRelease.tracks (a side can be a subset)
@@ -924,12 +975,18 @@ function vinylApp() {
 
         /** Search results and query, for the flows that clear them (re-analyze, removing the open file) */
         snapshotSearch() {
-            return { results: this.searchResults, query: this.searchQuery };
+            return {
+                results: this.searchResults, query: this.searchQuery,
+                searchedQuery: this.searchedQuery, page: this.searchPage, hasMore: this.searchHasMore
+            };
         },
 
         restoreSearch(saved) {
             this.searchResults = saved.results;
             this.searchQuery = saved.query;
+            this.searchedQuery = saved.searchedQuery;
+            this.searchPage = saved.page;
+            this.searchHasMore = saved.hasMore;
             // The loaders of the restored cards stopped when their search was superseded
             // (removing the file bumped searchSeq): fill in the tracklists still missing.
             const seq = ++this.searchSeq;
@@ -955,6 +1012,7 @@ function vinylApp() {
                 this.notify('Wait for track detection to finish before switching recordings.', { type: 'warning', timeout: 5000 });
                 return;
             }
+            this.releaseIdLoading = false;   // a lookup for the previous recording is dropped on arrival
             this.currentFileId = fileId;
             this.currentFile = this.uploadedFiles.find(f => f.id === fileId);
             if (this.currentFile && !(this.currentFile.musicDuration > 0)) {
@@ -963,6 +1021,8 @@ function vinylApp() {
             this.clearEditState();
             this.resetSearchResults();
             this._pendingPickId = null;
+            this.releaseIdNotice = '';
+            this.releaseIdInput = '';
             this.searchNotice = '';
             // A search of the previous file is superseded: its reply (and its tracklist
             // loads) are dropped by the sequence check, and its loading flag must not
@@ -1021,6 +1081,8 @@ function vinylApp() {
                 this.resetSearchResults();
                 this.searchLoading = false;
                 this.searchSeq++;   // drop the replies of a search still running for this file
+                this._pendingPickId = null;   // ... and of a release pick (card or pasted link) still loading
+                this.releaseIdLoading = false;
             }
 
             const removedMessage = file.in_place
@@ -1305,15 +1367,13 @@ function vinylApp() {
             this.resetSearchResults();
             this.searchNotice = '';
             const seq = ++this.searchSeq;
+            const query = this.searchQuery;
 
             try {
                 const response = await fetch('/api/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        query: this.searchQuery,
-                        max_results: SEARCH_PAGE_SIZE
-                    })
+                    body: JSON.stringify({ query, max_results: SEARCH_PAGE_SIZE, page: 1 })
                 });
                 const data = await response.json();
                 if (seq !== this.searchSeq) return;   // a file switch superseded this search
@@ -1325,6 +1385,9 @@ function vinylApp() {
                 }
 
                 this.searchResults = data.results.map(newSearchCard);
+                this.searchedQuery = query;
+                this.searchPage = 1;
+                this.searchHasMore = !!data.has_more;
 
                 if (this.searchResults.length === 0) {
                     this.searchNotice = 'No results found. Try a different search query.';
@@ -1344,16 +1407,68 @@ function vinylApp() {
             }
         },
 
-        /** Forget the shown results (not the query box) */
+        /** Forget the shown results and their "Load more" state (not the query box) */
         resetSearchResults() {
             this.searchResults = [];
             this.detailsSettled = false;
+            this.searchedQuery = '';
+            this.searchPage = 0;
+            this.searchHasMore = false;
+            this.searchMoreLoading = false;
+            this.searchMoreError = '';
+            this.searchMoreNotice = '';
+        },
+
+        /**
+         * "Load more": fetch the next page of the same query and append it, with its
+         * tracklists loading like the first page's. At most SEARCH_MAX_PAGES fetches.
+         */
+        async loadMoreResults() {
+            if (!this.searchHasMore || this.searchLoading || this.searchMoreLoading || this.searchPage >= SEARCH_MAX_PAGES) return;
+            const seq = this.searchSeq;
+            const page = this.searchPage + 1;
+            this.searchMoreLoading = true;
+            this.searchMoreError = '';
+            this.searchMoreNotice = '';
+            try {
+                const response = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: this.searchedQuery, max_results: SEARCH_PAGE_SIZE, page })
+                });
+                const data = await response.json();
+                if (seq !== this.searchSeq) return;   // a new search/file replaced these results
+                if (!response.ok || !Array.isArray(data.results)) {
+                    throw new Error(data.detail || 'Search failed');
+                }
+                // Discogs' order can shift between requests: never show a release twice
+                // (cards are keyed by id, and a duplicate key breaks the grid).
+                const shown = new Set(this.searchResults.map(r => r.id));
+                const added = data.results.filter(r => !shown.has(r.id)).map(newSearchCard);
+                this.searchPage = page;
+                this.searchHasMore = !!data.has_more && page < SEARCH_MAX_PAGES;
+                if (added.length) {
+                    this.detailsSettled = false;
+                    this.searchResults = [...this.searchResults, ...added];
+                    this.loadAllReleaseDetails(seq, added.map(r => r.id));
+                } else {
+                    // A full page of already shown ids leaves has_more true: Load more stays, so don't say "no more"
+                    this.searchMoreNotice = this.searchHasMore ? 'No new results on this page.' : 'No more results.';
+                }
+            } catch (error) {
+                if (seq !== this.searchSeq) return;
+                console.error('Load more failed:', error);
+                this.searchMoreError = "Couldn't load more results: " + error.message;
+            } finally {
+                if (seq === this.searchSeq) this.searchMoreLoading = false;
+            }
         },
 
         /**
          * Fetch full tracklists for the given results (default: all shown) in display
          * order, RELEASE_DETAIL_CONCURRENCY at a time.  Stops as soon as searchSeq moves
-         * on (new search or file switch).
+         * on (new search or file switch).  Settled only when no result is still pending:
+         * "Load more" can run beside the first page's loader.
          */
         async loadAllReleaseDetails(seq, ids = this.searchResults.map(r => r.id)) {
             let next = 0;
@@ -1825,6 +1940,7 @@ function vinylApp() {
             this.selectedSides = [];
             this.suggestedSides = [];
             this.sidesSuggestionReason = '';
+            this.releaseIdLoading = false;   // a pasted lookup in flight is dropped (its call token guards the reset)
             this.trackMappingReversed = false;
             this.trackCountMismatch = false;
             this.customMapping = [];
@@ -1876,6 +1992,53 @@ function vinylApp() {
         },
 
         // ---- Release cards: lengths, sides and fit -----------------------
+
+        parseDiscogsRelease,
+
+        /** Select the exact release the user named by ID or link, skipping search. */
+        async openReleaseById() {
+            if (this.analyzing || this.releaseIdLoading) return;
+            const ref = parseDiscogsRelease(this.releaseIdInput);
+            if (!ref) {
+                this.releaseIdNotice = 'Paste a Discogs release link (discogs.com/release/…) or type its number, e.g. 2874426.';
+                return;
+            }
+            if (ref.master) {
+                this.releaseIdNotice = `That is a master release (all versions of the album). Open it on Discogs, pick the exact pressing you own, and paste that release's link.`;
+                return;
+            }
+            this.releaseIdNotice = '';
+            this.releaseIdLoading = true;
+            // A pick like a card click: a later pick, Change release or a file switch while
+            // this loads clears _pendingPickId, and the reply is then dropped.
+            const call = ++this._releaseIdCall;
+            const pick = `id:${call}`;
+            const fileId = this.currentFileId;
+            const superseded = () => this._pendingPickId !== pick || this.currentFileId !== fileId;
+            this._pendingPickId = pick;
+            try {
+                const response = await fetch(`/api/release/${ref.id}`);
+                const data = await response.json().catch(() => ({}));
+                if (superseded()) return;
+                if (!response.ok || !Array.isArray(data.tracks)) {
+                    this.releaseIdNotice = response.status === 404
+                        ? `Discogs release ${ref.id} was not found (or Discogs is unavailable right now).`
+                        : `Couldn't load release ${ref.id}: ${data.detail || 'unknown error'}`;
+                    return;
+                }
+                if (!data.tracks.length) {
+                    this.releaseIdNotice = `Release ${ref.id} has no tracklist on Discogs, so it can't guide the splits.`;
+                    return;
+                }
+                this.releaseIdInput = '';
+                this.selectRelease({ ...data, detailStatus: 'loaded' });
+            } catch (error) {
+                if (!superseded()) this.releaseIdNotice = `Couldn't reach the server to load release ${ref.id}.`;
+            } finally {
+                if (this._pendingPickId === pick) this._pendingPickId = null;
+                if (this._releaseIdCall === call) this.releaseIdLoading = false;
+            }
+        },
 
         /**
          * Parse a Discogs duration string ("5:24", "1:02:03") into seconds.
