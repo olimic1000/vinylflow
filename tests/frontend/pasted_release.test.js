@@ -25,7 +25,7 @@ function mkApp() {
     app.currentFileId = 'f1';
     app.currentFile = app.uploadedFiles[0];
     // Detection / waveform side effects of a pick are not under test here.
-    app.analyzeFile = async () => {};
+    app.analyzeFile = app.redetectForTargets = async () => {};   // a pick now places tracks with guided detection (#94)
     app.fetchScan = () => {};
     app.destroyWaveform = app.pauseWaveform = app.initWaveform = () => {};
     app.searchDiscogs = async () => {};
