@@ -222,3 +222,40 @@ def test_apply_id3_omits_year_label_cover_when_absent():
     # Other required tags still written
     assert "TIT2" in audio.tags
     assert "TXXX:DISCOGS_RELEASE_ID" in audio.tags
+
+
+def test_build_tag_set_comment_defaults_and_override():
+    handler = make_handler()
+    release = make_release()
+    default = handler._build_tag_set(FakeTrack("A1"), release, None)
+    assert default.comment == "Digitized from vinyl"
+    described = handler._build_tag_set(FakeTrack("A1"), release, None, comment="Text\nDigitized from vinyl")
+    assert described.comment == "Text\nDigitized from vinyl"
+
+
+def test_comment_is_written_to_vorbis_and_id3():
+    handler = make_handler()
+    tags = handler._build_tag_set(FakeTrack("A1"), make_release(), None, comment="Text\nDigitized from vinyl")
+
+    vorbis = FakeFlacAudio()
+    handler._apply_vorbis(vorbis, tags)
+    assert vorbis.values["COMMENT"] == "Text\nDigitized from vinyl"
+
+    id3 = FakeId3Audio()
+    handler._apply_id3(id3, tags)
+    assert id3.tags["COMM"].text == ["Text\nDigitized from vinyl"]
+
+
+def test_tag_file_threads_comment_to_every_format(monkeypatch):
+    handler = make_handler()
+    seen = []
+
+    def spy(track, release, cover_data, track_numbering="vinyl", comment=None):
+        seen.append(comment)
+        return None  # tag-write failure ends each tagger before touching a file
+
+    monkeypatch.setattr(handler, "_build_tag_set", spy)
+    for output_format in ("flac", "mp3", "aiff"):
+        handler.tag_file("x", FakeTrack("A1"), make_release(), None, output_format, comment="C")
+    handler.tag_file("x", FakeTrack("A1"), make_release(), None, "flac")
+    assert seen == ["C", "C", "C", None]

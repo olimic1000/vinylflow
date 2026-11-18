@@ -23,7 +23,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Query, WebSocket, 
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from backend.security import SameOriginMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -299,9 +299,16 @@ class GuidedAnalyzeRequest(BaseModel):
     side_breaks: Optional[List[int]] = None
 
 
+# Discogs search pages one query may fetch ("Load more"); must match SEARCH_MAX_PAGES in app.js.
+SEARCH_MAX_PAGES = 3
+# Largest page size one search request may ask for.
+SEARCH_MAX_RESULTS = 100
+
+
 class SearchRequest(BaseModel):
     query: str
-    max_results: int = 5
+    max_results: int = Field(5, ge=1, le=SEARCH_MAX_RESULTS)
+    page: int = Field(1, ge=1, le=SEARCH_MAX_PAGES)
 
 
 class TrackMapping(BaseModel):
@@ -325,6 +332,7 @@ class ProcessRequest(BaseModel):
     output_format: str = "flac"  # 'flac', 'mp3', or 'aiff'
     restoration_level: int = 0   # 0=none, 1=light clean, 2=full restore
     hum_freq: int = 50           # Electrical hum frequency in Hz (50=EU, 60=US)
+    album_description: Optional[bool] = None  # Wikipedia lead paragraph in the Comment tag; the request can only turn the saved setting off
 
 
 class ConfigUpdate(BaseModel):
@@ -334,6 +342,7 @@ class ConfigUpdate(BaseModel):
     output_dir: Optional[str] = None
     track_numbering: Optional[str] = None
     hide_support_ask: Optional[bool] = None
+    album_description: Optional[bool] = None
 
 
 class DiscogsSetupRequest(BaseModel):
@@ -1317,13 +1326,15 @@ async def search_discogs(request: SearchRequest):
     """Search Discogs; basic cards only (``tracks: null`` = not loaded yet).
 
     Full tracklists come from GET /api/release/{id}, which the UI calls per card.
+    ``has_more``: a full page below SEARCH_MAX_PAGES, so "Load more" may ask for the next one.
     """
     try:
         # One search round-trip (rate-limit sleep inside) -- keep it off the event loop.
         basic = await asyncio.to_thread(
-            metadata_handler.search_basic, request.query, request.max_results
+            metadata_handler.search_basic, request.query, request.max_results, request.page
         )
-        return {"results": [{**result, "tracks": None} for result in basic]}
+        has_more = request.page < SEARCH_MAX_PAGES and len(basic) >= request.max_results
+        return {"results": [{**result, "tracks": None} for result in basic], "has_more": has_more}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1336,6 +1347,20 @@ async def get_release(release_id: int):
     if release is None:
         raise HTTPException(status_code=404, detail="Release not found or Discogs unavailable")
     return _serialize_release(release)
+
+
+@app.get("/api/release/{release_id}/description")
+async def get_release_description(release_id: int):
+    """The album's Wikipedia lead paragraph (cached); ``disabled`` without any lookup when the setting is off."""
+    if not config.album_description:
+        return {"status": "disabled"}
+    release = await asyncio.to_thread(metadata_handler.get_release_by_id, release_id)
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release not found or Discogs unavailable")
+    result = await asyncio.to_thread(
+        metadata_handler.album_descriptions.lookup, release.id, getattr(release, "master_id", None)
+    )
+    return {"status": result.status, "text": result.text, "title": result.title, "url": result.url}
 
 
 @app.post("/api/process")
@@ -1378,6 +1403,11 @@ _PHASE_TO_UI_STEP = {
 }
 
 
+def _wants_album_description(request: ProcessRequest) -> bool:
+    """The saved setting, which a request may only turn off (``False``); it can never switch it on."""
+    return bool(config.album_description) and request.album_description is not False
+
+
 async def process_file_background(request: ProcessRequest):
     """Run the Pipeline for ``request`` and bridge progress events to the
     WebSocket broadcaster.
@@ -1404,6 +1434,7 @@ async def process_file_background(request: ProcessRequest):
         restoration_level=request.restoration_level,
         hum_freq=request.hum_freq,
         track_numbering=config.track_numbering,
+        album_description=_wants_album_description(request),
     )
 
     loop = asyncio.get_running_loop()
@@ -1524,6 +1555,7 @@ async def get_config():
         "flac_compression": audio_processor.flac_compression,
         "output_dir": config.default_output_dir,
         "track_numbering": config.track_numbering,
+        "album_description": config.album_description,
         "import_dir": str(_import_dir()) if _import_dir() else None,  # read-only
         "hide_support_ask": config.hide_support_ask,
     }
@@ -1549,6 +1581,10 @@ async def update_config(updates: ConfigUpdate):
     if updates.hide_support_ask is not None:
         config.hide_support_ask = updates.hide_support_ask
         config.save_hide_support_ask(updates.hide_support_ask)
+
+    if updates.album_description is not None:
+        config.album_description = updates.album_description
+        config.save_album_description(updates.album_description)
 
     return await get_config()
 

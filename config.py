@@ -100,6 +100,19 @@ class Config:
         # The "support VinylFlow" note shown after an export, until the user turns it off
         self.hide_support_ask = json_settings.get('HIDE_SUPPORT_ASK') is True
 
+        # Wikipedia lead paragraph in the Comment tag: off by default (no outbound traffic unasked)
+        self.album_description = self._as_bool(
+            json_settings.get("ALBUM_DESCRIPTION", os.getenv("ALBUM_DESCRIPTION")), False
+        )
+
+    @staticmethod
+    def _as_bool(value, default: bool) -> bool:
+        if value is None or value == "":
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
     def _resolve_track_numbering(self, json_settings: dict) -> str:
         """The numbering scheme, keeping an older install on the scheme it was using.
 
@@ -219,6 +232,9 @@ class Config:
 
     def save_hide_support_ask(self, hidden: bool) -> bool:
         return self._write_settings({'HIDE_SUPPORT_ASK': bool(hidden)})
+
+    def save_album_description(self, enabled: bool) -> bool:
+        return self._write_settings({'ALBUM_DESCRIPTION': bool(enabled)})
 
     def reload(self):
         """
