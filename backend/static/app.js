@@ -155,7 +155,8 @@ function vinylApp() {
             track_numbering: 'sequential_disc_per_lp',
             min_track_length: 30,
             flac_compression: 8,
-            output_dir: ''
+            output_dir: '',
+            hide_support_ask: false
         },
 
         // Supported input file extensions
@@ -419,6 +420,29 @@ function vinylApp() {
             } catch (error) {
                 console.error('Failed to save config:', error);
                 this.notify('Failed to save settings.', { type: 'error' });
+            }
+        },
+
+        /** The support note in the "Processing Complete" card: after every export until turned off */
+        get showSupportAsk() {
+            return !!this.successMessage && !this.config.hide_support_ask;
+        },
+
+        /**
+         * "Don't show this again" on the support note.  Saved in settings.json, not
+         * localStorage: the desktop window starts with empty web storage every launch.
+         * Sends only this key, so unsaved edits in the Settings dialog are not saved with it.
+         */
+        async hideSupportAsk() {
+            this.config.hide_support_ask = true;
+            try {
+                await fetch('/api/config', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hide_support_ask: true })
+                });
+            } catch (error) {
+                console.error('Failed to save support note choice:', error);
             }
         },
 

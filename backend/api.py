@@ -333,6 +333,7 @@ class ConfigUpdate(BaseModel):
     min_track_length: Optional[float] = None
     output_dir: Optional[str] = None
     track_numbering: Optional[str] = None
+    hide_support_ask: Optional[bool] = None
 
 
 class DiscogsSetupRequest(BaseModel):
@@ -1524,6 +1525,7 @@ async def get_config():
         "output_dir": config.default_output_dir,
         "track_numbering": config.track_numbering,
         "import_dir": str(_import_dir()) if _import_dir() else None,  # read-only
+        "hide_support_ask": config.hide_support_ask,
     }
 
 
@@ -1544,6 +1546,9 @@ async def update_config(updates: ConfigUpdate):
         if updates.track_numbering in TRACK_NUMBERING_SCHEMES:
             config.track_numbering = updates.track_numbering
             config.save_track_numbering(updates.track_numbering)
+    if updates.hide_support_ask is not None:
+        config.hide_support_ask = updates.hide_support_ask
+        config.save_hide_support_ask(updates.hide_support_ask)
 
     return await get_config()
 

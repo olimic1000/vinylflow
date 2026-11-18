@@ -97,6 +97,9 @@ class Config:
         # Track numbering scheme
         self.track_numbering = self._resolve_track_numbering(json_settings)
 
+        # The "support VinylFlow" note shown after an export, until the user turns it off
+        self.hide_support_ask = json_settings.get('HIDE_SUPPORT_ASK') is True
+
     def _resolve_track_numbering(self, json_settings: dict) -> str:
         """The numbering scheme, keeping an older install on the scheme it was using.
 
@@ -213,6 +216,9 @@ class Config:
 
     def save_track_numbering(self, scheme: str) -> bool:
         return self._write_settings({'TRACK_NUMBERING': scheme})
+
+    def save_hide_support_ask(self, hidden: bool) -> bool:
+        return self._write_settings({'HIDE_SUPPORT_ASK': bool(hidden)})
 
     def reload(self):
         """
