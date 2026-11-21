@@ -201,6 +201,49 @@
             }
         }
 
+        /* Table controls: dark text on light grey (14:1), a visible focus ring (2px #1E1E1E, 3:1+ on the card) */
+        .track-btn {
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            color: #1E1E1E;
+            background-color: #F0EFEB;
+        }
+        .track-btn:hover:not(:disabled) { background-color: #E2E0DA; }
+        .track-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .track-btn-on { background-color: #5E5E5A; color: #FFFFFF; }
+        .track-btn-on:hover:not(:disabled) { background-color: #3D3D3D; }
+        .track-btn:focus-visible, .track-field:focus-visible, .play-btn:focus-visible {
+            outline: 2px solid #1E1E1E;
+            outline-offset: 2px;
+        }
+        /* Merged track table: the header and every row are separate grids, so only the single fr
+           column (the Discogs track) may be flexible; an auto-sized column would give the header
+           different widths than the rows and shift every header after "Start - End". Narrow
+           windows scroll the table sideways instead of overflowing the page. */
+        .track-table-scroll { overflow-x: auto; }
+        /* Header and rows sit in identical wrappers that reserve the same transparent left border, so
+           the playing row (which only recolours it) never shifts its cells against the header; the
+           wrappers are as wide as the grid, so separators span a sideways-scrolled table.  The separators live here, not in
+           an inline style: a string :style would wipe a static style attribute. */
+        .track-head, .track-row { border-left: 4px solid transparent; min-width: 924px; }   /* 920 + border */
+        .track-head { border-bottom: 1px solid #8A8A86; }
+        .track-row { border-bottom: 1px solid #F0EFEB; }
+        .track-row-playing { border-left-color: #E5A100; background-color: rgba(229, 161, 0, 0.08); }
+        .track-grid {
+            display: grid;
+            grid-template-columns: 22px 28px minmax(200px, 2fr) 120px 72px 64px 56px 300px;
+            gap: 8px;
+            align-items: center;
+            min-width: 920px;
+        }
+        .track-swatch {
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            border: 1px solid rgba(0, 0, 0, 0.18);
+        }
+
         .track-marker {
             position: absolute;
             top: 0;
@@ -270,6 +313,7 @@
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
+        .spinner-lg { width: 36px; height: 36px; border-width: 4px; }
     </style>
 </head>
 <body class="bg-page">
@@ -933,20 +977,32 @@
         <!-- Waveform Visualization - Full Bleed -->
         <div x-show="detectedTracks.length > 0" x-cloak class="bg-card shadow-lg py-8 my-8">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div class="flex justify-between items-center mb-6">
+                <div class="flex flex-wrap justify-between items-center gap-3 mb-6">
                     <h3 class="text-2xl font-bold text-primary">Waveform Editor</h3>
-                    <div class="flex gap-2">
-                        <button @click="playWaveform()" :disabled="!waveform" class="px-4 py-2 btn-primary rounded-lg">▶️ Play</button>
-                        <button @click="stopWaveform()" :disabled="!waveform" class="px-4 py-2 btn-danger rounded-lg">⏹️ Stop</button>
+                    <!-- Room after zoom out for further controls (e.g. Send / Export to Audacity) -->
+                    <div class="flex flex-wrap gap-2">
+                        <span x-show="playerBuffering" x-cloak role="status" class="self-center text-sm text-secondary">Seeking / buffering…</span>
+                        <span x-show="waveform" x-cloak class="self-center text-sm text-secondary font-mono mr-2" x-text="`${formatClock(playTime)} / ${formatClock(playDuration)}`"></span>
+                        <button @click="togglePlay()" :disabled="!waveform" class="play-btn px-4 py-2 btn-primary rounded-lg" :title="isPlaying ? 'Pause (Space)' : 'Play (Space)'" x-text="isPlaying ? '⏸ Pause' : '▶️ Play'"></button>
                         <button @click="zoomIn()" :disabled="!waveform" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;">🔍 +</button>
                         <button @click="zoomOut()" :disabled="!waveform" class="px-4 py-2 text-white rounded-lg" style="background-color: #3D3D3D;">🔍 -</button>
                     </div>
                 </div>
             </div>
-            <div id="waveform" class="w-full mb-6"></div>
+            <!-- The loading overlay sits over the (fixed-height) waveform area, so it never shifts the layout -->
+            <div class="relative mb-6">
+                <div id="waveform" class="w-full"></div>
+                <div x-show="waveformLoading" x-cloak role="status" data-testid="waveform-loading"
+                     class="absolute inset-0 z-10 flex items-center justify-center gap-3 text-lg text-secondary"
+                     style="background-color: rgba(250, 249, 246, 0.85);">
+                    <div class="spinner spinner-lg"></div>
+                    <span>Loading waveform…</span>
+                </div>
+            </div>
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div x-show="waveformLoading" class="text-center text-secondary py-8 text-lg">Loading waveform...</div>
                 <div x-show="!waveform && !waveformLoading" class="text-center text-muted py-8">Waveform will appear after analysis completes</div>
+                <p x-show="playerNotice" x-cloak role="alert" class="mb-2 text-sm text-primary" x-text="playerNotice"></p>
+                <p x-show="playerInfo" x-cloak class="mb-2 text-sm text-secondary" x-text="playerInfo"></p>
                 <p class="text-sm text-muted">💡 Tip: Drag the colored regions to adjust track boundaries, or right-click to add splits.<span x-show="expectedBoundaries.length > 0" x-cloak> Dashed red lines mark where the Discogs lengths expect each break.</span></p>
             </div>
         </div>
@@ -954,60 +1010,16 @@
         <!-- Track Controls & Additional Content -->
         <div class="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
             <div class="space-y-6">
-                    <!-- Detected Tracks with Preview -->
+                    <!-- Merged track table: detection + Discogs mapping -->
                     <div x-show="detectedTracks.length > 0" x-cloak class="bg-card rounded-lg shadow p-6">
-                        <h3 class="text-lg font-semibold text-primary mb-4">
-                            Detected Tracks (<span x-text="activeTrackCount"></span> of <span x-text="detectedTracks.length"></span> active)
-                        </h3>
-                        <div x-show="currentPlayingTrack" class="mb-4 p-4 rounded-lg" style="background-color: rgba(229, 161, 0, 0.1);">
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="font-medium text-primary">Playing Track <span x-text="currentPlayingTrack"></span></span>
-                                <button @click="stopPreview()" class="px-3 py-1 btn-danger rounded text-sm">⏹️ Stop</button>
-                            </div>
-                            <audio x-ref="audioPlayer" controls class="w-full"></audio>
-                        </div>
-                        <div class="space-y-3">
-                            <template x-for="(track, idx) in detectedTracks" :key="idx">
-                                <div class="p-3 bg-page rounded" :class="{ 'opacity-50': track.ignored }">
-                                    <div class="flex justify-between items-center mb-2">
-                                        <div class="flex items-center gap-2">
-                                            <input type="checkbox" :checked="track.ignored" @change="toggleTrackIgnored(track)" :disabled="analyzing" :class="{'opacity-60 cursor-not-allowed': analyzing}" class="w-4 h-4 rounded" style="accent-color: #D94032;" title="Ignore this track">
-                                            <label class="text-xs text-muted cursor-pointer" :class="{'opacity-60 cursor-not-allowed': analyzing}" @click="toggleTrackIgnored(track)">Ignore</label>
-                                            <button @click="playPreview(track.number)" :disabled="track.ignored" class="px-3 py-1 btn-primary rounded text-sm" title="Play 30-second preview">▶️ Play</button>
-                                            <span class="font-medium text-primary" :class="{ 'line-through text-muted': track.ignored }">Track <span x-text="track.number"></span></span>
-                                        </div>
-                                        <div class="flex gap-2">
-                                            <button @click="deleteTrack(track.number)" class="px-3 py-1 btn-danger rounded text-sm" title="Delete this track">🗑️ Delete</button>
-                                            <button @click="track.editing = !track.editing" :disabled="track.ignored" class="px-3 py-1 rounded text-sm text-primary" style="background-color: #F0EFEB;" :class="{'opacity-50 cursor-not-allowed': track.ignored}">
-                                                <span x-show="!track.editing">✏️ Adjust</span>
-                                                <span x-show="track.editing">✓ Done</span>
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div x-show="!track.editing" class="text-secondary text-sm">
-                                        <span x-text="formatTime(track.start)"></span> - <span x-text="formatTime(track.end)"></span> (<span x-text="formatDuration(track.duration)"></span>)
-                                    </div>
-                                    <div x-show="track.editing" class="grid grid-cols-2 gap-4 mt-2">
-                                        <div>
-                                            <label class="block text-xs font-medium text-secondary mb-1">Start Time (seconds)</label>
-                                            <input type="number" step="0.1" :value="track.start" @input="updateTrackStart(idx, $event.target.value)" class="w-full px-3 py-2 border focus-primary rounded-md text-sm" style="border-color: #8A8A86;">
-                                        </div>
-                                        <div>
-                                            <label class="block text-xs font-medium text-secondary mb-1">End Time (seconds)</label>
-                                            <input type="number" step="0.1" :value="track.end" @input="updateTrackEnd(idx, $event.target.value)" class="w-full px-3 py-2 border focus-primary rounded-md text-sm" style="border-color: #8A8A86;">
-                                        </div>
-                                    </div>
-                                </div>
-                            </template>
-                        </div>
-                    </div>
-
-                    <!-- Track Mapping -->
-                    <div x-show="selectedRelease" x-cloak class="bg-card rounded-lg shadow p-6">
-                        <div class="flex justify-between items-center mb-4">
-                            <h3 class="text-lg font-semibold text-primary">🎚️ Track Mapping</h3>
-                            <div class="flex gap-2">
-                                <button @click="reverseMapping()" :disabled="analyzing" :class="{'opacity-60 cursor-not-allowed': analyzing}" class="px-4 py-2 rounded-lg text-primary hover:bg-page" style="background-color: #F0EFEB;">↕️ Reverse</button>
+                        <div class="flex flex-wrap justify-between items-center gap-2 mb-4">
+                            <h3 class="text-lg font-semibold text-primary">
+                                Tracks (<span x-text="activeTrackCount"></span> of <span x-text="detectedTracks.length"></span> active)
+                            </h3>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <button x-show="selectedRelease" @click="reverseMapping()" :disabled="analyzing || currentFileExporting" class="track-btn px-3 py-1.5 text-sm" title="Reverse the Discogs mapping order">↕️ Reverse</button>
+                                <button x-show="selectedRelease" @click="snapToDiscogs()" :disabled="analyzing || currentFileExporting || targetTracks.length < 1"
+                                        class="play-btn px-3 py-1.5 btn-primary rounded-lg text-sm font-semibold" title="Place boundaries using the Discogs track lengths">🧲 Snap to Discogs</button>
                             </div>
                         </div>
 
@@ -1041,6 +1053,80 @@
                             </div>
                         </div>
 
+                        <div class="track-table-scroll">
+                            <div class="track-head pb-2">
+                            <div class="track-grid text-xs font-semibold text-secondary">
+                                <div></div>
+                                <div>#</div>
+                                <div>Discogs track</div>
+                                <div>Start – End</div>
+                                <div class="text-right" title="Track length. Type a length (m:ss) to set the end from the start">Length</div>
+                                <div class="text-right">Discogs</div>
+                                <div class="text-right" title="Detected length minus Discogs length">Δ</div>
+                                <div></div>
+                            </div>
+                            </div>
+                            <template x-for="(track, idx) in detectedTracks" :key="idx">
+                                <div class="track-row py-2" :class="{ 'track-row-playing': playheadIdx === idx }">
+                                    <div class="track-grid text-sm">
+                                        <div class="track-swatch" :class="{ 'opacity-50': track.ignored }" :style="`background-color: ${trackSwatchColor(track, idx)}`"></div>
+                                        <div class="font-medium text-primary" :class="{ 'line-through': track.ignored, 'opacity-50': track.ignored }" x-text="track.number"></div>
+                                        <div :class="{ 'opacity-50': track.ignored }">
+                                            <select x-show="selectedRelease" @change="setMapping(idx, $event.target.value)" :disabled="analyzing || currentFileExporting"
+                                                    :title="mappedTrack(idx) ? trackOptionLabel(mappedTrack(idx)) : ''" aria-label="Discogs track for this track"
+                                                    class="track-field w-full min-w-0 px-2 py-1.5 border focus-primary rounded-md text-sm" style="border-color: #8A8A86;">
+                                                <template x-for="(dt, dtIdx) in (selectedRelease?.tracks || [])" :key="dtIdx">
+                                                    <option :value="dtIdx" :selected="dtIdx === Number(customMapping[idx])" x-text="trackOptionLabel(dt)"></option>
+                                                </template>
+                                            </select>
+                                            <span x-show="!selectedRelease" class="text-secondary">—</span>
+                                        </div>
+                                        <div class="text-secondary" :class="{ 'opacity-50': track.ignored }"><span x-text="formatTime(track.start)"></span> – <span x-text="formatTime(track.end)"></span></div>
+                                        <div class="text-right" :class="{ 'opacity-50': track.ignored }">
+                                            <input type="text" inputmode="decimal" :value="formatDuration(track.duration)" aria-label="Track length"
+                                                   title="Type a length (m:ss) to move the end to start + length"
+                                                   :disabled="currentFileExporting"
+                                                   @change="setTrackLength(idx, $event.target.value, $event.target)" @keydown.enter="$event.target.blur()"
+                                                   class="track-field w-full px-1 py-0.5 border rounded text-right text-sm text-secondary focus-primary" style="border-color: #8A8A86;">
+                                        </div>
+                                        <div class="text-right text-secondary" :class="{ 'opacity-50': track.ignored }" x-text="discogsLength(idx) !== null ? formatDuration(discogsLength(idx)) : '—'"></div>
+                                        <div class="text-right font-semibold" :class="{ 'opacity-50': track.ignored }" :style="`color: ${deltaColor(trackDelta(track, idx))}`" x-text="deltaText(trackDelta(track, idx))"></div>
+                                        <div class="flex gap-1.5 justify-end">
+                                            <button @click="auditionCut(idx, 'start')" :disabled="!waveform" class="track-btn" title="Hear the start cut" aria-label="Hear the start cut">⇤</button>
+                                            <button @click="auditionCut(idx, 'end')" :disabled="!waveform" class="track-btn" title="Hear the end cut" aria-label="Hear the end cut">⇥</button>
+                                            <button @click="toggleTrackPlay(idx)" :disabled="!waveform || (track.ignored && !(isPlaying && playheadIdx === idx))" class="track-btn" :title="(isPlaying && playheadIdx === idx) ? 'Pause' : 'Play this track in the waveform'" :aria-label="(isPlaying && playheadIdx === idx) ? 'Pause' : 'Play this track'" x-text="(isPlaying && playheadIdx === idx) ? '⏸' : '▶️'"></button>
+                                            <button @click="track.editing = !track.editing" :disabled="currentFileExporting || track.ignored" class="track-btn" :aria-expanded="!!track.editing">
+                                                <span x-show="!track.editing">✏️ Adjust</span>
+                                                <span x-show="track.editing">✓ Done</span>
+                                            </button>
+                                            <button @click="toggleTrackIgnored(track)" :disabled="currentFileExporting || analyzing" class="track-btn" :class="{ 'track-btn-on': track.ignored }" title="Exclude this track from processing" :aria-pressed="!!track.ignored" x-text="track.ignored ? 'Ignored' : 'Ignore'"></button>
+                                            <button @click="deleteTrack(track.number)" :disabled="currentFileExporting" class="track-btn" style="background-color: #B3261E; color: #FFFFFF;" title="Delete this track" aria-label="Delete this track">
+                                                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" style="display: block;"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div x-show="track.editing" x-cloak class="grid grid-cols-2 gap-4 mt-2" style="max-width: 520px;">
+                                        <div>
+                                            <label class="block text-xs font-medium text-secondary mb-1">Start Time (seconds)</label>
+                                            <input type="number" step="0.1" :value="track.start" :disabled="currentFileExporting" @change="updateTrackStart(idx, $event.target.value, $event.target)" class="track-field w-full px-3 py-2 border focus-primary rounded-md text-sm" style="border-color: #8A8A86;">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-medium text-secondary mb-1">End Time (seconds)</label>
+                                            <input type="number" step="0.1" :value="track.end" :disabled="currentFileExporting" @change="updateTrackEnd(idx, $event.target.value, $event.target)" class="track-field w-full px-3 py-2 border focus-primary rounded-md text-sm" style="border-color: #8A8A86;">
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Export (the release itself is chosen above the waveform) -->
+                    <div x-show="selectedRelease" x-cloak class="bg-card rounded-lg shadow p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-lg font-semibold text-primary">📦 Export</h3>
+                            <span class="text-sm text-secondary truncate ml-4" x-text="selectedRelease ? `${selectedRelease.artist} - ${selectedRelease.title}` : ''"></span>
+                        </div>
+
                         <!-- Output Format Selector -->
                         <div class="mb-4 p-4 bg-page rounded-lg">
                             <label class="block text-sm font-medium text-secondary mb-2">Output Format</label>
@@ -1066,29 +1152,6 @@
                                 Clean Up Clicks &amp; Rumble
                             </button>
                             <p class="mt-2 text-xs text-muted">Removes inaudible turntable rumble and reduces clicks and pops. Volume is left as recorded.</p>
-                        </div>
-
-                        <!-- Mapping Table -->
-                        <div class="space-y-2 mb-4">
-                            <div class="grid grid-cols-2 gap-4 text-sm font-semibold text-secondary pb-2" style="border-bottom: 1px solid #8A8A86;">
-                                <div>Detected Track</div>
-                                <div>Maps to Discogs Track</div>
-                            </div>
-                            <template x-for="(track, idx) in detectedTracks" :key="idx">
-                                <div class="grid grid-cols-2 gap-4 p-2 bg-page rounded items-center">
-                                    <div>
-                                        <span class="font-medium text-primary">Track <span x-text="track.number"></span></span>
-                                        <span class="text-secondary text-sm ml-2">(<span x-text="formatDuration(track.duration)"></span>)</span>
-                                    </div>
-                                    <div>
-                                        <select x-model="customMapping[idx]" @change="updateCustomMapping()" :disabled="analyzing" :class="{'opacity-60 cursor-not-allowed': analyzing}" class="w-full px-3 py-2 border focus-primary rounded-md text-sm" style="border-color: #8A8A86;">
-                                            <template x-for="(dt, dtIdx) in (selectedRelease?.tracks || [])" :key="dtIdx">
-                                                <option :value="dtIdx" x-text="`${dt.position} - ${dt.title}`"></option>
-                                            </template>
-                                        </select>
-                                    </div>
-                                </div>
-                            </template>
                         </div>
 
                         <!-- Process Button -->

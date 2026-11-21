@@ -29,6 +29,8 @@ import backend.api as api
 from audio_processor import ENVELOPE_FRAME_S, AudioProcessor, run_ffmpeg
 
 LOUD, QUIET, FADE = -15.0, -60.0, -35.0
+# Prep now decodes once for envelope + peaks; these tests only care about the envelope.
+NO_PEAKS = {"peaks": [0.0], "length": 1, "duration": 0.01}
 
 
 def make_env(segments):
@@ -72,7 +74,8 @@ def test_envelope_is_decoded_once_and_then_read_from_the_cache(tmp_path, monkeyp
         return make_env([(1, LOUD)])
 
     monkeypatch.setattr(api, "get_session_path", lambda file_id, name=None: tmp_path / (name or ""))
-    monkeypatch.setattr(api.audio_processor, "compute_envelope", fake_compute)
+    monkeypatch.setattr(api.audio_processor, "compute_envelope_and_peaks",
+                        lambda path: (fake_compute(path), NO_PEAKS))
     first = api._load_or_compute_envelope("id", Path("source.wav"))
     second = api._load_or_compute_envelope("id", Path("source.wav"))
     assert len(calls) == 1 and (tmp_path / "envelope.npy").exists()
@@ -83,7 +86,8 @@ def test_envelope_is_decoded_once_and_then_read_from_the_cache(tmp_path, monkeyp
 def test_a_corrupt_cache_is_recomputed(tmp_path, monkeypatch):
     (tmp_path / "envelope.npy").write_bytes(b"not numpy")
     monkeypatch.setattr(api, "get_session_path", lambda file_id, name=None: tmp_path / (name or ""))
-    monkeypatch.setattr(api.audio_processor, "compute_envelope", lambda path: make_env([(1, LOUD)]))
+    monkeypatch.setattr(api.audio_processor, "compute_envelope_and_peaks",
+                        lambda path: (make_env([(1, LOUD)]), NO_PEAKS))
     assert len(api._load_or_compute_envelope("id", Path("source.wav"))) == 100
 
 
@@ -233,7 +237,8 @@ def recording(tmp_path, monkeypatch):
 
 
 def use_decode(monkeypatch, decode):
-    monkeypatch.setattr(api.audio_processor, "compute_envelope", decode)
+    monkeypatch.setattr(api.audio_processor, "compute_envelope_and_peaks",
+                        lambda path: (decode(path), NO_PEAKS))
     return decode
 
 

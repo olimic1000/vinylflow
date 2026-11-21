@@ -21,9 +21,24 @@ const SIDE_FIT_TOLERANCE = 0.15;
 const SIDE_FIT_TIE = 0.01;
 // Dashed ghost markers on the waveform: where the Discogs lengths expect each break (not draggable).
 // Opaque #9C2418; contrast (WCAG): 7.4:1 on the card (#FAF9F6), 5.1:1 at worst on a 30 % region tint
-// over the card, and 3.3:1 at worst over a region tint on the waveform bars (#93C5FD), so 3:1 for
-// graphics holds everywhere. (#B02A1E gave only 2.8:1 over the pink and purple regions on the bars.)
+// over the card, and 3.3:1 at worst over a region tint on the unplayed bars (#93C5FD), so 3:1 for
+// graphics holds there. Over the played bars (#1d4ed8) it is only 1.2-1.6:1; there the marker is told
+// apart by its dashed line running above and between the bars, not by contrast with them.
+// (#B02A1E gave only 2.8:1 over the pink and purple regions on the unplayed bars.)
 const EXPECTED_MARKER_COLOR = '#9C2418';
+// Shortest track a hand edit may leave (seconds)
+const MIN_TRACK_LENGTH = 1;
+// Focused elements that use Space themselves: the global Play/Pause shortcut leaves them alone
+const SPACE_OWNING_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'SUMMARY']);
+// A pointer that moved at most this far between mousedown and click on a region is a click, not a drag (px)
+const REGION_CLICK_SLOP_PX = 3;
+// Cuts closer than this are "touching": the next track follows when the previous one's end moves (seconds)
+const TOUCHING_CUTS_S = 0.05;
+// Detected-minus-Discogs length: within DELTA_GOOD_S is good, within DELTA_WARN_S a warning, else bad (seconds)
+const DELTA_GOOD_S = 3;
+const DELTA_WARN_S = 10;
+// Cut-point audition (the row's start/end buttons) plays this far before and after the cut (seconds)
+const AUDITION_PADDING_S = 3;
 
 // Keep WaveSurfer objects out of Alpine's reactive proxies. Through a proxy,
 // WaveSurfer's identity checks fail (a removed region compares proxy vs raw and
@@ -79,6 +94,29 @@ function parseDiscogsRelease(text) {
     return null;
 }
 
+// Shown (muted) when the waveform plays the MP3 preview instead of the original WAV.
+const PREVIEW_AUDIO_NOTICE = "Playing the preview \u2014 this browser can't play the original WAV, so cut points may be up to ~50 ms less precise.";
+
+/**
+ * Scale waveform peaks so the recording's loudest peak is full height. Replaces WaveSurfer's
+ * `normalize`, which scales each rendered canvas (one per screen width when zoomed) to its own
+ * loudest bar and so stretches the surface noise of a gap to full height. A loop, not
+ * Math.max(...peaks): an album has hundreds of thousands of peaks.
+ */
+function scalePeaksToRecording(peaks) {
+    let loudest = 0;
+    for (const peak of peaks) loudest = Math.max(loudest, Math.abs(peak));
+    return loudest > 0 ? peaks.map(peak => peak / loudest) : peaks;
+}
+
+// What a media element's error code means, for the notice when WaveSurfer re-emits it without a message.
+const MEDIA_ERROR_MESSAGES = {
+    1: 'playback was aborted',
+    2: 'a network error interrupted the audio download',
+    3: 'the audio could not be decoded',
+    4: 'the audio format is not supported',
+};
+
 function vinylApp() {
     return {
         // WebSocket connection
@@ -116,9 +154,20 @@ function vinylApp() {
 
         // Analysis
         detectedTracks: [],
-        currentPlayingTrack: null,
 
         // Waveform
+        isPlaying: false,       // follows the player's own play/pause events
+        playTime: 0,
+        playDuration: 0,
+        playheadIdx: -1,        // index of the track under the playhead (-1 = gap / none)
+        playerNotice: '',       // inline error when playback cannot start
+        playerInfo: '',         // muted note: the waveform plays the MP3 preview, not the WAV
+        _audioSource: null,     // {waveform, fileId, precise, peaks, duration, fellBack, settled} of the loaded audio
+        _restoreZoom: null,     // zoom to re-apply when a preview-fallback reload becomes ready
+        playerBuffering: false,
+        _pendingSeek: null,     // a seek made before the media element knew its length
+        _auditionStop: null,    // one-shot stop time (s) for cut-point auditions
+        _regionDownX: null,     // pointer x at region mousedown, to tell a click from a drag end
         waveform: null,
         waveformLoading: false,
         waveformRegions: null,
@@ -239,6 +288,9 @@ function vinylApp() {
             // preventDefault() in the capture phase (before any shadow-DOM
             // handler fires) is the only reliable way to stop it.
             document.addEventListener('contextmenu', e => e.preventDefault(), true);
+
+            // Space toggles waveform play/pause
+            document.addEventListener('keydown', (e) => this.onGlobalKeydown(e));
 
             // Files removed from the queue are deleted server-side only after
             // an undo window; flush them if the page goes away first.
@@ -1282,13 +1334,6 @@ function vinylApp() {
 
             // The Discogs search is independent of detection: its results stay.
             this.clearEditState();
-            this.currentPlayingTrack = null;
-
-            if (this.$refs.audioPlayer) {
-                this.$refs.audioPlayer.pause();
-                this.$refs.audioPlayer.currentTime = 0;
-            }
-
             this.destroyWaveform();
             await this.analyzeFile();
 
@@ -1310,7 +1355,6 @@ function vinylApp() {
          * checks undoBlockedReason first.
          */
         async restoreSnapshotWithWaveform(snapshot) {
-            this.currentPlayingTrack = null;
             this.destroyWaveform();
             this.restoreEdits(snapshot);   // regions are redrawn by initWaveform below
             await this.$nextTick();
@@ -1334,12 +1378,7 @@ function vinylApp() {
             this.analyzing = true;
             this.rescanNotice = '';
             this.processingMessage = `Rescanning for ${target} tracks...`;
-            this.currentPlayingTrack = null;
-
-            if (this.$refs.audioPlayer) {
-                this.$refs.audioPlayer.pause();
-                this.$refs.audioPlayer.currentTime = 0;
-            }
+            this.pauseWaveform();
 
             try {
                 const response = await fetch('/api/rescan', {
@@ -1883,12 +1922,7 @@ function vinylApp() {
             this.analyzing = true;
             this.rescanNotice = '';
             this.processingMessage = 'Placing track boundaries...';
-            this.currentPlayingTrack = null;
-            this.stopWaveform();
-            if (this.$refs.audioPlayer) {
-                this.$refs.audioPlayer.pause();
-                this.$refs.audioPlayer.currentTime = 0;
-            }
+            this.pauseWaveform();
 
             try {
                 const response = await fetch('/api/analyze-guided', {
@@ -2415,72 +2449,250 @@ function vinylApp() {
         },
 
         /**
-         * Play preview of detected track (30 seconds)
+         * Map detected track idx to release track dtIdx (the row's dropdown).  The dropdown is
+         * disabled while detecting, which would replace the mapping anyway.
          */
-        playPreview(trackNumber) {
-            if (!this.currentFileId) return;
+        setMapping(idx, value) {
+            if (this.analyzing) return;
+            const mapping = [...this.customMapping];
+            mapping[idx] = Number(value);
+            this.customMapping = mapping;
+            this.updateCustomMapping();
+        },
 
-            const audioPlayer = this.$refs.audioPlayer;
-            const track = this.detectedTracks.find(t => t.number === trackNumber);
+        /** Release track mapped to detected track idx, or null (no release / unmapped) */
+        mappedTrack(idx) {
+            if (!this.selectedRelease || !(idx >= 0)) return null;
+            const releaseIdx = Number(this.customMapping[idx]);
+            if (!Number.isInteger(releaseIdx)) return null;
+            return this.selectedRelease.tracks?.[releaseIdx] || null;
+        },
 
-            let previewUrl = `/api/preview/${this.currentFileId}/${trackNumber}`;
-            // Always send the range: after a split/merge/delete the backend's
-            // stored boundaries are stale, so the track number alone is wrong.
-            if (track) {
-                previewUrl += `?start=${track.start}&end=${track.end}`;
+        /** Label of a release track in the mapping dropdown: "B5 - Title" */
+        trackOptionLabel(releaseTrack) {
+            return `${releaseTrack.position} - ${releaseTrack.title}`;
+        },
+
+        /** Discogs length (seconds) of the track mapped to row idx, or null */
+        discogsLength(idx) {
+            const mapped = this.mappedTrack(idx);
+            return mapped ? this.parseTrackDuration(mapped.duration) : null;
+        },
+
+        /** Detected minus Discogs length in seconds, or null when either is unknown */
+        trackDelta(track, idx) {
+            const discogsSeconds = this.discogsLength(idx);
+            if (discogsSeconds === null || discogsSeconds === undefined || !Number.isFinite(track.duration)) return null;
+            return track.duration - discogsSeconds;
+        },
+
+        /**
+         * Delta colours.  On the card background (#FAF9F6) the text contrast is 5.1:1 for good,
+         * 5.4:1 for warn and 6.2:1 for bad; the sign and the number carry the meaning too.
+         */
+        deltaColor(delta) {
+            if (delta === null || delta === undefined) return '#5E5E5A';
+            const magnitude = Math.abs(delta);
+            if (magnitude <= DELTA_GOOD_S) return '#0B7A55';
+            if (magnitude <= DELTA_WARN_S) return '#8A5F00';
+            return '#B3261E';
+        },
+
+        deltaText(delta) {
+            if (delta === null || delta === undefined) return '—';
+            return `${delta < 0 ? '−' : '+'}${Math.round(Math.abs(delta))}s`;
+        },
+
+        /** Swatch colour of a table row: the colour of its waveform region */
+        trackSwatchColor(track, idx) {
+            return this.getTrackColor(idx, track.ignored);
+        },
+
+        /** End of the recording in seconds (Infinity while it is not known yet) */
+        recordingEnd() {
+            return this.playDuration || this.currentFile?.duration || Infinity;
+        },
+
+        /**
+         * Why a typed Start/End/Length would break the track table, or '' when it is fine.
+         * Typing is held to a stricter rule than dragging (which clamps): a typo such as End "5"
+         * on a track starting at 10 must be refused, not turned into a 1 s track, and an edit
+         * must not squeeze a neighbour below MIN_TRACK_LENGTH.  start/end are already capped.
+         */
+        typedBoundsProblem(idx, start, end, which = 'end') {
+            const track = this.detectedTracks[idx];
+            const previous = this.detectedTracks[idx - 1];
+            const next = this.detectedTracks[idx + 1];
+            if (end <= start) {
+                return which === 'start'
+                    ? `Track ${track.number}: the start must be before its end.`
+                    : `Track ${track.number}: the end must be after its start.`;
+            }
+            if (end - start < MIN_TRACK_LENGTH - 1e-6) {
+                return `Track ${track.number} must last at least ${MIN_TRACK_LENGTH} s.`;
+            }
+            if (next && end > next.start && next.end - end < MIN_TRACK_LENGTH - 1e-6) {
+                return `That would leave track ${next.number} shorter than ${MIN_TRACK_LENGTH} s.`;
+            }
+            if (previous && start < previous.end && start - previous.start < MIN_TRACK_LENGTH - 1e-6) {
+                return `That would leave track ${previous.number} shorter than ${MIN_TRACK_LENGTH} s.`;
+            }
+            return '';
+        },
+
+        /**
+         * Typed Start/End (inline Adjust): apply, or refuse with a warning.  The field always ends up
+         * showing the stored value, so text that was not applied (or was capped) never stays on screen.
+         */
+        applyTypedBounds(idx, which, value, input) {
+            const track = this.detectedTracks[idx];
+            if (!track) return false;
+            const typed = parseFloat(value);
+            let changed = false;
+            if (!isNaN(typed) && typed >= 0) {
+                const start = which === 'start' ? typed : track.start;
+                const end = Math.min(which === 'end' ? typed : track.end, this.recordingEnd());
+                const problem = this.typedBoundsProblem(idx, start, end, which);
+                if (problem) {
+                    this.notify(problem, { type: 'warning', timeout: 5000 });
+                } else {
+                    changed = this.applyTrackBounds(idx, start, end);
+                    this.syncRegionsAround(idx);
+                }
+            }
+            if (input) input.value = track[which];
+            return changed;
+        },
+
+        /** Update track start time (inline Adjust) */
+        updateTrackStart(idx, value, input = null) {
+            return this.applyTypedBounds(idx, 'start', value, input);
+        },
+
+        /** Update track end time (inline Adjust) */
+        updateTrackEnd(idx, value, input = null) {
+            return this.applyTypedBounds(idx, 'end', value, input);
+        },
+
+        /** "3:45", "3:45.5", "1:02:03" or plain seconds -> seconds; null if unreadable. */
+        parseLengthInput(text) {
+            const trimmed = String(text ?? '').trim();
+            if (/^\d+(\.\d+)?$/.test(trimmed)) return parseFloat(trimmed);
+            const match = trimmed.match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)$/);
+            if (!match) return null;
+            const [, hours, minutes, seconds] = match;
+            // With hours, minutes and seconds must be below 60; "3:75" is not a length
+            if (parseFloat(seconds) >= 60 || (hours && parseInt(minutes, 10) >= 60)) return null;
+            return (hours ? parseInt(hours, 10) * 3600 : 0) + parseInt(minutes, 10) * 60 + parseFloat(seconds);
+        },
+
+        /**
+         * Typed length (e.g. from a streaming service): keep the start, end = start + length.
+         * A next track that began exactly at the old end follows the cut, so nothing falls
+         * between them; overlaps are limited exactly like dragging.
+         */
+        setTrackLength(idx, text, input = null) {
+            const track = this.detectedTracks[idx];
+            if (!track) return false;
+            const length = this.parseLengthInput(text);
+            const showLength = () => { if (input) input.value = this.formatDuration(track.duration); };
+            if (!(length >= MIN_TRACK_LENGTH)) {
+                showLength();
+                this.notify('Type a length like 3:45 (minutes:seconds).', { type: 'warning', timeout: 4000 });
+                return false;
+            }
+            const next = this.detectedTracks[idx + 1];
+            const touching = !!next && Math.abs(next.start - track.end) < TOUCHING_CUTS_S;
+            const newEnd = Math.min(track.start + length, this.recordingEnd());   // never past the recording
+            const problem = this.typedBoundsProblem(idx, track.start, newEnd);
+            if (problem) {
+                showLength();
+                this.notify(problem, { type: 'warning', timeout: 5000 });
+                return false;
+            }
+            const changed = this.applyTrackBounds(idx, track.start, newEnd);
+            if (changed && touching && track.end < next.start) {
+                next.start = track.end;
+                next.duration = next.end - next.start;
+            }
+            if (changed) this.syncRegionsAround(idx);
+            showLength();
+            if (newEnd - track.start < length - 0.05) {
+                this.notify(`Track ${track.number} can only be ${this.formatDuration(track.duration)} here (the end of the recording is in the way).`, { type: 'info', timeout: 5000 });
+            }
+            return changed;
+        },
+
+        /**
+         * Move track idx to [start, end].  Neighbours are only pushed when the regions would
+         * overlap (gaps are preserved); every track keeps at least MIN_TRACK_LENGTH.
+         * Returns true when anything changed (and then marks the boundaries hand-edited).
+         */
+        applyTrackBounds(idx, start, end) {
+            const tracks = this.detectedTracks;
+            const track = tracks[idx];
+            if (!track || !Number.isFinite(start) || !Number.isFinite(end)) return false;
+            const prev = tracks[idx - 1];
+            const next = tracks[idx + 1];
+            const EPS = 1e-6;
+            const MIN = MIN_TRACK_LENGTH;
+
+            const startMoved = Math.abs(start - track.start) > EPS;
+            const endMoved = Math.abs(end - track.end) > EPS;
+            if (!startMoved && !endMoved) return false;
+
+            // Never past the end of the recording (typed Start/End, Length and region updates all land here)
+            const limit = this.recordingEnd();
+            start = Math.min(Math.max(0, start), limit);
+            end = Math.min(end, limit);
+            if (startMoved && endMoved) {
+                // Whole-region drag: keep the length, stop at the neighbours' minimum
+                const length = end - start;
+                if (next && end > next.end - MIN) { end = next.end - MIN; start = end - length; }
+                if (prev && start < prev.start + MIN) { start = prev.start + MIN; end = start + length; }
+                if (start < 0) { end -= start; start = 0; }
+            } else if (endMoved) {
+                if (next) end = Math.min(end, next.end - MIN);
+                end = Math.max(end, start + MIN);
+            } else {
+                if (prev) start = Math.max(start, prev.start + MIN);
+                start = Math.min(start, end - MIN);
             }
 
-            audioPlayer.src = previewUrl;
-            audioPlayer.load();
-            audioPlayer.play().catch(err => {
-                // AbortError: a newer Play/Stop click interrupted this one
-                // before it started. Not a real failure.
-                if (err.name === 'AbortError') return;
-                console.error('Playback failed:', err);
-                this.notify('Failed to play the preview.', { type: 'error' });
-            });
+            const valid = end - start >= MIN - EPS &&
+                (!next || end <= next.start || next.end - end >= MIN - EPS) &&
+                (!prev || start >= prev.end || start - prev.start >= MIN - EPS);
+            if (!valid) return false;
 
-            this.currentPlayingTrack = trackNumber;
-        },
+            const changed = Math.abs(start - track.start) > EPS || Math.abs(end - track.end) > EPS;
+            if (!changed) return false;
 
-        /**
-         * Stop audio preview
-         */
-        stopPreview() {
-            const audioPlayer = this.$refs.audioPlayer;
-            audioPlayer.pause();
-            audioPlayer.currentTime = 0;
-            this.currentPlayingTrack = null;
-        },
-
-        /**
-         * Update track start time
-         */
-        updateTrackStart(idx, value) {
-            const newStart = parseFloat(value);
-            if (isNaN(newStart) || newStart < 0) return;
-
-            this.detectedTracks[idx].start = newStart;
-            const end = this.detectedTracks[idx].end;
-            this.detectedTracks[idx].duration = end - newStart;
-            this.markEdited();
-        },
-
-        /**
-         * Update track end time
-         */
-        updateTrackEnd(idx, value) {
-            const newEnd = parseFloat(value);
-            if (isNaN(newEnd) || newEnd < 0) return;
-
-            this.detectedTracks[idx].end = newEnd;
-            const start = this.detectedTracks[idx].start;
-            this.detectedTracks[idx].duration = newEnd - start;
-
-            if (idx + 1 < this.detectedTracks.length) {
-                this.detectedTracks[idx + 1].start = newEnd;
+            track.start = start;
+            track.end = end;
+            track.duration = end - start;
+            if (next && end > next.start) {
+                next.start = end;
+                next.duration = next.end - next.start;
+            }
+            if (prev && start < prev.end) {
+                prev.end = start;
+                prev.duration = prev.end - prev.start;
             }
             this.markEdited();
+            return true;
+        },
+
+        /** Push a track's values onto its waveform region */
+        syncRegion(track) {
+            if (!track || !this.waveformRegions) return;
+            const region = this.waveformRegions.getRegions().find(r => r.id === `track-${track.number}`);
+            if (region && (Math.abs(region.start - track.start) > 1e-6 || Math.abs(region.end - track.end) > 1e-6)) {
+                region.setOptions({ start: track.start, end: track.end });
+            }
+        },
+
+        syncRegionsAround(idx) {
+            [idx - 1, idx, idx + 1].forEach(i => this.syncRegion(this.detectedTracks[i]));
         },
 
         /**
@@ -2490,6 +2702,7 @@ function vinylApp() {
             if (!this.currentFileId || this.waveform) return;
 
             this.waveformLoading = true;
+            const fileId = this.currentFileId;
 
             try {
                 if (typeof WaveSurfer === 'undefined') {
@@ -2515,10 +2728,10 @@ function vinylApp() {
                 this.waveform = markRaw(WaveSurfer.create({
                     container: '#waveform',
                     waveColor: '#93c5fd',
-                    progressColor: '#93c5fd',
+                    progressColor: '#1d4ed8',   // darker than waveColor: the played part is visible
                     cursorColor: '#1e40af',
                     height: 'auto',
-                    normalize: true,
+                    normalize: false,   // peaks arrive pre-scaled (scalePeaksToRecording)
                     barWidth: 2,
                     barGap: 1
                 }));
@@ -2526,30 +2739,83 @@ function vinylApp() {
                 // With MediaElement + provided peaks, load() resolves without
                 // fetching the audio — a later fetch failure only surfaces as
                 // an 'error' event, which must clear the loading spinner.
+                const waveform = this.waveform;
+                let uiBound = false;
+                // WaveSurfer re-emits EVERY media error here as emit('error', undefined) (network and
+                // aborted ones too) and so does a throw inside its load/ready path: only the media
+                // element's own code (still set at this point) says the WAV cannot be played.
                 this.waveform.on('error', (err) => {
                     console.error('Waveform error:', err);
+                    if (waveform !== this.waveform) return;
+                    const code = waveform.getMediaElement?.()?.error?.code;
+                    // A fallback in flight absorbs the twin of its own failure, whatever the code now says
+                    if ((code === 3 || code === 4 || this.fallbackInFlight(waveform)) && this.fallBackToPreview(waveform, fileId)) return;
                     this.waveformLoading = false;
+                    this.playerNotice = 'Audio playback error: ' + ((err && err.message) || err || MEDIA_ERROR_MESSAGES[code] || 'unknown');
                 });
+
+                // Transport state follows the player's own events
+                this.waveform.on('play', () => { this.isPlaying = true; });
+                this.waveform.on('pause', () => { this.isPlaying = false; this.cancelAudition(); });
+                this.waveform.on('finish', () => { this.isPlaying = false; this.cancelAudition(); });
+                this.waveform.on('timeupdate', (time) => this.onPlayerTime(time));
+                // A click or drag on the waveform itself seeks (and abandons any audition)
+                this.waveform.on('interaction', (time) => {
+                    this.cancelAudition();
+                    this.seekTo(time);
+                });
+                // The media element resets a currentTime set before it knows its length
+                // (WaveSurfer renders from the peaks, so it may not have loaded the audio yet)
+                const media = this.waveform.getMediaElement?.();
+                if (media) {
+                    media.preload = 'metadata';   // stream on demand; 'auto' would buffer the whole recording on every rebuild
+                    const mediaListeners = {
+                        // DECODE (3) / SRC_NOT_SUPPORTED (4) on the original WAV: retry once with the MP3 preview
+                        error: () => {
+                            const code = media.error?.code;
+                            if (code === 3 || code === 4) this.fallBackToPreview(waveform, fileId);
+                        },
+                        loadedmetadata: () => this.applyPendingSeek(),
+                        seeking: () => { this.playerBuffering = true; },
+                        waiting: () => { this.playerBuffering = true; },
+                        seeked: () => { this.playerBuffering = false; },
+                        playing: () => { this.playerBuffering = false; },
+                        pause: () => { this.playerBuffering = false; },
+                        ended: () => { this.playerBuffering = false; }
+                    };
+                    for (const [eventName, listener] of Object.entries(mediaListeners)) media.addEventListener(eventName, listener);
+                    this.waveform.on('destroy', () => {
+                        for (const [eventName, listener] of Object.entries(mediaListeners)) media.removeEventListener(eventName, listener);
+                    });
+                }
 
                 this.waveformRegions = markRaw(this.waveform.registerPlugin(WaveSurfer.Regions.create()));
 
-                const peaksResponse = await fetch(`/api/waveform-peaks/${this.currentFileId}`);
+                const peaksResponse = await fetch(`/api/waveform-peaks/${fileId}`);
+                if (waveform !== this.waveform) return;
                 if (!peaksResponse.ok) {
                     // e.g. 409/410: an imported file changed or vanished; say which and what to do
                     const data = await peaksResponse.json().catch(() => ({}));
                     throw new Error(data.detail || 'Failed to load waveform peaks');
                 }
                 const peaksData = await peaksResponse.json();
+                if (fileId !== this.currentFileId || waveform !== this.waveform) return;
 
                 this.waveform.on('ready', () => {
                     console.log('Waveform ready');
 
+                    // 'ready' fires again after a preview-fallback reload: bind DOM listeners only once.
+                    const firstReady = !uiBound;
+                    uiBound = true;
                     const duration = this.waveform.getDuration();
+                    this.playDuration = duration;
+                    if (this.playTime > 0) this.seekTo(this.playTime);
                     const container = document.getElementById('waveform');
                     const containerWidth = container ? container.offsetWidth : 1000;
 
                     const calculatedZoom = containerWidth / duration;
-                    this.currentZoom = Math.max(1, Math.min(calculatedZoom, 200));
+                    this.currentZoom = this._restoreZoom || Math.max(1, Math.min(calculatedZoom, 200));
+                    this._restoreZoom = null;
                     this.waveform.zoom(this.currentZoom);
 
                     const openWaveformContextMenu = (e) => {
@@ -2572,14 +2838,20 @@ function vinylApp() {
                     };
 
                     // Add right-click handler for manual splits
-                    container.addEventListener('contextmenu', openWaveformContextMenu);
-                    container.addEventListener('mousedown', openWaveformContextMenu);
+                    if (firstReady) {
+                        container.addEventListener('contextmenu', openWaveformContextMenu);
+                        container.addEventListener('mousedown', openWaveformContextMenu);
+                    }
 
                     setTimeout(() => {
+                        if (waveform !== this.waveform) return;
                         this.addTrackRegions();
                         this.waveformLoading = false;
                     }, 100);
                 });
+
+                // Regions cover the waveform and swallow its clicks: seek from here (plain primary click only)
+                this.waveformRegions.on('region-clicked', (region, event) => this.onRegionClicked(region, event));
 
                 this.waveformRegions.on('region-updated', (region) => {
                     this.updateTrackFromRegion(region);
@@ -2619,6 +2891,7 @@ function vinylApp() {
                             }
                         };
 
+                        regionElement.addEventListener('mousedown', (e) => { this._regionDownX = e.clientX; });
                         regionElement.addEventListener('contextmenu', openRegionContextMenu);
                         regionElement.addEventListener('mousedown', openRegionContextMenu);
                     }
@@ -2629,13 +2902,68 @@ function vinylApp() {
                 // If duration is missing or 0 (probe failed at upload), omit it
                 // so WaveSurfer falls back to fetching the file (slower but safe).
                 const knownDuration = peaksData.duration > 0 ? peaksData.duration : undefined;
-                await this.waveform.load(`/api/audio/${this.currentFileId}`, [peaksData.peaks], knownDuration);
+                // Browsers that cannot play WAV at all go straight to the MP3 preview.
+                const preciseOk = !!(media && media.canPlayType && media.canPlayType('audio/wav'));
+                const peaks = [scalePeaksToRecording(peaksData.peaks)];
+                // Raw: Alpine must not wrap the ~240k-element peaks in a proxy for WaveSurfer
+                this._audioSource = markRaw({ waveform, fileId, precise: preciseOk, peaks,
+                    duration: knownDuration, fellBack: false, settled: true, generation: 0 });
+                this.playerInfo = preciseOk ? '' : PREVIEW_AUDIO_NOTICE;
+                await this.waveform.load(this.audioUrl(fileId, preciseOk), peaks, knownDuration);
 
             } catch (error) {
+                // A fallback reload already took over this load's failure.
+                if (this._audioSource?.fellBack) return;
                 console.error('Waveform initialization failed:', error);
                 this.notifyError('Failed to load the waveform', error);
                 this.waveformLoading = false;
             }
+        },
+
+        /** True while a preview-fallback reload of this waveform is still loading */
+        fallbackInFlight(waveform) {
+            const source = this._audioSource;
+            return !!source && source.waveform === waveform && source.fellBack && !source.settled;
+        },
+
+        /** The waveform's audio URL: the original WAV (`precise`) or the preview served by default */
+        audioUrl(fileId, precise) {
+            return precise ? `/api/audio/${fileId}?precise=true` : `/api/audio/${fileId}`;
+        },
+
+        /**
+         * The original WAV failed to play: reload the MP3 preview once, keeping peaks, zoom,
+         * playhead and paused/playing state. Returns true when it took over the error.
+         * Never loops: an error on the preview URL falls through to the normal notice.
+         */
+        fallBackToPreview(waveform, fileId) {
+            const source = this._audioSource;
+            if (!source || source.waveform !== waveform || waveform !== this.waveform || fileId !== this.currentFileId) return false;
+            // The media element and WaveSurfer both report the same failure: absorb the twin while reloading.
+            if (source.fellBack && !source.settled) return true;
+            if (!source.precise) return false;
+            source.precise = false;
+            source.fellBack = true;
+            source.settled = false;
+            source.generation++;   // a play() started on the WAV is now stale
+            const resume = this.isPlaying;
+            this.isPlaying = false;
+            this.playerInfo = PREVIEW_AUDIO_NOTICE;
+            this.waveformLoading = true;
+            this._restoreZoom = this.currentZoom;
+            if (this.playTime > 0) this._pendingSeek = this.playTime;
+            const stale = () => waveform !== this.waveform || fileId !== this.currentFileId;
+            Promise.resolve(waveform.load(this.audioUrl(fileId, false), source.peaks, source.duration)).then(() => {
+                source.settled = true;
+                if (!stale() && resume) this.startPlayback();
+            }, (err) => {
+                source.settled = true;
+                if (stale()) return;
+                console.error('Preview fallback failed:', err);
+                this.waveformLoading = false;
+                this.playerNotice = 'Audio playback error: ' + ((err && err.message) || err || 'unknown');
+            });
+            return true;
         },
 
         /**
@@ -2674,6 +3002,10 @@ function vinylApp() {
             });
 
             this.addExpectedMarkers(totalDuration);
+
+            // Regions were rebuilt: re-apply the current-track emphasis
+            this.playheadIdx = -1;
+            if (this.playTime > 0) this.updateCurrentTrack(this.playTime, true);
         },
 
         /**
@@ -2892,12 +3224,10 @@ function vinylApp() {
             if (this.analyzing) return;   // a running detection would discard it or mistake it for a boundary edit
             track.ignored = !track.ignored;
 
-            if (this.waveformRegions) {
-                const region = this.waveformRegions.getRegions().find(r => r.id === `track-${track.number}`);
-                if (region) {
-                    region.setOptions({ color: this.getTrackColor(track.number - 1, track.ignored) });
-                }
-            }
+            // The track under the playhead keeps its emphasis (or loses it when ignored) right away
+            // instead of waiting for the playhead to change track
+            const idx = this.detectedTracks.findIndex(t => t.number === track.number);
+            this.setRegionEmphasis(idx, idx === this.playheadIdx);
         },
 
         /**
@@ -2921,38 +3251,191 @@ function vinylApp() {
          * Update track data when region is dragged/resized
          */
         updateTrackFromRegion(region) {
-            const trackNumber = parseInt(region.id.replace('track-', ''));
-            const track = this.detectedTracks.find(t => t.number === trackNumber);
+            // Ghost markers (and anything else) are not tracks
+            if (!region || typeof region.id !== 'string' || !region.id.startsWith('track-')) return;
 
-            if (track) {
-                // setOptions() (colour, a neighbour pushed along) fires this event too: only a
-                // real move of the cut is a hand edit.
-                if (Math.abs(track.start - region.start) > 1e-6 || Math.abs(track.end - region.end) > 1e-6) {
-                    this.markEdited();
+            const trackNumber = parseInt(region.id.slice('track-'.length), 10);
+            const idx = this.detectedTracks.findIndex(t => t.number === trackNumber);
+            if (idx < 0) return;
+
+            // setOptions() (colour, a neighbour pushed along) fires this event too: only a
+            // real move of the cut is a hand edit, and applyTrackBounds marks only that.
+            this.applyTrackBounds(idx, region.start, region.end);
+            // Push any clamping / neighbour changes back onto the regions
+            this.syncRegionsAround(idx);
+        },
+
+        /** Clock text m:ss for the transport readout */
+        formatClock(seconds) {
+            const whole = Math.max(0, Math.floor(Number(seconds) || 0));
+            return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+        },
+
+        /** Start playback, reporting a failure inline instead of silently */
+        startPlayback() {
+            const waveform = this.waveform;
+            if (!waveform) return;
+            // A play() started on the WAV can reject after the preview fallback took over (and
+            // restarted playback itself); that says nothing about the preview.
+            const generation = this._audioSource?.generation;
+            try {
+                const started = waveform.play();
+                if (started && typeof started.then === 'function') {
+                    started.then(() => { if (this.waveform === waveform) this.playerNotice = ''; }, (err) => {
+                        // A reply for a waveform that was destroyed or replaced meanwhile (file switch,
+                        // re-analysis, Snap) says nothing about the current one
+                        if (this.waveform !== waveform || this._audioSource?.generation !== generation) return;
+                        // Pause (or a teardown) before playback started: the user's own action, not a failure
+                        if (err && err.name === 'AbortError') return;
+                        console.error('Playback failed:', err);
+                        this.isPlaying = false;
+                        // A load failure can leave the media element "playing"; stop it so the
+                        // next click plays instead of pausing
+                        waveform.pause();
+                        this.playerNotice = 'Could not start playback: ' + ((err && err.message) || err || 'unknown error');
+                    });
+                } else {
+                    this.playerNotice = '';
                 }
-                track.start = region.start;
-                track.end = region.end;
-                track.duration = region.end - region.start;
-                track.editing = true;
-
-                const idx = this.detectedTracks.findIndex(t => t.number === trackNumber);
-                if (idx >= 0 && idx + 1 < this.detectedTracks.length) {
-                    this.detectedTracks[idx + 1].start = region.end;
-
-                    const nextRegion = this.waveformRegions.getRegions().find(r => r.id === `track-${trackNumber + 1}`);
-                    if (nextRegion) {
-                        nextRegion.setOptions({ start: region.end });
-                    }
-                }
+            } catch (err) {
+                console.error('Playback failed:', err);
+                this.playerNotice = 'Could not start playback: ' + ((err && err.message) || err);
             }
         },
 
-        playWaveform() {
-            if (this.waveform) this.waveform.play();
+        /** The one Play/Pause toggle, bound to the real player state */
+        togglePlay() {
+            if (!this.waveform) return;
+            this.cancelAudition();
+            if (this.isPlaying) {
+                this.waveform.pause();
+                return;
+            }
+            this.startPlayback();
         },
 
-        stopWaveform() {
-            if (this.waveform) this.waveform.pause();
+        pauseWaveform() {
+            this.cancelAudition();
+            if (this.waveform && typeof this.waveform.pause === 'function') this.waveform.pause();
+        },
+
+        seekTo(time) {
+            if (!this.waveform || !Number.isFinite(time)) return;
+            time = Math.max(0, Math.min(time, this.waveform.getDuration()));
+            const media = this.waveform.getMediaElement?.();
+            this._pendingSeek = media?.readyState === 0 ? time : null;
+            this.waveform.setTime(time);
+            this.onPlayerTime(time);
+        },
+
+        /** Apply a seek that was made before the media element had its metadata */
+        applyPendingSeek() {
+            if (this._pendingSeek === null || !this.waveform) return;
+            const time = this._pendingSeek;
+            this._pendingSeek = null;
+            this.waveform.setTime(time);
+            this.onPlayerTime(time);
+        },
+
+        /**
+         * Space toggles playback, except while typing, in a dialog, or on a control Space would
+         * itself activate (a focused button: its own click handles Space, so toggling here too
+         * would fire twice).  preventDefault keeps the page from scrolling.
+         */
+        onGlobalKeydown(e) {
+            if (e.code !== 'Space' && e.key !== ' ') return;
+            if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+            if (this.showSettings || this.setupRequired || !this.waveform) return;
+            const target = e.target;
+            const tag = target && target.tagName ? String(target.tagName).toUpperCase() : '';
+            if (SPACE_OWNING_TAGS.has(tag) || (target && target.isContentEditable)) return;
+            e.preventDefault();
+            // A held key repeats keydown: keep the page from scrolling, but toggle only once
+            if (e.repeat) return;
+            this.togglePlay();
+        },
+
+        /** The playhead moved */
+        onPlayerTime(time) {
+            this.playTime = time;
+            if (this._auditionStop !== null && time >= this._auditionStop) {
+                this._auditionStop = null;
+                if (this.waveform) this.waveform.pause();
+            }
+            this.updateCurrentTrack(time);
+        },
+
+        /**
+         * Track whose [start, end) contains the playhead (-1 in a gap).  Only touches the
+         * regions when the index actually changes (timeupdate fires several times a second).
+         */
+        updateCurrentTrack(time, force = false) {
+            let idx = -1;
+            for (let i = 0; i < this.detectedTracks.length; i++) {
+                const track = this.detectedTracks[i];
+                if (time >= track.start && time < track.end) { idx = i; break; }
+            }
+            if (idx === this.playheadIdx && !force) return;
+            const previousIdx = this.playheadIdx;
+            this.playheadIdx = idx;
+            this.setRegionEmphasis(previousIdx, false);
+            this.setRegionEmphasis(idx, true);
+        },
+
+        /** Strengthen the region tint of the track under the playhead (an ignored track stays grey) */
+        setRegionEmphasis(idx, on) {
+            const track = this.detectedTracks[idx];
+            if (!track || !this.waveformRegions) return;
+            const region = this.waveformRegions.getRegions().find(r => r.id === `track-${track.number}`);
+            if (!region) return;
+            let color = this.getTrackColor(idx, track.ignored);
+            if (on && !track.ignored) color = color.replace(/0\.3\)$/, '0.55)');
+            region.setOptions({ color });
+        },
+
+        /** Row toggle: play this track in the waveform (continuing onward) or pause */
+        toggleTrackPlay(idx) {
+            const track = this.detectedTracks[idx];
+            if (!track || !this.waveform) return;
+            this.cancelAudition();
+            if (this.isPlaying && this.playheadIdx === idx) {
+                this.waveform.pause();
+                return;
+            }
+            this.seekTo(track.start);
+            this.startPlayback();
+        },
+
+        /** Hear a cut point: AUDITION_PADDING_S before to after the track's start or end */
+        auditionCut(idx, which) {
+            const track = this.detectedTracks[idx];
+            if (!track || !this.waveform) return;
+            const total = this.waveform.getDuration() || Infinity;
+            const cut = which === 'end' ? track.end : track.start;
+            this.cancelAudition();
+            this.seekTo(Math.max(0, cut - AUDITION_PADDING_S));
+            this._auditionStop = Math.min(total, cut + AUDITION_PADDING_S);
+            this.startPlayback();
+        },
+
+        cancelAudition() {
+            this._auditionStop = null;
+        },
+
+        /** Region click: seek to the click position (primary, undragged clicks only) */
+        onRegionClicked(region, e) {
+            if (!this.waveform || !e) return;
+            if (e.button !== undefined && e.button !== 0) return;
+            if (e.ctrlKey || e.metaKey) return;
+            if (String(region.id).startsWith('expected-')) return;
+            if (e.target && e.target.closest?.('[part~=region-handle]')) return;
+            const downX = this._regionDownX;
+            this._regionDownX = null;
+            if (downX !== null && Math.abs(e.clientX - downX) > REGION_CLICK_SLOP_PX) return;   // the end of a drag
+            const rect = this.waveform.getWrapper().getBoundingClientRect();
+            const relativeX = Math.max(0, Math.min((e.clientX - rect.left) / rect.width, 1));
+            this.cancelAudition();
+            this.seekTo(relativeX * this.waveform.getDuration());
         },
 
         zoomIn() {
@@ -2970,11 +3453,23 @@ function vinylApp() {
         },
 
         destroyWaveform() {
+            this.waveformLoading = false;   // an in-flight initWaveform returns silently once stale
             if (this.waveform) {
                 this.waveform.destroy();
                 this.waveform = null;
                 this.waveformRegions = null;
             }
+            this.isPlaying = false;
+            this.playTime = 0;
+            this.playDuration = 0;
+            this.playheadIdx = -1;
+            this.playerNotice = '';
+            this.playerInfo = '';
+            this._audioSource = null;
+            this._restoreZoom = null;
+            this.playerBuffering = false;
+            this._pendingSeek = null;
+            this._auditionStop = null;
         },
 
         /**

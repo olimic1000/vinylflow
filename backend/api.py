@@ -455,8 +455,41 @@ _envelope_tasks: dict = {}
 _envelope_errors: dict = {}  # file_id -> message of the last failed scan (cleared on success)
 
 
+def _write_cache_atomically(cache_path: Path, write) -> None:
+    """Write a session cache via a temp file + atomic rename so a reader never
+    sees a half-written file.  Best-effort: the session dir may have been
+    removed while we were decoding."""
+    part_path = cache_path.with_name(f"{cache_path.stem}.{uuid.uuid4().hex[:8]}.part")
+    try:
+        with open(part_path, "wb") as f:
+            write(f)
+        os.replace(part_path, cache_path)
+    except OSError:
+        part_path.unlink(missing_ok=True)
+
+
+def _decode_and_cache(file_id: str, file_path: Path):
+    """Blocking: the one decode per recording.  Writes envelope.npy and
+    peaks_v2.json together and returns ``(envelope, peaks)``.  Two racing
+    callers write identical deterministic content, so the atomic renames
+    make that harmless."""
+    import numpy as np
+
+    db, peaks = audio_processor.compute_envelope_and_peaks(file_path)
+    if not get_session_path(file_id).is_dir():
+        # The recording was removed while it decoded.  The writes below would fail with an
+        # OSError anyway; this makes the case explicit and skips the work.
+        return db, peaks
+    _write_cache_atomically(get_session_path(file_id, "envelope.npy"), lambda f: np.save(f, db))
+    _write_cache_atomically(
+        get_session_path(file_id, "peaks_v2.json"), lambda f: f.write(json.dumps(peaks).encode("utf-8"))
+    )
+    return db, peaks
+
+
 def _load_or_compute_envelope(file_id: str, file_path: Path):
-    """Blocking: load envelope.npy if cached, else decode and cache it."""
+    """Blocking: load envelope.npy if cached, else decode and cache it
+    (together with the waveform peaks, from the same decode)."""
     import numpy as np
 
     cache_path = get_session_path(file_id, "envelope.npy")
@@ -466,19 +499,7 @@ def _load_or_compute_envelope(file_id: str, file_path: Path):
         except Exception:
             cache_path.unlink(missing_ok=True)  # corrupt cache: recompute
 
-    db = audio_processor.compute_envelope(file_path)
-
-    # Write via a temp file + atomic rename so a reader never sees a
-    # half-written cache.  Caching is best-effort (the session dir may have
-    # been removed while we were decoding).
-    part_path = get_session_path(file_id, f"envelope.{uuid.uuid4().hex[:8]}.part")
-    try:
-        with open(part_path, "wb") as f:
-            np.save(f, db)
-        os.replace(part_path, cache_path)
-    except OSError:
-        part_path.unlink(missing_ok=True)
-    return db
+    return _decode_and_cache(file_id, file_path)[0]
 
 
 async def _run_envelope(file_id: str, file_path: Path):
@@ -1185,10 +1206,18 @@ async def preview_track(
         raise HTTPException(status_code=500, detail=f"Preview generation failed: {str(e)}")
 
 
+def _cached_peaks_response(cache_path: Path):
+    """Stream the cached peaks file as is: at 10 ms per bin it is ~13 MB for a 4 h album, and
+    parsing then re-serialising that would block the event loop.  The file is replaced
+    atomically, so a reader never sees a partial one."""
+    from fastapi.responses import FileResponse
+
+    return FileResponse(cache_path, media_type="application/json")
+
+
 @app.get("/api/waveform-peaks/{file_id}")
 async def get_waveform_peaks(file_id: str):
-    """Generate waveform peaks for visualization."""
-    import numpy as np
+    """Equal-width waveform peaks (<= 10 ms per bin) for visualization."""
 
     session = session_store.get(file_id)
     if session is None:
@@ -1197,64 +1226,27 @@ async def get_waveform_peaks(file_id: str):
 
     file_path = session.source_audio
 
-    peaks_cache_path = get_session_path(file_id, "peaks.json")
+    # peaks_v2.json replaces the old peaks.json (3,000 bins per recording, which
+    # lost sub-second timing on albums); an old cache is simply ignored.
+    peaks_cache_path = get_session_path(file_id, "peaks_v2.json")
     if peaks_cache_path.exists():
-        with open(peaks_cache_path, "r") as f:
-            cached_data = json.load(f)
-            return JSONResponse(content=cached_data)
+        return _cached_peaks_response(peaks_cache_path)
 
     try:
-        # text=False — we want raw PCM bytes on stdout, not utf-8 text.
-        # Full-file decode, so run it off the event loop.
-        result = await asyncio.to_thread(
-            run_ffmpeg,
-            [
-                "-i",
-                str(file_path),
-                "-f",
-                "s16le",
-                "-acodec",
-                "pcm_s16le",
-                "-ac",
-                "1",
-                "-ar",
-                "8000",
-                "-",
-            ],
-            text=False,
-            capture_output=True,
-            check=True,
-        )
-        # int32 before abs: abs(-32768) overflows back to -32768 in int16.
-        audio_data = np.frombuffer(result.stdout, dtype=np.int16).astype(np.int32)
-
-        target_peaks = 3000
-        samples_per_peak = max(1, len(audio_data) // target_peaks)
-
-        full = (len(audio_data) // samples_per_peak) * samples_per_peak
-        peaks = []
-        if full:
-            peaks = (
-                np.abs(audio_data[:full]).reshape(-1, samples_per_peak).max(axis=1)
-                / 32768.0
-            ).tolist()
-        if full < len(audio_data):
-            peaks.append(float(np.abs(audio_data[full:]).max() / 32768.0))
-
-        if len(peaks) == 0:
-            peaks = [0.0]
-
-        response_data = {
-            "peaks": peaks,
-            "length": len(peaks),
-            "duration": session.source_duration,
-        }
-
-        with open(peaks_cache_path, "w") as f:
-            json.dump(response_data, f)
+        # Prep's decode writes the peaks too: wait for it (or its cache) rather than
+        # starting a second decode.  Decoding here is only the rare leftover: the envelope
+        # was cached (or loaded) but its peaks write failed.  Sessions live in memory, so
+        # no older on-disk session lacks peaks; concurrent requests in that case each decode,
+        # and a recording removed during it still gets this reply (nothing is written).
+        await get_envelope(session)
+        if peaks_cache_path.exists():
+            return _cached_peaks_response(peaks_cache_path)
+        _, response_data = await asyncio.to_thread(_decode_and_cache, file_id, file_path)
 
         return JSONResponse(content=response_data)
 
+    except HTTPException:
+        raise   # 404: the recording was removed while waiting for its decode
     except CalledProcessError as e:
         stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
         raise HTTPException(status_code=500, detail=f"FFmpeg failed: {stderr}")
@@ -1263,8 +1255,8 @@ async def get_waveform_peaks(file_id: str):
 
 
 @app.get("/api/audio/{file_id}")
-async def get_audio_file(file_id: str):
-    """Serve audio file for waveform playback."""
+async def get_audio_file(file_id: str, precise: bool = False):
+    """Stream source WAV for precise editing, or the pinned preview otherwise."""
     from fastapi.responses import FileResponse
 
     session = session_store.get(file_id)
@@ -1272,13 +1264,20 @@ async def get_audio_file(file_id: str):
         raise HTTPException(status_code=404, detail="File not found")
     _require_source(session)
 
-    # Prefer the background-preconverted MP3: ~25MB streamed instead of a
-    # multi-hundred-MB WAV. The choice is pinned on the first request so the
-    # same URL never flips from WAV to MP3 bytes mid-playback.
-    if session.playback_audio is None or not session.playback_audio.exists():
-        mp3_path = get_session_path(file_id, "full.mp3")
-        session.playback_audio = mp3_path if mp3_path.exists() else session.source_audio
-    file_path = session.playback_audio
+    if precise and session.source_audio.suffix.lower() == ".wav":
+        # Cut-point playback uses the same source as the waveform, removing
+        # MP3 seeking/decoder behavior from this path. FileResponse streams
+        # byte ranges; the album is not decoded into browser JS memory.
+        file_path = session.source_audio
+    else:
+        # AIFF needs the browser-compatible preview. Pin this URL's choice so
+        # an in-progress range request never switches from source to MP3 bytes.
+        # Prefer the background-preconverted MP3: ~25MB streamed instead of a
+        # multi-hundred-MB WAV.
+        if session.playback_audio is None or not session.playback_audio.exists():
+            mp3_path = get_session_path(file_id, "full.mp3")
+            session.playback_audio = mp3_path if mp3_path.exists() else session.source_audio
+        file_path = session.playback_audio
 
     if file_path.suffix.lower() == ".mp3":
         media_type = "audio/mpeg"

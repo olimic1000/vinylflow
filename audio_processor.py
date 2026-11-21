@@ -9,6 +9,7 @@ Supports FLAC, MP3, and AIFF output formats.
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import List, Tuple, Optional
 
@@ -333,35 +334,75 @@ class AudioProcessor:
     # threshold.
     SMART_RESCAN_LADDER = [(-30.0, 0.3), (-25.0, 0.25), (-20.0, 0.2)]
 
-    def compute_envelope(self, file_path: Path):
-        """Decode ``file_path`` once and return its per-frame RMS dBFS envelope.
+    # Frames per bounded block when reducing the spooled decode (peaks bins
+    # and envelope frames alike): ~80k samples, about 160 KB of PCM.
+    DECODE_BLOCK_FRAMES = 1000
 
-        Mono, 8 kHz, 10 ms frames (``ENVELOPE_FRAME_S``).  Every silence
-        question (gaps at any threshold, music span) is then answered in
-        memory from this array.
+    def compute_envelope_and_peaks(self, file_path: Path, block_frames: int = None):
+        """Decode ``file_path`` once; return ``(envelope_db, peaks_dict)``.
+
+        One mono, 8 kHz, s16le decode is spooled to a temporary file (never
+        held in memory) and reduced in blocks of ``block_frames`` frames to
+        both arrays, so a full-album recording costs one decode and bounded RAM.
+
+        * Envelope: per-frame RMS dBFS (10 ms frames, ``ENVELOPE_FRAME_S``),
+          exactly ``envelope_from_pcm`` on the whole signal: whole frames
+          only, a trailing partial frame is dropped, float32.  Every silence
+          question (gaps, music span) is answered in memory from it.
+        * Peaks: max |sample| per equal-width bin, one bin per started 10 ms
+          frame.  Keeps 10 ms transient timing at any album length; bin edges
+          spread the partial tail across all bins so WaveSurfer's even
+          spacing stays true to the source times.
         """
         import numpy as np
 
-        result = run_ffmpeg(
-            [
-                "-i",
-                str(file_path),
-                "-f",
-                "s16le",
-                "-acodec",
-                "pcm_s16le",
-                "-ac",
-                "1",
-                "-ar",
-                str(ENVELOPE_SAMPLE_RATE),
-                "-",
-            ],
-            text=False,
-            capture_output=True,
-            check=True,
-        )
-        samples = np.frombuffer(result.stdout, dtype=np.int16)
-        return envelope_from_pcm(samples, int(ENVELOPE_SAMPLE_RATE * ENVELOPE_FRAME_S))
+        block_frames = block_frames or self.DECODE_BLOCK_FRAMES
+        frame_samples = int(ENVELOPE_SAMPLE_RATE * ENVELOPE_FRAME_S)
+        peaks = []
+        envelope_blocks = []
+        with tempfile.TemporaryFile() as pcm:
+            run_ffmpeg(
+                ["-v", "error", "-i", str(file_path), "-f", "s16le", "-acodec", "pcm_s16le",
+                 "-ac", "1", "-ar", str(ENVELOPE_SAMPLE_RATE), "-"],
+                text=False, stdout=pcm, stderr=subprocess.PIPE, check=True,
+            )
+            sample_count = pcm.tell() // 2
+            peak_count = (sample_count + frame_samples - 1) // frame_samples
+            for first in range(0, peak_count, block_frames):
+                last = min(first + block_frames, peak_count)
+                # Bin edges are not frame-aligned (the tail is spread), so the
+                # peaks block reads its own sample range.
+                edges = np.arange(first, last + 1, dtype=np.int64) * sample_count // peak_count
+                pcm.seek(int(edges[0]) * 2)
+                block = pcm.read(int(edges[-1] - edges[0]) * 2)
+                # Promote before abs: abs(-32768) overflows in int16.
+                samples = np.frombuffer(block, dtype="<i2").astype(np.int32)
+                values = np.maximum.reduceat(np.abs(samples), edges[:-1] - edges[0]) / 32768.0
+                peaks.extend(np.round(values, 6).tolist())
+            # Envelope: whole frames only, read in frame-aligned blocks.  Frames
+            # are independent, so blockwise equals one pass over everything.
+            whole_frames = sample_count // frame_samples
+            pcm.seek(0)
+            for first in range(0, whole_frames, block_frames):
+                frames_here = min(block_frames, whole_frames - first)
+                block = pcm.read(frames_here * frame_samples * 2)
+                envelope_blocks.append(
+                    envelope_from_pcm(np.frombuffer(block, dtype="<i2"), frame_samples)
+                )
+        envelope = (np.concatenate(envelope_blocks) if envelope_blocks
+                    else np.empty(0, dtype=np.float32))
+        peaks_dict = {"peaks": peaks or [0.0], "length": len(peaks) or 1,
+                      "duration": sample_count / ENVELOPE_SAMPLE_RATE}
+        return envelope, peaks_dict
+
+    def compute_envelope(self, file_path: Path):
+        """Per-frame RMS dBFS envelope of ``file_path`` (see
+        ``compute_envelope_and_peaks``, which this wraps)."""
+        return self.compute_envelope_and_peaks(file_path)[0]
+
+    def compute_waveform_peaks(self, file_path: Path) -> dict:
+        """Waveform peaks of ``file_path`` (see ``compute_envelope_and_peaks``)."""
+        return self.compute_envelope_and_peaks(file_path)[1]
 
     def refine_tracks(self, db, tracks):
         """Widen envelope-derived tracks over audio still above the user's
