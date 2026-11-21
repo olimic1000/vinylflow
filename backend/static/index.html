@@ -318,6 +318,7 @@
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
+        .spinner-lg { width: 36px; height: 36px; border-width: 4px; }
     </style>
 </head>
 <body class="bg-page">
@@ -999,15 +1000,24 @@
                     </div>
                 </div>
             </div>
-            <div id="waveform" x-show="!fallbackAudioUrl" class="w-full mb-6"></div>
+            <!-- The loading overlay sits over the (fixed-height) waveform area, so it never shifts the layout -->
+            <div class="relative mb-6" x-show="!fallbackAudioUrl">
+                <div id="waveform" class="w-full"></div>
+                <div x-show="waveformLoading" x-cloak role="status" data-testid="waveform-loading"
+                     class="absolute inset-0 z-10 flex items-center justify-center gap-3 text-lg text-secondary"
+                     style="background-color: rgba(250, 249, 246, 0.85);">
+                    <div class="spinner spinner-lg"></div>
+                    <span>Loading waveform…</span>
+                </div>
+            </div>
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div x-show="waveformLoading" class="text-center text-secondary py-8 text-lg">Loading waveform...</div>
                 <div x-show="!waveform && !waveformLoading && !fallbackAudioUrl" class="text-center text-muted py-8">Waveform will appear after analysis completes</div>
                 <div x-show="fallbackAudioUrl" x-cloak class="mb-2">
                     <p class="text-sm text-secondary mb-1">The waveform couldn't load; you can still listen here.</p>
                     <audio x-ref="fallbackAudio" controls preload="metadata" :src="fallbackAudioUrl || false" @volumechange="onFallbackVolumeChange($event.target)" class="w-full"></audio>
                 </div>
                 <p x-show="playerNotice" x-cloak role="alert" class="mb-2 text-sm text-primary" x-text="playerNotice"></p>
+                <p x-show="playerInfo" x-cloak class="mb-2 text-sm text-secondary" x-text="playerInfo"></p>
                 <p x-show="!fallbackAudioUrl" class="text-sm text-muted">💡 Tip: Drag the colored regions to adjust track boundaries, or right-click to add splits.<span x-show="expectedBoundaries.length > 0" x-cloak> Dashed red lines mark where the Discogs lengths expect each break.</span></p>
             </div>
         </div>

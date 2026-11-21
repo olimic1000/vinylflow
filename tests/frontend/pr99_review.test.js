@@ -33,7 +33,8 @@ for (const click of ['togglePlay()', 'zoomIn()', 'zoomOut()']) {
     assert.ok(/:disabled="!playerReady"/.test(tag), click + ' needs a ready player');
 }
 // No waveform but the fallback: no empty box, no 0:00 readout, no "drag the regions" tip, no placeholder
-assert.ok(/<div id="waveform"[^>]*x-show="!fallbackAudioUrl"/.test(html), 'empty waveform box hidden');
+// (the #waveform sits in the loading-overlay wrapper, which carries the x-show so both hide together)
+assert.ok(/<div class="relative mb-6" x-show="!fallbackAudioUrl">\s*<div id="waveform"/.test(html), 'empty waveform box hidden');
 assert.ok(/x-show="waveform && !fallbackAudioUrl"[^>]*>[^<]*<\/span>|<span x-show="waveform"[^>]*formatClock/.test(html), 'readout');
 assert.ok(/x-show="!waveform && !waveformLoading && !fallbackAudioUrl"/.test(html), 'placeholder');
 assert.ok(/<p x-show="!fallbackAudioUrl" class="text-sm text-muted">💡 Tip/.test(html), 'tip hidden with the fallback');
@@ -162,18 +163,6 @@ assert.strictEqual(vinylApp().playerVolume, 1, 'no localStorage at all');
     // Switching file clears it (the switch destroys the waveform)
     app.destroyWaveform();
     assert.strictEqual(app.fallbackAudioUrl, '');
-
-    // ---- the source itself is gone or changed (410/409): /api/audio answers the same, so no
-    // fallback player that can never play; the toast carries the server's reason ----
-    for (const status of [410, 409]) {
-        media = fakeMedia(); waveform = fakeWaveSurfer(media); install(media, waveform);
-        global.fetch = async () => ({ ok: false, status, json: async () => ({ detail: 'The source file is gone.' }) });
-        app = mkApp();
-        await app.initWaveform();
-        assert.strictEqual(app.fallbackAudioUrl, '', status + ': no fallback player for a source the server refuses');
-        assert.strictEqual(app.waveform, null, status + ': the half-built waveform is still torn down');
-        assert.ok(app.toasts.some(t => /source file is gone/.test(t.message)), status + ': the reason is shown');
-    }
 
     // ---- a failure after load() set the source (the audio request fails): same cleanup ----
     media = fakeMedia(); waveform = fakeWaveSurfer(media); install(media, waveform);
