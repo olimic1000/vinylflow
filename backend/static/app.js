@@ -7,6 +7,8 @@
 const MAX_TOASTS = 5;
 // Most tracks one guided detection places; must match MAX_EXPECTED_TRACKS in backend/api.py
 const MAX_GUIDED_TRACKS = 99;
+// Release fetches one lookup for other pressings may spend at most (mirrors find_length_donors' max_fetches)
+const DONOR_FETCH_BUDGET = 12;
 // How long an Undo toast stays (ms)
 const UNDO_TOAST_MS = 8000;
 // Discogs results per search (one page; each card's tracklist loads separately)
@@ -155,6 +157,10 @@ function vinylApp() {
         detailsSettled: false,    // True once every result's tracklist load finished or failed
         searchSeq: 0,             // Bumped by every search and file switch: stale replies are dropped
         _detailInflight: {},      // `${searchSeq}:${releaseId}` -> promise of a tracklist load in progress
+        // Borrow lengths from other pressings: the lookup for one release; `_donorSeq` drops stale replies
+        donors: { releaseId: null, status: 'idle', checked: 0, budget: DONOR_FETCH_BUDGET, list: [], error: '' },
+        _donorSeq: 0,
+        _borrowCount: 0,          // Numbers each applied borrow, so its Undo can tell whether its copy is still selected
         _pendingPickId: null,     // Card clicked while its tracklist loads; a later pick clears it
         _releaseIdCall: 0,        // Bumped per "exact pressing" lookup; only the latest resets releaseIdLoading
         selectedRelease: null,
@@ -336,6 +342,13 @@ function vinylApp() {
             console.log('WebSocket message:', data);
 
             switch (data.type) {
+                case 'donor_progress':
+                    if (this.donors.status === 'searching' && Number(data.release_id) === Number(this.donors.releaseId)) {
+                        this.donors.checked = data.checked;
+                        if (data.budget > 0) this.donors.budget = data.budget;
+                    }
+                    break;
+
                 case 'scan_complete':
                     this.applyScan(data.file_id, data);
                     break;
@@ -976,6 +989,7 @@ function vinylApp() {
         restoreEdits(snapshot) {
             this.detectedTracks = snapshot.detectedTracks.map(track => ({ ...track }));
             this.selectedRelease = snapshot.selectedRelease;
+            this.resetDonors();   // the list was fetched for another release (or another copy of it)
             if (snapshot.selectedRelease) this._pendingPickId = null;   // a card still loading must not replace it
             // The preview is keyed by release id: load it for a different release the Undo put back
             if (snapshot.selectedRelease && snapshot.selectedRelease.id !== this.albumDescription.releaseId) {
@@ -998,6 +1012,7 @@ function vinylApp() {
         clearEditState() {
             this.detectedTracks = [];
             this.selectedRelease = null;
+            this.resetDonors();
             this.trackCountMismatch = false;
             this.trackMappingReversed = false;
             this.customMapping = [];
@@ -1604,6 +1619,7 @@ function vinylApp() {
                 return;
             }
             this.selectedRelease = release;
+            this.resetDonors();
             this.loadAlbumDescription();
             const suggestion = this.suggestSides(
                 release,
@@ -2015,6 +2031,7 @@ function vinylApp() {
             // an export of this recording needs its release, and selectRelease is refused meanwhile
             if (this.analyzing || this.currentFileExporting) return;
             this.selectedRelease = null;
+            this.resetDonors();
             this._pendingPickId = null;   // a card still loading must not bring a release back
             this.selectedSides = [];
             this.suggestedSides = [];
@@ -2068,6 +2085,161 @@ function vinylApp() {
             } catch (error) {
                 console.warn('Scan status unavailable:', error);
             }
+        },
+
+        // ---- Borrow track lengths from another pressing ----------------
+
+        /** Forget the donor list and any lookup in flight (the release, the file or the tracks changed) */
+        resetDonors() {
+            this._donorSeq++;
+            this.donors = { releaseId: null, status: 'idle', checked: 0, budget: DONOR_FETCH_BUDGET, list: [], error: '' };
+        },
+
+        /** Offer borrowing when the chosen sides lack some lengths */
+        get showBorrowLengths() {
+            return !!this.selectedRelease && this.targetTracks.length > 0 &&
+                this.releaseDurationInfo({ tracks: this.targetTracks }).status !== 'full';
+        },
+
+        get borrowLengthsMessage() {
+            const info = this.releaseDurationInfo({ tracks: this.targetTracks });
+            return info.status === 'none'
+                ? 'This release has no track lengths'
+                : `Only ${info.withDuration}/${info.total} tracks have lengths`;
+        },
+
+        get donorProgressText() {
+            return `Checking other pressings… (${this.donors.checked} of up to ${this.donors.budget})`;
+        },
+
+        /** Every pressing the selected release's lengths were borrowed from, in order ({release_id, label, year, country}) */
+        get lengthsBorrowedFrom() {
+            return this.selectedRelease?.lengthsBorrowedFrom || [];
+        },
+
+        /**
+         * The lookup's donors recomputed against the release as it is now, for the chosen sides:
+         * `matched` = lengths the donor still supplies for chosen-side tracks that have none,
+         * `missing` = chosen-side tracks without a length.  Donors that fill nothing are dropped
+         * and the rest sorted by fills (the backend's order breaks ties), so a list fetched before
+         * a borrow, a hand edit or a side change never shows stale counts.
+         */
+        get visibleDonors() {
+            if (!this.selectedRelease) return [];
+            const missingIndexes = new Set(this.targetTracks
+                .filter(track => this.parseTrackDuration(track.duration) === null)
+                .map(track => track.releaseIdx));
+            return this.donors.list
+                .map((donor, order) => {
+                    const matched = Object.entries(donor.lengths || {}).filter(([key, length]) =>
+                        missingIndexes.has(Number(key)) && this.parseTrackDuration(length) !== null).length;
+                    return { donor: { ...donor, matched, missing: missingIndexes.size }, order };
+                })
+                .filter(entry => entry.donor.matched > 0)
+                .sort((a, b) => b.donor.matched - a.donor.matched || a.order - b.order)
+                .map(entry => entry.donor);
+        },
+
+        /** "fills 4 of 5 missing": the lengths this pressing can supply, out of the lengths the release lacks */
+        donorFillText(donor) {
+            return `fills ${donor.matched} of ${donor.missing} missing`;
+        },
+
+        borrowedLabel(borrowed) {
+            const parts = [borrowed?.label, borrowed?.year, borrowed?.country]
+                .filter(part => part !== undefined && part !== null && part !== '');
+            return parts.join(', ') || `release ${borrowed?.release_id}`;
+        },
+
+        donorTitle(donor) {
+            return [donor.label, donor.year, donor.country, donor.format]
+                .filter(part => part !== undefined && part !== null && part !== '').join(' · ');
+        },
+
+        /** Look for other pressings of the selected release's master that carry the missing lengths */
+        async findLengthDonors() {
+            const release = this.selectedRelease;
+            if (!release || this.donors.status === 'searching') return;
+            const sequence = ++this._donorSeq;
+            this.donors = {
+                releaseId: release.id, status: 'searching', checked: 0, budget: DONOR_FETCH_BUDGET, list: [], error: ''
+            };
+            try {
+                const response = await fetch(`/api/release/${release.id}/length-donors`);
+                let body = null;
+                try { body = await response.json(); } catch (_) { /* non-JSON error body */ }
+                // A release, file or Undo change since the request started: the answer is for something else
+                if (sequence !== this._donorSeq) return;
+                if (!response.ok) throw new Error((body && body.detail) || 'Could not look for other pressings.');
+                this.donors = {
+                    ...this.donors, status: 'done', list: Array.isArray(body?.donors) ? body.donors : []
+                };
+            } catch (error) {
+                if (sequence !== this._donorSeq) return;
+                this.donors = {
+                    ...this.donors, status: 'error', list: [],
+                    error: error.message || 'Could not look for other pressings.'
+                };
+            }
+        },
+
+        /**
+         * Copy a donor's lengths onto the selected release's tracks that have none, mark where
+         * they came from, and re-run detection (afterTargetsChanged: ask first after hand edits).
+         * Copy-on-write: the release object may also be a search result, so it is replaced by an
+         * edited copy and Undo puts the original object back.
+         */
+        applyDonor(donor) {
+            const release = this.selectedRelease;
+            if (!release || !donor) return;
+            if (this.analyzing) {
+                this.notify('Wait for track detection to finish before borrowing lengths.', { type: 'warning', timeout: 5000 });
+                return;
+            }
+            if (this.currentFileExporting) {
+                this.notify('This recording is exporting. Borrow lengths when the export has finished.', { type: 'warning', timeout: 5000 });
+                return;
+            }
+            // The list belongs to one release: a different one (or none) means a stale click
+            if (this.donors.releaseId !== release.id) return;
+
+            // Only tracks of the chosen sides, so the count agrees with "fills N of M missing"
+            const chosenIndexes = new Set(this.targetTracks.map(track => track.releaseIdx));
+            let filled = 0;
+            const tracks = (release.tracks || []).map(track => ({ ...track }));
+            for (const [key, length] of Object.entries(donor.lengths || {})) {
+                const track = tracks[Number(key)];
+                if (!track || !chosenIndexes.has(Number(key))) continue;
+                if (this.parseTrackDuration(track.duration) !== null) continue;   // only missing lengths
+                if (this.parseTrackDuration(length) === null) continue;
+                track.duration = length;
+                filled++;
+            }
+            if (filled === 0) {
+                this.notify('That pressing has no lengths this release is missing.', { type: 'info' });
+                return;
+            }
+            // `borrowId` is compared by Undo instead of object identity: Alpine hands out proxies
+            const borrowId = ++this._borrowCount;
+            const borrowed = {
+                release_id: donor.release_id, label: donor.label, year: donor.year, country: donor.country, borrowId
+            };
+            const edited = { ...release, tracks, lengthsBorrowedFrom: [...(release.lengthsBorrowedFrom || []), borrowed] };
+            const fileId = this.currentFileId;
+            this.selectedRelease = edited;
+            this.resetDonors();
+            this.afterTargetsChanged();
+
+            this.notifyUndo(`Borrowed ${filled} track length${filled === 1 ? '' : 's'} from ${this.borrowedLabel(borrowed)}.`, () => {
+                // Another release or file replaced the copy since: nothing of this change is left to undo
+                if (this.currentFileId !== fileId || this.selectedRelease?.lengthsBorrowedFrom?.at(-1)?.borrowId !== borrowId) {
+                    this.notify('The release has changed since; the borrowed lengths are no longer applied.', { type: 'info' });
+                    return;
+                }
+                this.selectedRelease = release;
+                this.resetDonors();
+                this.afterTargetsChanged();
+            }, { fileId, type: 'success' });
         },
 
         // ---- Release cards: lengths, sides and fit -----------------------
@@ -2865,6 +3037,7 @@ function vinylApp() {
         dropReleaseAfterEdit() {
             if (!this.selectedRelease) return;
             this.selectedRelease = null;
+            this.resetDonors();   // a donor list belongs to the release that was just dropped
             this.selectedSides = [];
             this.suggestedSides = [];
             this.sidesSuggestionReason = '';
