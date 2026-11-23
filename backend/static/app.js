@@ -119,6 +119,46 @@ function readStoredPlayerVolume() {
     }
 }
 
+// Shown (muted) when the waveform plays the MP3 preview instead of the original WAV.
+const PREVIEW_AUDIO_NOTICE = "Playing the preview \u2014 this browser can't play the original WAV, so cut points may be up to ~50 ms less precise.";
+
+// The share of peaks that must fit under full height: the 99.9th percentile, so a needle-drop thump
+// or a few clicks (single loud 10 ms bins) do not make the music of a quiet side look low.
+const PEAK_SCALE_PERCENTILE = 0.999;
+// ...but never below this share of the loudest bin: a recording that is mostly digital silence has a
+// ~0 percentile, which would stretch its few real peaks into a solid block.
+const PEAK_SCALE_FLOOR_FRACTION = 1 / 8;
+
+// A failed preview that the server is still preparing is polled this often, for at most this long
+// (the encode of even a long album takes well under it), before the notice is left as it is.
+const PREVIEW_POLL_INTERVAL_MS = 3000;
+const PREVIEW_POLL_MAX_MS = 10 * 60 * 1000;
+
+/**
+ * Scale waveform peaks so the recording's 99.9th-percentile peak is full height (louder bins clip
+ * at +-1). Replaces WaveSurfer's `normalize`, which scales each rendered canvas (one per screen
+ * width when zoomed) to its own loudest bar and so stretches the surface noise of a gap to full
+ * height. The reference is found by sorting one Float64Array copy (an album has ~1.4 M peaks), not
+ * Math.max(...peaks), whose arguments would overflow the stack.
+ */
+function scalePeaksToRecording(peaks) {
+    if (!peaks.length) return peaks;
+    const magnitudes = Float64Array.from(peaks, peak => Math.abs(peak));
+    magnitudes.sort();
+    const percentile = magnitudes[Math.ceil(PEAK_SCALE_PERCENTILE * magnitudes.length) - 1];
+    const reference = Math.max(percentile, magnitudes[magnitudes.length - 1] * PEAK_SCALE_FLOOR_FRACTION);
+    if (!(reference > 0)) return peaks;
+    return peaks.map(peak => Math.max(-1, Math.min(1, peak / reference)));
+}
+
+// What a media element's error code means, for the notice when WaveSurfer re-emits it without a message.
+const MEDIA_ERROR_MESSAGES = {
+    1: 'playback was aborted',
+    2: 'a network error interrupted the audio download',
+    3: 'the audio could not be decoded',
+    4: 'the audio format is not supported',
+};
+
 function vinylApp() {
     return {
         // WebSocket connection
@@ -163,6 +203,9 @@ function vinylApp() {
         playDuration: 0,
         playheadIdx: -1,        // index of the track under the playhead (-1 = gap / none)
         playerNotice: '',       // inline error when playback cannot start
+        playerInfo: '',         // muted note: the waveform plays the MP3 preview, not the WAV
+        _audioSource: null,     // {waveform, fileId, precise, peaks, duration, fellBack, settled} of the loaded audio
+        _restoreZoom: null,     // zoom to re-apply when a preview-fallback reload becomes ready
         playerBuffering: false,
         _pendingSeek: null,     // a seek made before the media element knew its length
         _auditionStop: null,    // one-shot stop time (s) for cut-point auditions
@@ -174,6 +217,8 @@ function vinylApp() {
         _pointerFocus: markRaw({ pending: false, byPointer: false, lastFocusIn: null, lastFocused: null }),
         waveform: null,
         waveformLoading: false,
+        previewPollIntervalMs: PREVIEW_POLL_INTERVAL_MS,   // instance fields so tests can shorten them
+        previewPollMaxMs: PREVIEW_POLL_MAX_MS,
         waveformRegions: null,
         currentZoom: 50,
 
@@ -2814,7 +2859,7 @@ function vinylApp() {
                     progressColor: '#1d4ed8',   // darker than waveColor: the played part is visible
                     cursorColor: '#1e40af',
                     height: 'auto',
-                    normalize: true,
+                    normalize: false,   // peaks arrive pre-scaled (scalePeaksToRecording)
                     barWidth: 2,
                     barGap: 1
                 }));
@@ -2823,9 +2868,22 @@ function vinylApp() {
                 // With MediaElement + provided peaks, load() resolves without
                 // fetching the audio — a later fetch failure only surfaces as
                 // an 'error' event, which must clear the loading spinner.
+                const waveform = this.waveform;
+                let uiBound = false;
+                // WaveSurfer re-emits EVERY media error here as emit('error', undefined) (network and
+                // aborted ones too) and so does a throw inside its load/ready path: only the media
+                // element's own code (still set at this point) says the WAV cannot be played.
                 this.waveform.on('error', (err) => {
                     console.error('Waveform error:', err);
+                    if (waveform !== this.waveform) return;
+                    const code = waveform.getMediaElement?.()?.error?.code;
+                    // A fallback in flight absorbs the twin of its own failure, whatever the code now says
+                    if ((code === 3 || code === 4 || this.fallbackInFlight(waveform)) && this.fallBackToPreview(waveform, fileId)) return;
                     this.waveformLoading = false;
+                    const message = (err && err.message) || err || MEDIA_ERROR_MESSAGES[code] || 'unknown';
+                    // On the preview already: the server may be why (source gone, preview not ready)
+                    if (this._audioSource?.waveform === waveform && !this._audioSource.precise) this.explainPreviewFailure(waveform, fileId, message);
+                    else this.playerNotice = 'Audio playback error: ' + message;
                 });
 
                 // Transport state follows the player's own events
@@ -2845,14 +2903,19 @@ function vinylApp() {
                     media.volume = this.playerVolume;
                     media.preload = 'metadata';   // stream on demand; 'auto' would buffer the whole recording on every rebuild
                     const mediaListeners = {
+                        // DECODE (3) / SRC_NOT_SUPPORTED (4) on the original WAV: retry once with the MP3 preview
+                        error: () => {
+                            this.playerBuffering = false;   // a failed load never finishes buffering
+                            const code = media.error?.code;
+                            if (code === 3 || code === 4) this.fallBackToPreview(waveform, fileId);
+                        },
                         loadedmetadata: () => this.applyPendingSeek(),
                         seeking: () => { this.playerBuffering = true; },
                         waiting: () => { this.playerBuffering = true; },
                         seeked: () => { this.playerBuffering = false; },
                         playing: () => { this.playerBuffering = false; },
                         pause: () => { this.playerBuffering = false; },
-                        ended: () => { this.playerBuffering = false; },
-                        error: () => { this.playerBuffering = false; }   // a failed load never finishes buffering
+                        ended: () => { this.playerBuffering = false; }
                     };
                     for (const [eventName, listener] of Object.entries(mediaListeners)) media.addEventListener(eventName, listener);
                     this.waveform.on('destroy', () => {
@@ -2877,13 +2940,18 @@ function vinylApp() {
                 this.waveform.on('ready', () => {
                     console.log('Waveform ready');
 
+                    // 'ready' fires again after a preview-fallback reload: bind DOM listeners only once.
+                    const firstReady = !uiBound;
+                    uiBound = true;
                     const duration = this.waveform.getDuration();
                     this.playDuration = duration;
+                    if (this.playTime > 0) this.seekTo(this.playTime);
                     const container = document.getElementById('waveform');
                     const containerWidth = container ? container.offsetWidth : 1000;
 
                     const calculatedZoom = containerWidth / duration;
-                    this.currentZoom = Math.max(1, Math.min(calculatedZoom, 200));
+                    this.currentZoom = this._restoreZoom || Math.max(1, Math.min(calculatedZoom, 200));
+                    this._restoreZoom = null;
                     this.waveform.zoom(this.currentZoom);
 
                     const openWaveformContextMenu = (e) => {
@@ -2906,8 +2974,10 @@ function vinylApp() {
                     };
 
                     // Add right-click handler for manual splits
-                    container.addEventListener('contextmenu', openWaveformContextMenu);
-                    container.addEventListener('mousedown', openWaveformContextMenu);
+                    if (firstReady) {
+                        container.addEventListener('contextmenu', openWaveformContextMenu);
+                        container.addEventListener('mousedown', openWaveformContextMenu);
+                    }
 
                     setTimeout(() => {
                         // A re-detect or Undo within these 100 ms replaced this waveform
@@ -2968,9 +3038,18 @@ function vinylApp() {
                 // If duration is missing or 0 (probe failed at upload), omit it
                 // so WaveSurfer falls back to fetching the file (slower but safe).
                 const knownDuration = peaksData.duration > 0 ? peaksData.duration : undefined;
-                await this.waveform.load(`/api/audio/${fileId}`, [peaksData.peaks], knownDuration);
+                // Browsers that cannot play WAV at all go straight to the MP3 preview.
+                const preciseOk = !!(media && media.canPlayType && media.canPlayType('audio/wav'));
+                const peaks = [scalePeaksToRecording(peaksData.peaks)];
+                // Raw: Alpine must not wrap the ~240k-element peaks in a proxy for WaveSurfer
+                this._audioSource = markRaw({ waveform, fileId, precise: preciseOk, peaks,
+                    duration: knownDuration, fellBack: false, settled: true, generation: 0 });
+                this.playerInfo = preciseOk ? '' : PREVIEW_AUDIO_NOTICE;
+                await this.waveform.load(this.audioUrl(fileId, preciseOk), peaks, knownDuration);
 
             } catch (error) {
+                // A fallback reload already took over this load's failure.
+                if (this._audioSource?.fellBack) return;
                 console.error('Waveform initialization failed:', error);
                 // A failure of a build that was replaced (another file, a newer waveform) concerns
                 // nothing on screen: no toast, no teardown, no fallback
@@ -2984,9 +3063,115 @@ function vinylApp() {
                 // The source itself is gone or changed (410/409 from _require_source): /api/audio
                 // refuses it too, so a fallback player could never play; the toast says why
                 if (SOURCE_REFUSED_STATUSES.has(error?.status)) return;
-                // So the recording can still be heard: the same URL the waveform would have played
+                // So the recording can still be heard: the MP3 preview URL, not the precise WAV the
+                // waveform plays (the WAV may be what failed; this URL never serves the source)
                 this.fallbackAudioUrl = `/api/audio/${fileId}`;
                 this.$nextTick?.(() => this.applyPlayerVolume());
+            }
+        },
+
+        /** True while a preview-fallback reload of this waveform is still loading */
+        fallbackInFlight(waveform) {
+            const source = this._audioSource;
+            return !!source && source.waveform === waveform && source.fellBack && !source.settled;
+        },
+
+        /** The waveform's audio URL: the original WAV (`precise`) or the preview served by default */
+        audioUrl(fileId, precise) {
+            return precise ? `/api/audio/${fileId}?precise=true` : `/api/audio/${fileId}`;
+        },
+
+        /**
+         * The original WAV failed to play: reload the MP3 preview once, keeping peaks, zoom,
+         * playhead and paused/playing state. Returns true when it took over the error.
+         * Never loops: an error on the preview URL falls through to the normal notice.
+         */
+        fallBackToPreview(waveform, fileId) {
+            const source = this._audioSource;
+            if (!source || source.waveform !== waveform || waveform !== this.waveform || fileId !== this.currentFileId) return false;
+            // The media element and WaveSurfer both report the same failure: absorb the twin while reloading.
+            if (source.fellBack && !source.settled) return true;
+            if (!source.precise) return false;
+            this.reloadPreview(waveform, fileId, source);
+            return true;
+        },
+
+        /**
+         * Load the MP3 preview into the waveform, keeping peaks, zoom, playhead and paused/playing
+         * state. Shared by the fallback from the WAV and the single retry once the server has the preview.
+         */
+        reloadPreview(waveform, fileId, source) {
+            source.precise = false;
+            source.fellBack = true;
+            source.settled = false;
+            source.generation++;   // a play() started on the earlier source is now stale
+            const resume = this.isPlaying;
+            this.isPlaying = false;
+            this.playerInfo = PREVIEW_AUDIO_NOTICE;
+            this.waveformLoading = true;
+            this._restoreZoom = this.currentZoom;
+            if (this.playTime > 0) this._pendingSeek = this.playTime;
+            const stale = () => waveform !== this.waveform || fileId !== this.currentFileId;
+            Promise.resolve(waveform.load(this.audioUrl(fileId, false), source.peaks, source.duration)).then(() => {
+                source.settled = true;
+                if (stale()) return;
+                this.playerNotice = '';   // a retry after a failure: the preview plays now
+                if (resume) this.startPlayback();
+            }, (err) => {
+                source.settled = true;
+                if (stale()) return;
+                console.error('Preview fallback failed:', err);
+                this.waveformLoading = false;
+                this.explainPreviewFailure(waveform, fileId, (err && err.message) || err || 'unknown');
+            });
+        },
+
+        /**
+         * The preview could not be played either. Show the player's own message at once, then ask the
+         * server why with a ranged GET of the non-waiting probe form of the preview URL (`wait=0`, which
+         * never waits; it starts the encode only if none ran yet, and never re-runs a failed one):
+         *  - not ok: its `detail` replaces the message (410 source gone, 409 changed, 503 preview not
+         *    ready or not made). A 503 with Retry-After means "still being prepared": poll every
+         *    `previewPollIntervalMs`, up to `previewPollMaxMs`;
+         *  - ok: the preview is there now (the encode finished meanwhile): reload it, once per waveform,
+         *    so this never loops;
+         *  - the probe itself failing keeps the player's message.
+         * Stops silently when the file is switched, the waveform rebuilt or destroyed.
+         */
+        async explainPreviewFailure(waveform, fileId, fallbackMessage) {
+            const source = this._audioSource;
+            const stale = () => waveform !== this.waveform || fileId !== this.currentFileId || this._audioSource !== source;
+            if (!source || stale() || source.probing) return;
+            const show = (message) => { if (!stale()) this.playerNotice = 'Audio playback error: ' + message; };
+            show(fallbackMessage);
+            source.probing = true;   // the error and its WaveSurfer twin must start one probe loop, not two
+            try {
+                const deadline = Date.now() + this.previewPollMaxMs;
+                for (;;) {
+                    let response;
+                    try {
+                        response = await fetch(this.audioUrl(fileId, false) + '?wait=0', { headers: { Range: 'bytes=0-1' } });
+                    } catch (err) {
+                        return;
+                    }
+                    if (stale()) return;
+                    if (response.ok) {
+                        if (source.settled && !source.previewRetried) {
+                            source.previewRetried = true;
+                            this.reloadPreview(waveform, fileId, source);
+                        }
+                        return;
+                    }
+                    const data = await response.json().catch(() => ({}));
+                    if (stale()) return;
+                    show(data.detail || `the server answered HTTP ${response.status}`);
+                    const stillPreparing = response.status === 503 && response.headers?.get?.('Retry-After');
+                    if (!stillPreparing || Date.now() >= deadline) return;
+                    await new Promise(resolve => setTimeout(resolve, this.previewPollIntervalMs));
+                    if (stale()) return;
+                }
+            } finally {
+                source.probing = false;
             }
         },
 
@@ -3326,13 +3511,16 @@ function vinylApp() {
         startPlayback() {
             const waveform = this.waveform;
             if (!waveform) return;
+            // A play() started on the WAV can reject after the preview fallback took over (and
+            // restarted playback itself); that says nothing about the preview.
+            const generation = this._audioSource?.generation;
             try {
                 const started = waveform.play();
                 if (started && typeof started.then === 'function') {
                     started.then(() => { if (this.waveform === waveform) this.playerNotice = ''; }, (err) => {
                         // A reply for a waveform that was destroyed or replaced meanwhile (file switch,
                         // re-analysis, Snap) says nothing about the current one
-                        if (this.waveform !== waveform) return;
+                        if (this.waveform !== waveform || this._audioSource?.generation !== generation) return;
                         // Pause (or a teardown) before playback started: the user's own action, not a failure
                         if (err && err.name === 'AbortError') return;
                         console.error('Playback failed:', err);
@@ -3622,6 +3810,7 @@ function vinylApp() {
         },
 
         destroyWaveform() {
+            this.waveformLoading = false;   // an in-flight initWaveform returns silently once stale
             if (this.waveform) {
                 this.waveform.destroy();
                 this.waveform = null;
@@ -3632,6 +3821,9 @@ function vinylApp() {
             this.playDuration = 0;
             this.playheadIdx = -1;
             this.playerNotice = '';
+            this.playerInfo = '';
+            this._audioSource = null;
+            this._restoreZoom = null;
             this.playerBuffering = false;
             this.waveformLoading = false;   // a build that was abandoned must not leave "Loading waveform..." up
             this.clearFallback();

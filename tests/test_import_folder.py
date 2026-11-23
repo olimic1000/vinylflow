@@ -107,6 +107,18 @@ def test_import_in_place_and_idempotent(env):
     assert _sha(src) == digest
 
 
+def test_reimporting_an_unchanged_file_clears_a_remembered_preview_failure(env):
+    """A failed MP3 encode is remembered per session; re-adding the same file reuses the
+    session, so it must forget the failure or the 503 would be permanent."""
+    imp, _, _ = env
+    _wav(imp / "side.wav")
+    entry = client.post("/api/import", json={"names": ["side.wav"]}).json()["files"][0]
+    api._preconvert_failed.add(entry["id"])
+    again = client.post("/api/import", json={"names": ["side.wav"]}).json()["files"][0]
+    assert again["id"] == entry["id"]
+    assert entry["id"] not in api._preconvert_failed
+
+
 def test_import_rejects_bad_names(env):
     imp, _, root = env
     _wav(imp / "ok.wav")

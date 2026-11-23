@@ -33,7 +33,8 @@ for (const click of ['togglePlay()', 'zoomIn()', 'zoomOut()']) {
     assert.ok(/:disabled="!playerReady"/.test(tag), click + ' needs a ready player');
 }
 // No waveform but the fallback: no empty box, no 0:00 readout, no "drag the regions" tip, no placeholder
-assert.ok(/<div id="waveform"[^>]*x-show="!fallbackAudioUrl"/.test(html), 'empty waveform box hidden');
+// (the #waveform sits in the loading-overlay wrapper, which carries the x-show so both hide together)
+assert.ok(/<div class="relative mb-6" x-show="!fallbackAudioUrl">\s*<div id="waveform"/.test(html), 'empty waveform box hidden');
 assert.ok(/x-show="waveform && !fallbackAudioUrl"[^>]*>[^<]*<\/span>|<span x-show="waveform"[^>]*formatClock/.test(html), 'readout');
 assert.ok(/x-show="!waveform && !waveformLoading && !fallbackAudioUrl"/.test(html), 'placeholder');
 assert.ok(/<p x-show="!fallbackAudioUrl" class="text-sm text-muted">💡 Tip/.test(html), 'tip hidden with the fallback');

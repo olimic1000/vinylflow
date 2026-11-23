@@ -7,6 +7,7 @@ Supports WAV and AIFF input, with FLAC, MP3, and AIFF output.
 """
 
 import os
+import re
 import uuid
 import shutil
 from pathlib import Path
@@ -21,7 +22,8 @@ import logging
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 from backend.security import SameOriginMiddleware
 from pydantic import BaseModel, Field
 
@@ -202,6 +204,11 @@ def _forget_envelope(file_id: str) -> None:
     a request awaiting the task gets 404."""
     _envelope_errors.pop(file_id, None)
     _cancel_task(_envelope_tasks.pop(file_id, None))
+    # The MP3 preview encode goes with it.  Cancelling stops waiting, not the ffmpeg thread: that
+    # finishes into its .part file, which preconvert_to_mp3 unlinks on cancel (and the session
+    # dir removal takes whatever is left).
+    _cancel_task(_preconvert_tasks.pop(file_id, None))
+    _preconvert_failed.discard(file_id)
 
 
 def cleanup_session(file_id: str) -> bool:
@@ -408,6 +415,14 @@ async def get_output_formats():
     }
 
 
+def _discard_part(part_path: Path) -> None:
+    """Best-effort removal of a half-written preview file."""
+    try:
+        part_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 async def preconvert_to_mp3(file_id: str, file_path: Path):
     """
     Convert audio to MP3 in background for faster waveform loading.
@@ -443,8 +458,55 @@ async def preconvert_to_mp3(file_id: str, file_path: Path):
                 f"Pre-converted {file_id} to MP3 ({mp3_path.stat().st_size // 1024 // 1024}MB)"
             )
         except Exception as e:
-            part_path.unlink(missing_ok=True)
+            _discard_part(part_path)
             print(f"MP3 conversion failed for {file_id}: {e}")
+        except BaseException:
+            # Cancelled (recording removed): CancelledError skips the handler above and the
+            # rename, so drop the half-written file here.  The ffmpeg thread may still be
+            # writing it; on POSIX the unlink is fine, on Windows it is retried by the session
+            # dir removal.
+            _discard_part(part_path)
+            raise
+
+
+# MP3 preview encodes, one task per Session, so the background prep and an on-demand
+# /api/audio request share a single ffmpeg run.  file_id -> Task
+_preconvert_tasks: dict = {}
+# Sessions whose encode ended without a full.mp3: later requests answer 503 at once instead of
+# re-running ffmpeg over a possibly 1.4 GB source.  A new Session (re-import) starts clean.
+_preconvert_failed: set = set()
+
+
+def start_preconvert(file_id: str, file_path: Path) -> Optional["asyncio.Task"]:
+    """Start (or join) the MP3 preview encode for a Session.
+
+    Like start_envelope: 404 for a recording that is gone.  The task never raises (a failed
+    encode is logged and leaves no full.mp3) and is dropped from the registry when it ends.
+    A failed encode is remembered per session (_preconvert_failed): this then returns None
+    instead of running ffmpeg over the source again, whoever asks (prep or a request); a
+    re-import of the file clears it.  Callers must cope with None."""
+    if session_store.get(file_id) is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    if file_id in _preconvert_failed:
+        return None
+    task = _preconvert_tasks.get(file_id)
+    if task is None:
+        task = asyncio.create_task(preconvert_to_mp3(file_id, file_path))
+        _preconvert_tasks[file_id] = task
+
+        def _done(finished: "asyncio.Task") -> None:
+            if _preconvert_tasks.get(file_id) is not finished:
+                return   # forgotten: the recording was removed
+            _preconvert_tasks.pop(file_id, None)
+            if finished.cancelled():
+                return
+            if finished.exception() is not None:
+                print(f"MP3 preview task failed for {file_id}: {finished.exception()}")
+            if finished.exception() is not None or not get_session_path(file_id, "full.mp3").exists():
+                _preconvert_failed.add(file_id)
+
+        task.add_done_callback(_done)
+    return task
 
 
 # Energy envelope (per-frame RMS dBFS), computed once per Session in the
@@ -455,8 +517,41 @@ _envelope_tasks: dict = {}
 _envelope_errors: dict = {}  # file_id -> message of the last failed scan (cleared on success)
 
 
+def _write_cache_atomically(cache_path: Path, write) -> None:
+    """Write a session cache via a temp file + atomic rename so a reader never
+    sees a half-written file.  Best-effort: the session dir may have been
+    removed while we were decoding."""
+    part_path = cache_path.with_name(f"{cache_path.stem}.{uuid.uuid4().hex[:8]}.part")
+    try:
+        with open(part_path, "wb") as f:
+            write(f)
+        os.replace(part_path, cache_path)
+    except OSError:
+        part_path.unlink(missing_ok=True)
+
+
+def _decode_and_cache(file_id: str, file_path: Path):
+    """Blocking: the one decode per recording.  Writes envelope.npy and
+    peaks_v2.json together and returns ``(envelope, peaks)``.  Two racing
+    callers write identical deterministic content, so the atomic renames
+    make that harmless."""
+    import numpy as np
+
+    db, peaks = audio_processor.compute_envelope_and_peaks(file_path)
+    if not get_session_path(file_id).is_dir():
+        # The recording was removed while it decoded.  The writes below would fail with an
+        # OSError anyway; this makes the case explicit and skips the work.
+        return db, peaks
+    _write_cache_atomically(get_session_path(file_id, "envelope.npy"), lambda f: np.save(f, db))
+    _write_cache_atomically(
+        get_session_path(file_id, "peaks_v2.json"), lambda f: f.write(json.dumps(peaks).encode("utf-8"))
+    )
+    return db, peaks
+
+
 def _load_or_compute_envelope(file_id: str, file_path: Path):
-    """Blocking: load envelope.npy if cached, else decode and cache it."""
+    """Blocking: load envelope.npy if cached, else decode and cache it
+    (together with the waveform peaks, from the same decode)."""
     import numpy as np
 
     cache_path = get_session_path(file_id, "envelope.npy")
@@ -466,19 +561,7 @@ def _load_or_compute_envelope(file_id: str, file_path: Path):
         except Exception:
             cache_path.unlink(missing_ok=True)  # corrupt cache: recompute
 
-    db = audio_processor.compute_envelope(file_path)
-
-    # Write via a temp file + atomic rename so a reader never sees a
-    # half-written cache.  Caching is best-effort (the session dir may have
-    # been removed while we were decoding).
-    part_path = get_session_path(file_id, f"envelope.{uuid.uuid4().hex[:8]}.part")
-    try:
-        with open(part_path, "wb") as f:
-            np.save(f, db)
-        os.replace(part_path, cache_path)
-    except OSError:
-        part_path.unlink(missing_ok=True)
-    return db
+    return _decode_and_cache(file_id, file_path)[0]
 
 
 async def _run_envelope(file_id: str, file_path: Path):
@@ -556,7 +639,10 @@ async def _prepare_source(file_id: str, file_path: Path) -> None:
         if session_store.get(file_id) is None:
             return  # removed while it waited
         envelope = start_envelope(file_id, file_path)
-        await asyncio.gather(preconvert_to_mp3(file_id, file_path), envelope, return_exceptions=True)
+        # shield: this prep being cancelled must not cancel an encode a request is waiting on
+        preview_task = start_preconvert(file_id, file_path)   # None: it already failed, not re-run
+        pending = [envelope] if preview_task is None else [asyncio.shield(preview_task), envelope]
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def _register_source(
@@ -757,6 +843,7 @@ async def import_files(req: ImportRequest):
             replaces = None
             if existing is not None:
                 if not _source_changed(existing, real.stat()):
+                    _preconvert_failed.discard(existing.id)   # re-adding a file retries its preview
                     imported.append({
                         "id": existing.id,
                         "status": _session_status(existing),
@@ -1185,10 +1272,18 @@ async def preview_track(
         raise HTTPException(status_code=500, detail=f"Preview generation failed: {str(e)}")
 
 
+def _cached_peaks_response(cache_path: Path):
+    """Stream the cached peaks file as is: at 10 ms per bin it is ~13 MB for a 4 h album, and
+    parsing then re-serialising that would block the event loop.  The file is replaced
+    atomically, so a reader never sees a partial one."""
+    from fastapi.responses import FileResponse
+
+    return FileResponse(cache_path, media_type="application/json")
+
+
 @app.get("/api/waveform-peaks/{file_id}")
 async def get_waveform_peaks(file_id: str):
-    """Generate waveform peaks for visualization."""
-    import numpy as np
+    """Equal-width waveform peaks (<= 10 ms per bin) for visualization."""
 
     session = session_store.get(file_id)
     if session is None:
@@ -1197,64 +1292,27 @@ async def get_waveform_peaks(file_id: str):
 
     file_path = session.source_audio
 
-    peaks_cache_path = get_session_path(file_id, "peaks.json")
+    # peaks_v2.json replaces the old peaks.json (3,000 bins per recording, which
+    # lost sub-second timing on albums); an old cache is simply ignored.
+    peaks_cache_path = get_session_path(file_id, "peaks_v2.json")
     if peaks_cache_path.exists():
-        with open(peaks_cache_path, "r") as f:
-            cached_data = json.load(f)
-            return JSONResponse(content=cached_data)
+        return _cached_peaks_response(peaks_cache_path)
 
     try:
-        # text=False — we want raw PCM bytes on stdout, not utf-8 text.
-        # Full-file decode, so run it off the event loop.
-        result = await asyncio.to_thread(
-            run_ffmpeg,
-            [
-                "-i",
-                str(file_path),
-                "-f",
-                "s16le",
-                "-acodec",
-                "pcm_s16le",
-                "-ac",
-                "1",
-                "-ar",
-                "8000",
-                "-",
-            ],
-            text=False,
-            capture_output=True,
-            check=True,
-        )
-        # int32 before abs: abs(-32768) overflows back to -32768 in int16.
-        audio_data = np.frombuffer(result.stdout, dtype=np.int16).astype(np.int32)
-
-        target_peaks = 3000
-        samples_per_peak = max(1, len(audio_data) // target_peaks)
-
-        full = (len(audio_data) // samples_per_peak) * samples_per_peak
-        peaks = []
-        if full:
-            peaks = (
-                np.abs(audio_data[:full]).reshape(-1, samples_per_peak).max(axis=1)
-                / 32768.0
-            ).tolist()
-        if full < len(audio_data):
-            peaks.append(float(np.abs(audio_data[full:]).max() / 32768.0))
-
-        if len(peaks) == 0:
-            peaks = [0.0]
-
-        response_data = {
-            "peaks": peaks,
-            "length": len(peaks),
-            "duration": session.source_duration,
-        }
-
-        with open(peaks_cache_path, "w") as f:
-            json.dump(response_data, f)
+        # Prep's decode writes the peaks too: wait for it (or its cache) rather than
+        # starting a second decode.  Decoding here is only the rare leftover: the envelope
+        # was cached (or loaded) but its peaks write failed.  Sessions live in memory, so
+        # no older on-disk session lacks peaks; concurrent requests in that case each decode,
+        # and a recording removed during it still gets this reply (nothing is written).
+        await get_envelope(session)
+        if peaks_cache_path.exists():
+            return _cached_peaks_response(peaks_cache_path)
+        _, response_data = await asyncio.to_thread(_decode_and_cache, file_id, file_path)
 
         return JSONResponse(content=response_data)
 
+    except HTTPException:
+        raise   # 404: the recording was removed while waiting for its decode
     except CalledProcessError as e:
         stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
         raise HTTPException(status_code=500, detail=f"FFmpeg failed: {stderr}")
@@ -1262,41 +1320,176 @@ async def get_waveform_peaks(file_id: str):
         raise HTTPException(status_code=500, detail=f"Peaks generation failed: {str(e)}")
 
 
-@app.get("/api/audio/{file_id}")
-async def get_audio_file(file_id: str):
-    """Serve audio file for waveform playback."""
-    from fastapi.responses import FileResponse
+# Browsers ask for long byte ranges and hang up after a few MB: Chromium loads with an open-ended
+# `bytes=N-` and seeks with closed ones to the end of the file, WebKit (the macOS app) always
+# uses closed ones.  Starlette's FileResponse keeps reading to the end of the range (newer
+# versions >= 1.8 also stop when the client disconnects, older installs do not), so a seek would
+# read up to the rest of a 1.4 GB recording.  Every range longer than this is answered with
+# its first AUDIO_RANGE_CAP_BYTES bytes as a 206 with a matching Content-Range; browsers just ask
+# for the next piece.
+AUDIO_RANGE_CAP_BYTES = 8 * 1024 * 1024
+_RANGE_UNIT = re.compile(r"^\s*bytes\s*=(.*)$", re.IGNORECASE | re.DOTALL)
+# Range numbers are judged by value, not by how they are written: leading zeros are dropped first.
+# A start longer than _MAX_RANGE_DIGITS is left to Starlette unparsed (a 5000-digit int made int()
+# and then the response fail with a 500).  An end that long is past any file, so it reads as the end
+# of the file (Starlette would clamp it there too) and is capped like an open range.
+_MAX_RANGE_DIGITS = 18
+_RANGE_ITEM = re.compile(r"^(\d+)\s*-\s*(\d*)$")
+_SUFFIX_RANGE_ITEM = re.compile(r"^-\s*\d+$")
 
+# How long a request for the MP3 preview waits for the encode.  ffmpeg encodes ~150x real time
+# (a 40-minute side takes ~15 s), so 180 s covers a multi-hour album.  The wait is on the
+# encode itself: an on-demand request does not queue behind _prep_slots (the user is waiting on
+# this file), so it only ever waits for its own encode.  The ``wait=0`` probe also starts an
+# encode outside PREP_CONCURRENCY; that is bounded by the user opening files.  After that the client is told to retry;
+# the encode keeps running.
+AUDIO_PREVIEW_WAIT_S = 180.0
+PREVIEW_PREPARING_DETAIL = "The audio preview is still being prepared. Try again in a moment."
+PREVIEW_RETRY_AFTER_S = "3"   # Retry-After of the "still being prepared" 503 (the client polls on it)
+
+
+def _cap_long_ranges(scope: dict, file_size: int, cap: Optional[int] = None) -> dict:
+    """A copy of the ASGI scope whose Range header has every item longer than the cap closed to
+    its first ``cap`` bytes (default AUDIO_RANGE_CAP_BYTES).
+
+    Only the first Range header is kept (that is the one Starlette's Headers.get reads anyway, so
+    a later duplicate cannot sneak an uncapped range past the rewrite).  Items are parsed here:
+    empty ones (``bytes=100-,``, ``bytes=0-,-``) are dropped, which Starlette treats as one open
+    range.  Suffix items (``-N``, the last N bytes) are left as they are: they are bounded by N
+    and browsers use them only for small tail probes.  An item starting at or past the end of
+    the file is left for Starlette to answer 416.  If the header cannot be parsed, or nothing
+    needs changing, the scope is returned for Starlette to handle (the original is never mutated).
+
+    This bounds what browsers send (single ``N-`` / ``N-M`` items), not every possible header: odd
+    non-browser forms (``bytes=+5-``, ``bytes=1_0-``, many small ranges, suffix ranges) are parsed
+    by Starlette itself and are not capped."""
+    cap = AUDIO_RANGE_CAP_BYTES if cap is None else cap
+    headers = scope["headers"]
+    range_positions = [index for index, (name, _) in enumerate(headers) if name == b"range"]
+    if not range_positions:
+        return scope
+    only_first = [pair for index, pair in enumerate(headers) if index not in range_positions[1:]]
+    deduplicated = scope if len(range_positions) == 1 else {**scope, "headers": only_first}
+    unit_match = _RANGE_UNIT.match(headers[range_positions[0]][1].decode("latin-1"))
+    if unit_match is None:
+        return deduplicated
+    items = []
+    for raw_item in unit_match.group(1).split(","):
+        item = raw_item.strip()
+        if item in ("", "-"):
+            continue
+        closed = _RANGE_ITEM.match(item)
+        if closed is not None:
+            try:
+                start_digits = closed.group(1).lstrip("0") or "0"
+                if len(start_digits) > _MAX_RANGE_DIGITS:
+                    return deduplicated
+                first = int(start_digits)
+                end_digits = closed.group(2).lstrip("0") or ("0" if closed.group(2) else "")
+                open_ended = not end_digits or len(end_digits) > _MAX_RANGE_DIGITS
+                last = file_size - 1 if open_ended else int(end_digits)
+            except ValueError:   # defensive: the regex already limits the digits
+                return deduplicated
+            if first < file_size and min(last, file_size - 1) - first + 1 > cap:
+                item = f"{first}-{first + cap - 1}"
+        elif _SUFFIX_RANGE_ITEM.match(item) is None:
+            return deduplicated   # not a shape we know: leave it to Starlette
+        items.append(item)
+    if not items:
+        return deduplicated
+    rewritten = f"bytes={','.join(items)}".encode("latin-1")
+    if rewritten == headers[range_positions[0]][1]:
+        return deduplicated
+    new_headers = [(name, rewritten if name == b"range" else value) for name, value in only_first]
+    return {**scope, "headers": new_headers}
+
+
+class _CappedRangeFileResponse(FileResponse):
+    """FileResponse that caps long Range requests (see AUDIO_RANGE_CAP_BYTES).  The header is
+    rewritten before Starlette sees it, so 206, Content-Range, Content-Length, 416 and If-Range
+    handling stay Starlette's.  Needs ``stat_result`` (the caller stats once, off the loop)."""
+
+    async def __call__(self, scope, receive, send):
+        if self.stat_result is not None:
+            scope = _cap_long_ranges(scope, self.stat_result.st_size)
+        await super().__call__(scope, receive, send)
+
+
+async def _ensure_preview(session, wait: bool = True) -> Path:
+    """The session's MP3 preview, waiting for its encode when it does not exist yet.
+
+    503 when the encode is still running after AUDIO_PREVIEW_WAIT_S (or at once with
+    ``wait=False``: the status probe never blocks; it still starts an encode nobody started,
+    with a Retry-After header) or when it failed (remembered per session, so it is not re-run).
+    Only the MP3 is ever returned: the source may be a WAV the browser just failed to play, or
+    an AIFF."""
+    mp3_path = get_session_path(session.id, "full.mp3")
+    if mp3_path.exists():
+        return mp3_path
+    preview_failed = HTTPException(
+        status_code=503, detail="The audio preview could not be made for this recording. "
+        "Remove it from the queue and add it again to retry.")
+    preparing = HTTPException(
+        status_code=503, detail=PREVIEW_PREPARING_DETAIL, headers={"Retry-After": PREVIEW_RETRY_AFTER_S})
+    if session.id in _preconvert_failed:
+        raise preview_failed
+    task = start_preconvert(session.id, session.source_audio)
+    if not wait:
+        raise preparing
+    try:
+        # shield: a client hanging up (or timing out here) must not cancel the shared encode.
+        await asyncio.wait_for(asyncio.shield(task), AUDIO_PREVIEW_WAIT_S)
+    except asyncio.TimeoutError:
+        raise preparing
+    except asyncio.CancelledError:
+        if task.cancelled():
+            raise HTTPException(status_code=404, detail="File not found")  # recording removed
+        raise  # the request itself was cancelled
+    if not mp3_path.exists():
+        raise preview_failed
+    return mp3_path
+
+
+@app.get("/api/audio/{file_id}")
+async def get_audio_file(file_id: str, precise: bool = False, wait: bool = True):
+    """Stream the source WAV for precise editing, or the MP3 preview otherwise.
+
+    ``wait=0`` is the status probe for the preview: it never waits for the encode (see _ensure_preview)."""
     session = session_store.get(file_id)
     if session is None:
         raise HTTPException(status_code=404, detail="File not found")
     _require_source(session)
 
-    # Prefer the background-preconverted MP3: ~25MB streamed instead of a
-    # multi-hundred-MB WAV. The choice is pinned on the first request so the
-    # same URL never flips from WAV to MP3 bytes mid-playback.
-    if session.playback_audio is None or not session.playback_audio.exists():
-        mp3_path = get_session_path(file_id, "full.mp3")
-        session.playback_audio = mp3_path if mp3_path.exists() else session.source_audio
-    file_path = session.playback_audio
-
-    if file_path.suffix.lower() == ".mp3":
+    if precise and session.source_audio.suffix.lower() == ".wav":
+        # Cut-point playback uses the same source as the waveform, removing
+        # MP3 seeking/decoder behavior from this path. FileResponse streams
+        # byte ranges; the album is not decoded into browser JS memory.
+        file_path = session.source_audio
+        media_type = "audio/wav"
+        filename = session.source_filename
+    else:
+        # Browser-compatible preview only: this URL is the fallback for a source the browser
+        # cannot play (AIFF always, a WAV on some builds), so it never serves the source and
+        # never pins it.  Pin the MP3 so an in-progress range request keeps its bytes.
+        pinned = session.playback_audio
+        if pinned is None or pinned.suffix.lower() != ".mp3" or not pinned.exists():
+            session.playback_audio = await _ensure_preview(session, wait)
+        file_path = session.playback_audio
         media_type = "audio/mpeg"
         filename = Path(session.source_filename).stem + ".mp3"
-    else:
-        ext = file_path.suffix.lower()
-        media_types = {
-            ".wav": "audio/wav",
-            ".aiff": "audio/aiff",
-            ".aif": "audio/aiff",
-        }
-        media_type = media_types.get(ext, "audio/wav")
-        filename = session.source_filename
 
     # filename= lets Starlette RFC-5987-encode non-latin-1 characters
     # (e.g. "Björk – Debut") — a hand-built header crashes on them.
-    return FileResponse(
+    try:
+        # One stat, off the event loop; the response then neither stats again nor blocks.
+        # Starlette's worker pool (the one FileResponse reads with), not asyncio's default
+        # executor: on-demand MP3 encodes hold those threads for their whole run.
+        stat_result = await run_in_threadpool(os.stat, file_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=410, detail="The audio file is no longer available.")
+    return _CappedRangeFileResponse(
         file_path,
+        stat_result=stat_result,
         media_type=media_type,
         filename=filename,
         content_disposition_type="inline",
