@@ -491,8 +491,8 @@ const fullRelease = (id, tracks = [track('A1', '5:00'), track('A2', '6:00')]) =>
         return html.slice(start, html.indexOf('<!-- Waveform Visualization', start));
     }).join('\n');
     const expressions = [...blocks.matchAll(/\s(?:x-[\w:.-]+|@[\w:.-]+|:[\w-]+)="([^"]*)"/g)].map(m => m[1]);
-    // 'result', 'preset' and 'g' are x-for loop variables
-    const keywords = new Set(['true', 'false', 'null', 'undefined', 'Math', 'result', 'preset', 'g', 'event', '$event', 'this', 'x']);
+    // 'result', 'preset', 'g', 'donor', 'source' and 'sourceIndex' are x-for loop variables
+    const keywords = new Set(['true', 'false', 'null', 'undefined', 'Math', 'result', 'preset', 'g', 'donor', 'source', 'sourceIndex', 'event', '$event', 'this', 'x']);
     const fresh = vinylApp();
     const unknown = new Set();
     for (const expression of expressions) {

@@ -158,3 +158,24 @@ def test_a_process_request_cannot_switch_the_lookup_on_for_the_pipeline(monkeypa
     monkeypatch.setattr(api.config, "album_description", False)
     asyncio.run(api.process_file_background(process_request(album_description=True)))
     assert [spec.album_description for spec in captured] == [False]
+
+
+def test_release_without_images_key_does_not_refetch_from_discogs():
+    """discogs_client refreshes a Release (one more, unthrottled request) when an attribute's key is
+    missing from its payload; ``images`` must come from the raw payload dict instead."""
+    import json
+    from pathlib import Path
+
+    import discogs_client
+    from metadata_handler import DiscogsRelease
+
+    data = json.loads((Path(__file__).parent / "fixtures" / "discogs_release_848848.json").read_text())
+    data.pop("images", None)
+    raw = discogs_client.Release(discogs_client.Client("VinylFlow-tests"), data)
+    refreshes = []
+    raw.refresh = lambda *_: refreshes.append(1)
+
+    release = DiscogsRelease(raw)
+
+    assert refreshes == []
+    assert release.images == [] and release.cover_url is None

@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 
 import logging
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, HTTPException, Path as PathParam, Query, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
@@ -48,7 +48,7 @@ from track_boundaries import (
     music_span,
     smooth_envelope,
 )
-from metadata_handler import MetadataHandler
+from metadata_handler import MetadataHandler, ReleaseNotFound
 from backend.sessions import (
     OutputSpec,
     ProgressEvent,
@@ -1554,6 +1554,48 @@ async def get_release_description(release_id: int):
         metadata_handler.album_descriptions.lookup, release.id, getattr(release, "master_id", None)
     )
     return {"status": result.status, "text": result.text, "title": result.title, "url": result.url}
+
+
+# Discogs release ids are 1-10 digits (the frontend's parseDiscogsRelease rule)
+MAX_DISCOGS_RELEASE_ID = 9_999_999_999
+
+
+@app.get("/api/release/{release_id}/length-donors")
+async def get_length_donors(release_id: int = PathParam(ge=1, le=MAX_DISCOGS_RELEASE_ID)):
+    """Other pressings (same master) whose track lengths match this release.
+
+    Runs in a worker thread (rate-limited Discogs fetches); progress goes out
+    over the WebSocket as ``donor_progress`` messages.  Results are cached per
+    release by the handler.  The reply is ``{donors, checked, versions}``: how many versions were
+    examined of how many the master has (None if unknown), so "none found" can say how far it looked.
+    """
+    loop = asyncio.get_running_loop()
+
+    def on_progress(checked: int, budget: int, found: int) -> None:
+        asyncio.run_coroutine_threadsafe(
+            broadcast_message({
+                "type": "donor_progress",
+                "release_id": release_id,
+                "checked": checked,
+                "budget": budget,
+                "found": found,
+            }),
+            loop,
+        )
+
+    try:
+        report = await asyncio.to_thread(
+            metadata_handler.find_length_donor_report, release_id, on_progress=on_progress
+        )
+    except ReleaseNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("length-donors lookup failed for %s", release_id)
+        raise HTTPException(
+            status_code=502,
+            detail="Couldn't reach Discogs to look for other pressings. Try again in a moment.",
+        )
+    return report
 
 
 @app.post("/api/process")

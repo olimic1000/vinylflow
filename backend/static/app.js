@@ -7,6 +7,8 @@
 const MAX_TOASTS = 5;
 // Most tracks one guided detection places; must match MAX_EXPECTED_TRACKS in backend/api.py
 const MAX_GUIDED_TRACKS = 99;
+// Release fetches one lookup for other pressings may spend at most (mirrors find_length_donors' max_fetches)
+const DONOR_FETCH_BUDGET = 12;
 // How long an Undo toast stays (ms)
 const UNDO_TOAST_MS = 8000;
 // Discogs results per search (one page; each card's tracklist loads separately)
@@ -253,6 +255,10 @@ function vinylApp() {
         detailsSettled: false,    // True once every result's tracklist load finished or failed
         searchSeq: 0,             // Bumped by every search and file switch: stale replies are dropped
         _detailInflight: {},      // `${searchSeq}:${releaseId}` -> promise of a tracklist load in progress
+        // Borrow lengths from other pressings: the lookup for one release; `_donorSeq` drops stale replies
+        donors: { releaseId: null, status: 'idle', checked: 0, versions: null, budget: DONOR_FETCH_BUDGET, list: [], error: '' },
+        _donorSeq: 0,
+        _borrowCount: 0,          // Numbers each applied borrow, so its Undo can tell whether its copy is still selected
         _pendingPickId: null,     // Card clicked while its tracklist loads; a later pick clears it
         _releaseIdCall: 0,        // Bumped per "exact pressing" lookup; only the latest resets releaseIdLoading
         selectedRelease: null,
@@ -263,6 +269,7 @@ function vinylApp() {
         selectedSides: [],        // Side keys ('A', 'B', '' = unlettered)
         suggestedSides: [],       // Sides auto-picked when the release was selected
         sidesSuggestionReason: '',   // 'length' | 'default' | 'single' | '' (how suggestedSides was chosen)
+        sidesTouched: false,      // The user picked sides (chip or preset) since the release was selected
 
         // Guided detection and hand edits
         expectedBoundaries: [],   // Seconds where Discogs lengths put each break (ghost markers)
@@ -454,6 +461,13 @@ function vinylApp() {
             console.log('WebSocket message:', data);
 
             switch (data.type) {
+                case 'donor_progress':
+                    if (this.donors.status === 'searching' && Number(data.release_id) === Number(this.donors.releaseId)) {
+                        this.donors.checked = data.checked;
+                        if (data.budget > 0) this.donors.budget = data.budget;
+                    }
+                    break;
+
                 case 'scan_complete':
                     this.applyScan(data.file_id, data);
                     break;
@@ -1085,6 +1099,7 @@ function vinylApp() {
                 selectedSides: [...this.selectedSides],
                 suggestedSides: [...this.suggestedSides],
                 sidesSuggestionReason: this.sidesSuggestionReason,
+                sidesTouched: this.sidesTouched,
                 expectedBoundaries: [...this.expectedBoundaries],
                 boundariesEdited: this.boundariesEdited
             };
@@ -1094,6 +1109,7 @@ function vinylApp() {
         restoreEdits(snapshot) {
             this.detectedTracks = snapshot.detectedTracks.map(track => ({ ...track }));
             this.selectedRelease = snapshot.selectedRelease;
+            this.resetDonors();   // the list was fetched for another release (or another copy of it)
             if (snapshot.selectedRelease) this._pendingPickId = null;   // a card still loading must not replace it
             // The preview is keyed by release id: load it for a different release the Undo put back
             if (snapshot.selectedRelease && snapshot.selectedRelease.id !== this.albumDescription.releaseId) {
@@ -1105,6 +1121,7 @@ function vinylApp() {
             this.selectedSides = [...snapshot.selectedSides];
             this.suggestedSides = [...snapshot.suggestedSides];
             this.sidesSuggestionReason = snapshot.sidesSuggestionReason;
+            this.sidesTouched = !!snapshot.sidesTouched;
             this.expectedBoundaries = [...snapshot.expectedBoundaries];
             this.boundariesEdited = snapshot.boundariesEdited;
             this.boundaryEditCount++;   // an Undo replaces the boundaries outside detection
@@ -1116,12 +1133,14 @@ function vinylApp() {
         clearEditState() {
             this.detectedTracks = [];
             this.selectedRelease = null;
+            this.resetDonors();
             this.trackCountMismatch = false;
             this.trackMappingReversed = false;
             this.customMapping = [];
             this.selectedSides = [];
             this.suggestedSides = [];
             this.sidesSuggestionReason = '';
+            this.sidesTouched = false;
             this.resetEditState();
         },
 
@@ -1709,7 +1728,16 @@ function vinylApp() {
                 return;
             }
             this.selectedRelease = release;
+            this.resetDonors();
             this.loadAlbumDescription();
+            this.applySideSuggestion(release);
+
+            this.resetMappingToTargets();
+            this.afterTargetsChanged();
+        },
+
+        /** Pick the sides this recording most likely holds (by its length) for `release` and select them */
+        applySideSuggestion(release) {
             const suggestion = this.suggestSides(
                 release,
                 this.currentFile?.musicDuration || this.currentFile?.duration
@@ -1717,9 +1745,7 @@ function vinylApp() {
             this.selectedSides = suggestion.sides;
             this.suggestedSides = suggestion.sides;
             this.sidesSuggestionReason = suggestion.reason;
-
-            this.resetMappingToTargets();
-            this.afterTargetsChanged();
+            this.sidesTouched = false;
         },
 
         /**
@@ -1774,6 +1800,7 @@ function vinylApp() {
             // An export keeps the session busy: the backend would reject it and report the export as failed
             if (this.analyzing || this.currentFileExporting) return;
             this.selectedSides = this.sideChips.map(g => g.side).filter(key => sides.includes(key));
+            this.sidesTouched = true;   // even a pick equal to the default is the user's own choice
             this.resetMappingToTargets();
             this.afterTargetsChanged();
         },
@@ -1793,6 +1820,7 @@ function vinylApp() {
                 : [...this.selectedSides, side];
             // Keep release order regardless of click order
             this.selectedSides = this.sideChips.map(g => g.side).filter(key => wanted.includes(key));
+            this.sidesTouched = true;
 
             this.resetMappingToTargets();
             this.afterTargetsChanged();
@@ -2115,10 +2143,12 @@ function vinylApp() {
             // an export of this recording needs its release, and selectRelease is refused meanwhile
             if (this.analyzing || this.currentFileExporting) return;
             this.selectedRelease = null;
+            this.resetDonors();
             this._pendingPickId = null;   // a card still loading must not bring a release back
             this.selectedSides = [];
             this.suggestedSides = [];
             this.sidesSuggestionReason = '';
+            this.sidesTouched = false;
             this.releaseIdLoading = false;   // a pasted lookup in flight is dropped (its call token guards the reset)
             this.trackMappingReversed = false;
             this.trackCountMismatch = false;
@@ -2168,6 +2198,244 @@ function vinylApp() {
             } catch (error) {
                 console.warn('Scan status unavailable:', error);
             }
+        },
+
+        // ---- Borrow track lengths from another pressing ----------------
+
+        /** Forget the donor list and any lookup in flight (the release, the file or the tracks changed) */
+        resetDonors() {
+            this._donorSeq++;
+            this.donors = { releaseId: null, status: 'idle', checked: 0, versions: null, budget: DONOR_FETCH_BUDGET, list: [], error: '' };
+        },
+
+        /** Offer borrowing when the chosen sides lack some lengths */
+        get showBorrowLengths() {
+            return !!this.selectedRelease && this.targetTracks.length > 0 &&
+                this.releaseDurationInfo({ tracks: this.targetTracks }).status !== 'full';
+        },
+
+        get borrowLengthsMessage() {
+            const info = this.releaseDurationInfo({ tracks: this.targetTracks });
+            return info.status === 'none'
+                ? 'This release has no track lengths'
+                : `Only ${info.withDuration}/${info.total} tracks have lengths`;
+        },
+
+        get donorProgressText() {
+            return `Checking other pressings… (${this.donors.checked} of up to ${this.donors.budget})`;
+        },
+
+        /** Every pressing the selected release's lengths were borrowed from, in order ({release_id, label, year, country}) */
+        get lengthsBorrowedFrom() {
+            return this.selectedRelease?.lengthsBorrowedFrom || [];
+        },
+
+        /**
+         * The lookup's donors recomputed against the release as it is now, for the chosen sides:
+         * `matched` = lengths the donor still supplies for chosen-side tracks that have none,
+         * `missing` = chosen-side tracks without a length.  Donors that fill nothing are dropped
+         * and the rest sorted by fills (the backend's order breaks ties), so a list fetched before
+         * a borrow, a hand edit or a side change never shows stale counts.
+         */
+        get visibleDonors() {
+            if (!this.selectedRelease) return [];
+            const missingIndexes = new Set(this.targetTracks
+                .filter(track => this.parseTrackDuration(track.duration) === null)
+                .map(track => track.releaseIdx));
+            const chosenIndexes = new Set(this.targetTracks.map(track => track.releaseIdx));
+            // Tracks (server indexes) of the chosen sides only; without the lists, the server's totals
+            const countChosen = (indexes, total) => Array.isArray(indexes)
+                ? indexes.filter(index => chosenIndexes.has(Number(index))).length
+                : total;
+            return this.donors.list
+                .map((donor, order) => {
+                    const matched = Object.entries(donor.lengths || {}).filter(([key, length]) =>
+                        missingIndexes.has(Number(key)) && this.parseTrackDuration(length) !== null).length;
+                    return {
+                        donor: {
+                            ...donor, matched, missing: missingIndexes.size,
+                            compared: countChosen(donor.compared_indexes, donor.compared),
+                            disagree: countChosen(donor.disagree_indexes, donor.disagree)
+                        },
+                        order
+                    };
+                })
+                .filter(entry => entry.donor.matched > 0)
+                // Donors whose lengths agree with the release's own come first, by the `disagree` count
+                // recounted above for the chosen sides (from the server's per-track indexes: only the
+                // server knows the lengths of tracks this release already has)
+                .sort((a, b) => (a.donor.disagree > 0) - (b.donor.disagree > 0)
+                    || b.donor.matched - a.donor.matched || a.order - b.order)
+                .map(entry => entry.donor);
+        },
+
+        /** "fills 4 of 5 missing": the lengths this pressing can supply, out of the lengths the release lacks */
+        donorFillText(donor) {
+            return `fills ${donor.matched} of ${donor.missing} missing`;
+        },
+
+        /** Muted note on a donor whose lengths differ from the ones this release already has; '' when none do */
+        donorDisagreeText(donor) {
+            if (!(donor?.disagree > 0)) return '';
+            return `Lengths differ from this release on ${donor.disagree} of ${donor.compared} track${donor.compared === 1 ? '' : 's'}`;
+        },
+
+        /** Said when no pressing fills anything: how far the lookup got, so a spent budget is visible */
+        get donorEmptyText() {
+            const checked = this.donors.checked;
+            if (!(checked > 0)) return 'No other pressing has the missing lengths.';
+            const of = this.donors.versions > checked ? ` (of ${this.donors.versions})` : '';
+            return checked === 1
+                ? `The 1 other pressing checked${of} doesn't have the missing lengths.`
+                : `No other pressing has the missing lengths among the ${checked} checked${of}.`;
+        },
+
+        /** The newest pressing this release's lengths were borrowed from (no Array.prototype.at: WKWebView before Safari 15.4) */
+        lastBorrowedFrom(release) {
+            const sources = release?.lengthsBorrowedFrom || [];
+            return sources[sources.length - 1];
+        },
+
+        borrowedLabel(borrowed) {
+            const parts = [borrowed?.label, borrowed?.year, borrowed?.country]
+                .filter(part => part !== undefined && part !== null && part !== '');
+            return parts.join(', ') || `release ${borrowed?.release_id}`;
+        },
+
+        donorTitle(donor) {
+            return [donor.label, donor.year, donor.country, donor.format]
+                .filter(part => part !== undefined && part !== null && part !== '').join(' · ');
+        },
+
+        /** Look for other pressings of the selected release's master that carry the missing lengths */
+        async findLengthDonors() {
+            const release = this.selectedRelease;
+            if (!release || this.donors.status === 'searching') return;
+            const sequence = ++this._donorSeq;
+            this.donors = {
+                releaseId: release.id, status: 'searching', checked: 0, versions: null, budget: DONOR_FETCH_BUDGET, list: [], error: ''
+            };
+            try {
+                const response = await fetch(`/api/release/${release.id}/length-donors`);
+                let body = null;
+                try { body = await response.json(); } catch (_) { /* non-JSON error body */ }
+                // A release, file or Undo change since the request started: the answer is for something else
+                if (sequence !== this._donorSeq) return;
+                if (!response.ok) throw new Error((body && body.detail) || 'Could not look for other pressings.');
+                this.donors = {
+                    ...this.donors, status: 'done', list: Array.isArray(body?.donors) ? body.donors : [],
+                    // The reply's own counts replace the live progress ones: what was examined, of how many
+                    checked: Number.isFinite(body?.checked) ? body.checked : this.donors.checked,
+                    versions: Number.isFinite(body?.versions) ? body.versions : null
+                };
+            } catch (error) {
+                if (sequence !== this._donorSeq) return;
+                this.donors = {
+                    ...this.donors, status: 'error', list: [],
+                    error: error.message || 'Could not look for other pressings.'
+                };
+            }
+        },
+
+        /**
+         * Copy a donor's lengths onto the selected release's tracks that have none, mark where
+         * they came from, and re-run detection (afterTargetsChanged: ask first after hand edits).
+         * Copy-on-write: the release object may also be a search result, so it is replaced by an
+         * edited copy and Undo puts the original object back.
+         */
+        applyDonor(donor) {
+            const release = this.selectedRelease;
+            if (!release || !donor) return;
+            if (this.analyzing) {
+                this.notify('Wait for track detection to finish before borrowing lengths.', { type: 'warning', timeout: 5000 });
+                return;
+            }
+            if (this.currentFileExporting) {
+                this.notify('This recording is exporting. Borrow lengths when the export has finished.', { type: 'warning', timeout: 5000 });
+                return;
+            }
+            // The list belongs to one release: a different one (or none) means a stale click
+            if (this.donors.releaseId !== release.id) return;
+
+            // Only tracks of the chosen sides, so the count agrees with "fills N of M missing"
+            const chosenIndexes = new Set(this.targetTracks.map(track => track.releaseIdx));
+            let filled = 0;
+            const tracks = (release.tracks || []).map(track => ({ ...track }));
+            for (const [key, length] of Object.entries(donor.lengths || {})) {
+                const track = tracks[Number(key)];
+                if (!track || !chosenIndexes.has(Number(key))) continue;
+                if (this.parseTrackDuration(track.duration) !== null) continue;   // only missing lengths
+                if (this.parseTrackDuration(length) === null) continue;
+                track.duration = length;
+                filled++;
+            }
+            if (filled === 0) {
+                this.notify('That pressing has no lengths this release is missing.', { type: 'info' });
+                return;
+            }
+            // `borrowId` is compared by Undo instead of object identity: Alpine hands out proxies
+            const borrowId = ++this._borrowCount;
+            const borrowed = {
+                release_id: donor.release_id, label: donor.label, year: donor.year, country: donor.country, borrowId
+            };
+            const edited = { ...release, tracks, lengthsBorrowedFrom: [...(release.lengthsBorrowedFrom || []), borrowed] };
+            const fileId = this.currentFileId;
+            // Without lengths the sides were only defaulted (full album).  Now that lengths exist the
+            // length fit can pick the real side, unless the user chose sides since (even the same
+            // ones as the default): that is theirs.  Mapping state is captured because the sides
+            // change what the tracks map to, and Undo must give hand-made mapping back.
+            const resuggest = !this.sidesTouched && this.sidesSuggestionReason === 'default';
+            const previous = {
+                sides: this.selectedSides, suggested: this.suggestedSides, reason: this.sidesSuggestionReason,
+                mapping: [...this.customMapping], reversed: this.trackMappingReversed,
+                mismatch: this.trackCountMismatch,
+                // The tracks that mapping describes: the borrow's own re-detection may replace them
+                tracks: this.detectedTracks, trackCount: this.detectedTracks.length
+            };
+            this.selectedRelease = edited;
+            this.resetDonors();
+            let sidesChanged = false;
+            if (resuggest) {
+                this.applySideSuggestion(edited);
+                // The mapping depends on the sides only: leave hand-made mapping when they stay
+                sidesChanged = previous.sides.length !== this.selectedSides.length
+                    || !previous.sides.every(side => this.selectedSides.includes(side));
+                if (sidesChanged) this.resetMappingToTargets();
+            }
+            const resuggestedSides = this.selectedSides;
+            this.afterTargetsChanged();   // once, with the new sides
+
+            this.notifyUndo(`Borrowed ${filled} track length${filled === 1 ? '' : 's'} from ${this.borrowedLabel(borrowed)}.`, () => {
+                // Another release or file replaced the copy since: nothing of this change is left to undo
+                if (this.currentFileId !== fileId || this.lastBorrowedFrom(this.selectedRelease)?.borrowId !== borrowId) {
+                    this.notify('The release has changed since; the borrowed lengths are no longer applied.', { type: 'info' });
+                    return;
+                }
+                this.selectedRelease = release;
+                this.resetDonors();
+                if (resuggest) {
+                    // The suggestion belongs to the release's lengths, which are gone again
+                    this.suggestedSides = previous.suggested;
+                    this.sidesSuggestionReason = previous.reason;
+                    // The sides (and what depends on them) only if the borrow changed them and the user
+                    // has not picked sides since, even the very ones the borrow chose
+                    if (sidesChanged && !this.sidesTouched && this.sidesEqualSelection(resuggestedSides)) {
+                        this.selectedSides = previous.sides;
+                        if (this.detectedTracks === previous.tracks && this.detectedTracks.length === previous.trackCount) {
+                            this.customMapping = previous.mapping;
+                            this.trackMappingReversed = previous.reversed;
+                            this.trackCountMismatch = previous.mismatch;
+                        } else {
+                            // Re-detection, a delete or a split replaced the tracks: the saved mapping is for others.
+                            // A restored snapshot (another Undo) installs an equal copy, which lands here too:
+                            // the mapping is then reset rather than kept, which is safe (never a wrong mapping).
+                            // The length check is defence for an in-place splice; those paths drop the release today.
+                            this.resetMappingToTargets();
+                        }
+                    }
+                }
+                this.afterTargetsChanged();
+            }, { fileId, type: 'success' });
         },
 
         // ---- Release cards: lengths, sides and fit -----------------------
@@ -3415,9 +3683,11 @@ function vinylApp() {
         dropReleaseAfterEdit() {
             if (!this.selectedRelease) return;
             this.selectedRelease = null;
+            this.resetDonors();   // a donor list belongs to the release that was just dropped
             this.selectedSides = [];
             this.suggestedSides = [];
             this.sidesSuggestionReason = '';
+            this.sidesTouched = false;
             this.trackCountMismatch = false;
             this.trackMappingReversed = false;
             this.customMapping = [];
