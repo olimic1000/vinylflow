@@ -122,16 +122,33 @@ function readStoredPlayerVolume() {
 // Shown (muted) when the waveform plays the MP3 preview instead of the original WAV.
 const PREVIEW_AUDIO_NOTICE = "Playing the preview \u2014 this browser can't play the original WAV, so cut points may be up to ~50 ms less precise.";
 
+// The share of peaks that must fit under full height: the 99.9th percentile, so a needle-drop thump
+// or a few clicks (single loud 10 ms bins) do not make the music of a quiet side look low.
+const PEAK_SCALE_PERCENTILE = 0.999;
+// ...but never below this share of the loudest bin: a recording that is mostly digital silence has a
+// ~0 percentile, which would stretch its few real peaks into a solid block.
+const PEAK_SCALE_FLOOR_FRACTION = 1 / 8;
+
+// A failed preview that the server is still preparing is polled this often, for at most this long
+// (the encode of even a long album takes well under it), before the notice is left as it is.
+const PREVIEW_POLL_INTERVAL_MS = 3000;
+const PREVIEW_POLL_MAX_MS = 10 * 60 * 1000;
+
 /**
- * Scale waveform peaks so the recording's loudest peak is full height. Replaces WaveSurfer's
- * `normalize`, which scales each rendered canvas (one per screen width when zoomed) to its own
- * loudest bar and so stretches the surface noise of a gap to full height. A loop, not
- * Math.max(...peaks): an album has hundreds of thousands of peaks.
+ * Scale waveform peaks so the recording's 99.9th-percentile peak is full height (louder bins clip
+ * at +-1). Replaces WaveSurfer's `normalize`, which scales each rendered canvas (one per screen
+ * width when zoomed) to its own loudest bar and so stretches the surface noise of a gap to full
+ * height. The reference is found by sorting one Float64Array copy (an album has ~1.4 M peaks), not
+ * Math.max(...peaks), whose arguments would overflow the stack.
  */
 function scalePeaksToRecording(peaks) {
-    let loudest = 0;
-    for (const peak of peaks) loudest = Math.max(loudest, Math.abs(peak));
-    return loudest > 0 ? peaks.map(peak => peak / loudest) : peaks;
+    if (!peaks.length) return peaks;
+    const magnitudes = Float64Array.from(peaks, peak => Math.abs(peak));
+    magnitudes.sort();
+    const percentile = magnitudes[Math.ceil(PEAK_SCALE_PERCENTILE * magnitudes.length) - 1];
+    const reference = Math.max(percentile, magnitudes[magnitudes.length - 1] * PEAK_SCALE_FLOOR_FRACTION);
+    if (!(reference > 0)) return peaks;
+    return peaks.map(peak => Math.max(-1, Math.min(1, peak / reference)));
 }
 
 // What a media element's error code means, for the notice when WaveSurfer re-emits it without a message.
@@ -200,6 +217,8 @@ function vinylApp() {
         _pointerFocus: markRaw({ pending: false, byPointer: false, lastFocusIn: null, lastFocused: null }),
         waveform: null,
         waveformLoading: false,
+        previewPollIntervalMs: PREVIEW_POLL_INTERVAL_MS,   // instance fields so tests can shorten them
+        previewPollMaxMs: PREVIEW_POLL_MAX_MS,
         waveformRegions: null,
         currentZoom: 50,
 
@@ -2861,7 +2880,10 @@ function vinylApp() {
                     // A fallback in flight absorbs the twin of its own failure, whatever the code now says
                     if ((code === 3 || code === 4 || this.fallbackInFlight(waveform)) && this.fallBackToPreview(waveform, fileId)) return;
                     this.waveformLoading = false;
-                    this.playerNotice = 'Audio playback error: ' + ((err && err.message) || err || MEDIA_ERROR_MESSAGES[code] || 'unknown');
+                    const message = (err && err.message) || err || MEDIA_ERROR_MESSAGES[code] || 'unknown';
+                    // On the preview already: the server may be why (source gone, preview not ready)
+                    if (this._audioSource?.waveform === waveform && !this._audioSource.precise) this.explainPreviewFailure(waveform, fileId, message);
+                    else this.playerNotice = 'Audio playback error: ' + message;
                 });
 
                 // Transport state follows the player's own events
@@ -3070,10 +3092,19 @@ function vinylApp() {
             // The media element and WaveSurfer both report the same failure: absorb the twin while reloading.
             if (source.fellBack && !source.settled) return true;
             if (!source.precise) return false;
+            this.reloadPreview(waveform, fileId, source);
+            return true;
+        },
+
+        /**
+         * Load the MP3 preview into the waveform, keeping peaks, zoom, playhead and paused/playing
+         * state. Shared by the fallback from the WAV and the single retry once the server has the preview.
+         */
+        reloadPreview(waveform, fileId, source) {
             source.precise = false;
             source.fellBack = true;
             source.settled = false;
-            source.generation++;   // a play() started on the WAV is now stale
+            source.generation++;   // a play() started on the earlier source is now stale
             const resume = this.isPlaying;
             this.isPlaying = false;
             this.playerInfo = PREVIEW_AUDIO_NOTICE;
@@ -3083,15 +3114,65 @@ function vinylApp() {
             const stale = () => waveform !== this.waveform || fileId !== this.currentFileId;
             Promise.resolve(waveform.load(this.audioUrl(fileId, false), source.peaks, source.duration)).then(() => {
                 source.settled = true;
-                if (!stale() && resume) this.startPlayback();
+                if (stale()) return;
+                this.playerNotice = '';   // a retry after a failure: the preview plays now
+                if (resume) this.startPlayback();
             }, (err) => {
                 source.settled = true;
                 if (stale()) return;
                 console.error('Preview fallback failed:', err);
                 this.waveformLoading = false;
-                this.playerNotice = 'Audio playback error: ' + ((err && err.message) || err || 'unknown');
+                this.explainPreviewFailure(waveform, fileId, (err && err.message) || err || 'unknown');
             });
-            return true;
+        },
+
+        /**
+         * The preview could not be played either. Show the player's own message at once, then ask the
+         * server why with a ranged GET of the non-waiting probe form of the preview URL (`wait=0`, which
+         * never waits; it starts the encode only if none ran yet, and never re-runs a failed one):
+         *  - not ok: its `detail` replaces the message (410 source gone, 409 changed, 503 preview not
+         *    ready or not made). A 503 with Retry-After means "still being prepared": poll every
+         *    `previewPollIntervalMs`, up to `previewPollMaxMs`;
+         *  - ok: the preview is there now (the encode finished meanwhile): reload it, once per waveform,
+         *    so this never loops;
+         *  - the probe itself failing keeps the player's message.
+         * Stops silently when the file is switched, the waveform rebuilt or destroyed.
+         */
+        async explainPreviewFailure(waveform, fileId, fallbackMessage) {
+            const source = this._audioSource;
+            const stale = () => waveform !== this.waveform || fileId !== this.currentFileId || this._audioSource !== source;
+            if (!source || stale() || source.probing) return;
+            const show = (message) => { if (!stale()) this.playerNotice = 'Audio playback error: ' + message; };
+            show(fallbackMessage);
+            source.probing = true;   // the error and its WaveSurfer twin must start one probe loop, not two
+            try {
+                const deadline = Date.now() + this.previewPollMaxMs;
+                for (;;) {
+                    let response;
+                    try {
+                        response = await fetch(this.audioUrl(fileId, false) + '?wait=0', { headers: { Range: 'bytes=0-1' } });
+                    } catch (err) {
+                        return;
+                    }
+                    if (stale()) return;
+                    if (response.ok) {
+                        if (source.settled && !source.previewRetried) {
+                            source.previewRetried = true;
+                            this.reloadPreview(waveform, fileId, source);
+                        }
+                        return;
+                    }
+                    const data = await response.json().catch(() => ({}));
+                    if (stale()) return;
+                    show(data.detail || `the server answered HTTP ${response.status}`);
+                    const stillPreparing = response.status === 503 && response.headers?.get?.('Retry-After');
+                    if (!stillPreparing || Date.now() >= deadline) return;
+                    await new Promise(resolve => setTimeout(resolve, this.previewPollIntervalMs));
+                    if (stale()) return;
+                }
+            } finally {
+                source.probing = false;
+            }
         },
 
         /**

@@ -34,7 +34,7 @@ def _register_session(tmp_path, filename="My Record - Side A.wav"):
 def test_get_audio_returns_file_with_disposition(tmp_path):
     sid = _register_session(tmp_path)
     try:
-        resp = client.get(f"/api/audio/{sid}")
+        resp = client.get(f"/api/audio/{sid}?precise=true")
         assert resp.status_code == 200
         disposition = resp.headers["content-disposition"]
         assert disposition.startswith("inline;")
@@ -49,7 +49,7 @@ def test_get_audio_non_latin1_filename(tmp_path):
     RFC-5987-encodes them when FileResponse builds the header."""
     sid = _register_session(tmp_path, filename="Björk – Debut Side A.wav")
     try:
-        resp = client.get(f"/api/audio/{sid}")
+        resp = client.get(f"/api/audio/{sid}?precise=true")
         assert resp.status_code == 200
         assert "utf-8''" in resp.headers["content-disposition"]
     finally:

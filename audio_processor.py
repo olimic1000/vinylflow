@@ -366,7 +366,8 @@ class AudioProcessor:
                  "-ac", "1", "-ar", str(ENVELOPE_SAMPLE_RATE), "-"],
                 text=False, stdout=pcm, stderr=subprocess.PIPE, check=True,
             )
-            sample_count = pcm.tell() // 2
+            pcm.flush()   # buffered writes by a caller-side fake would not show in the size yet
+            sample_count = os.fstat(pcm.fileno()).st_size // 2
             peak_count = (sample_count + frame_samples - 1) // frame_samples
             for first in range(0, peak_count, block_frames):
                 last = min(first + block_frames, peak_count)

@@ -19,11 +19,11 @@ process.on('exit', () => { if (!finished) { console.error('precise_playback: asy
  * A fake WaveSurfer. `loadResults` is consumed one per load(): 'ok' resolves, 'fail' rejects.
  * The media element records its listeners so a test can fire its `error` event.
  */
-function harness({ canPlay = 'maybe', peaks = [0.1, 0.2, 0.05], loadResults = [], fetchOverride = null } = {}) {
+function harness({ canPlay = 'maybe', peaks = [0.1, 0.2, 0.05], loadResults = [], fetchOverride = null, audioProbe = async () => ({ ok: true, status: 206 }) } = {}) {
     const app = vinylApp();
     app.currentFileId = 'one';
     const wave = {
-        handlers: {}, loads: [], plays: 0, zooms: [], times: [],
+        handlers: {}, loads: [], probes: [], plays: 0, zooms: [], times: [],
         media: { listeners: {}, error: null, readyState: 0, preload: '', canPlayType: () => canPlay,
             addEventListener(name, fn) { this.listeners[name] = fn; }, removeEventListener() {} },
         on(name, fn) { this.handlers[name] = fn; },
@@ -46,7 +46,12 @@ function harness({ canPlay = 'maybe', peaks = [0.1, 0.2, 0.05], loadResults = []
     wave.container = container;
     global.document = { getElementById: () => container };
     global.WaveSurfer = { create: options => { wave.options = options; return wave; }, Regions: { create: () => ({}) } };
-    global.fetch = fetchOverride || (async url => {
+    // audioProbe(url, options) answers the status probe the failure notice makes on the preview URL
+    global.fetch = fetchOverride || (async (url, options) => {
+        if (url.startsWith('/api/audio/')) {
+            wave.probes.push({ url, options });
+            return audioProbe(url, options);
+        }
         assert.strictEqual(url, '/api/waveform-peaks/one');
         return { ok: true, json: async () => ({ peaks, duration: 120 }) };
     });
@@ -74,6 +79,28 @@ const decodeError = wave => mediaError(wave, 3);
     assert.deepStrictEqual(scalePeaksToRecording([]), []);
     // an album's worth of peaks must not blow the argument stack (Math.max(...peaks) would)
     assert.strictEqual(scalePeaksToRecording(new Array(900000).fill(0.25))[0], 1);
+    // a needle-drop thump (one 1.0 bin) must not shrink the music: scale to the 99.9th percentile
+    // (a mostly-silent recording keeps a floor: reference >= loudest / 8, below)
+    const thumpSide = new Array(10000).fill(0.2); thumpSide[5000] = 1.0; thumpSide[6000] = -1.0;
+    const thumpScaled = scalePeaksToRecording(thumpSide);
+    assert.ok(Math.abs(thumpScaled[0] - 1) < 1e-9, 'the music scales to full height, got ' + thumpScaled[0]);
+    assert.strictEqual(thumpScaled[5000], 1, 'the spike clips at 1');
+    assert.strictEqual(thumpScaled[6000], -1, 'negative spikes clip at -1');
+    assert.deepStrictEqual(scalePeaksToRecording([-0.1, 0.1, -0.4]), [-0.25, 0.25, -1], 'sign kept');
+    // 50 loud bins in 10 000 (0.5 %) are real signal, not a thump: a 99th-percentile reference would
+    // stretch the music to full height and clip them all
+    const loudPassages = new Array(10000).fill(0.2); for (let index = 0; index < 50; index++) loudPassages[index * 200] = 1.0;
+    assert.ok(Math.abs(scalePeaksToRecording(loudPassages)[1] - 0.2) < 1e-9, '0.5 % loud bins set the scale');
+    // five spikes (0.05 %) are a thump: ignored
+    const fewSpikes = new Array(10000).fill(0.2); for (let index = 0; index < 5; index++) fewSpikes[index * 2000] = 1.0;
+    assert.ok(Math.abs(scalePeaksToRecording(fewSpikes)[1] - 1) < 1e-9);
+    // mostly digital silence: the reference never drops under loudest / 8 (it used to draw a solid block)
+    const mostlySilent = new Array(10000).fill(0); for (let index = 0; index < 5; index++) mostlySilent[index * 2000 + 1] = 0.8;
+    mostlySilent[7] = 0.05;
+    const silentScaled = scalePeaksToRecording(mostlySilent);
+    assert.strictEqual(silentScaled[0], 0, 'silence stays flat');
+    assert.strictEqual(silentScaled[1], 1, 'the loud bins clip at 1');
+    assert.ok(Math.abs(silentScaled[7] - 0.5) < 1e-9, 'scaled by loudest / 8 = 0.1, got ' + silentScaled[7]);
 
     // ---- URL choice, per-recording scale handed to WaveSurfer unnormalised ----
     let { app, wave } = await started();
@@ -114,9 +141,13 @@ const decodeError = wave => mediaError(wave, 3);
     await sleep(150);
     assert.strictEqual(app.waveformLoading, false, 'overlay cleared once the preview is ready');
     // a second failure never loops
-    decodeError(wave);
-    assert.strictEqual(wave.loads.length, 2, 'never loops');
-    assert.match(app.playerNotice, /Audio playback error: .*could not be decoded/, 'a useful message, not "unknown"');
+    decodeError(wave);   // the preview itself fails to decode too
+    assert.match(app.playerNotice, /Audio playback error: .*could not be decoded/, 'a useful message at once, not "unknown"');
+    await sleep(20);
+    assert.strictEqual(wave.loads.length, 3, 'the preview is fine on the server: reloaded once');
+    decodeError(wave); await sleep(20);
+    assert.strictEqual(wave.loads.length, 3, 'never loops');
+    assert.match(app.playerNotice, /Audio playback error: .*could not be decoded/);
     assert.strictEqual(app.waveformLoading, false);
 
     // ---- it resumes only when it was playing ----
@@ -155,17 +186,122 @@ const decodeError = wave => mediaError(wave, 3);
 
     // ---- an error while already on the preview shows the notice and does not reload ----
     ({ app, wave } = await started({ canPlay: '' }));
-    decodeError(wave);
-    assert.strictEqual(wave.loads.length, 1);
+    decodeError(wave); await sleep(20);
+    assert.strictEqual(wave.loads.length, 2, 'the probe says the preview is ok: one reload');
+    decodeError(wave); await sleep(20);
+    assert.strictEqual(wave.loads.length, 2, 'only once');
     assert.match(app.playerNotice, /Audio playback error: .*could not be decoded/);
     assert.strictEqual(app.waveformLoading, false, 'spinner cleared on failure');
 
     // ---- a failing fallback reload clears the overlay and says why ----
-    ({ app, wave } = await started({ loadResults: ['ok', 'fail'] }));
-    decodeError(wave); await nextTask();
-    assert.strictEqual(wave.loads.length, 2);
+    ({ app, wave } = await started({ loadResults: ['ok', 'fail', 'fail'] }));
+    decodeError(wave); await sleep(30);
+    assert.strictEqual(wave.loads.length, 3, 'the probe is ok, so the preview is retried once');
     assert.strictEqual(app.waveformLoading, false);
     assert.match(app.playerNotice, /Audio playback error: load failed/);
+
+    // ---- the preview failing too says what the server says, not a blind "format" claim ----
+    for (const [status, detail] of [[410, 'The source file is gone.'], [409, 'The file changed.'], [503, 'The audio preview is still being prepared. Try again in a moment.']]) {
+        ({ app, wave } = await started({ loadResults: ['ok', 'fail'],
+            audioProbe: async () => ({ ok: false, status, json: async () => ({ detail }) }) }));
+        decodeError(wave); await sleep(20);
+        assert.strictEqual(wave.probes.length >= 1, true, 'the preview URL is probed');
+        assert.strictEqual(wave.probes[0].url, '/api/audio/one?wait=0', 'the probe never waits for or starts the encode');
+        assert.deepStrictEqual(wave.probes[0].options, { headers: { Range: 'bytes=0-1' } });
+        assert.strictEqual(app.playerNotice, 'Audio playback error: ' + detail, 'HTTP ' + status);
+        assert.strictEqual(app.waveformLoading, false);
+    }
+    // the fallback message shows at once, and the probe's detail replaces it
+    let releaseSlow;
+    ({ app, wave } = await started({ loadResults: ['ok', 'fail'], audioProbe: () => new Promise(resolve => { releaseSlow = resolve; }) }));
+    decodeError(wave); await sleep(20);
+    assert.match(app.playerNotice, /Audio playback error: load failed/, 'no waiting for the probe');
+    releaseSlow({ ok: false, status: 410, json: async () => ({ detail: 'gone' }) }); await sleep(20);
+    assert.strictEqual(app.playerNotice, 'Audio playback error: gone');
+    // a probe that rejects keeps the fallback message
+    ({ app, wave } = await started({ loadResults: ['ok', 'fail'], audioProbe: async () => { throw new TypeError('network down'); } }));
+    decodeError(wave); await sleep(20);
+    assert.match(app.playerNotice, /Audio playback error: load failed/);
+    assert.strictEqual(wave.loads.length, 2, 'no reload when the probe could not answer');
+    // "still being prepared" (503 + Retry-After): polled until ready, then ONE reload, notice cleared
+    const preparing = { ok: false, status: 503, headers: { get: name => name === 'Retry-After' ? '3' : null }, json: async () => ({ detail: 'The audio preview is still being prepared. Try again in a moment.' }) };
+    let answers = [preparing, preparing, { ok: true, status: 206 }];
+    ({ app, wave } = await started({ loadResults: ['ok', 'fail', 'ok'], audioProbe: async () => answers.shift() }));
+    app.previewPollIntervalMs = 5;
+    decodeError(wave); await sleep(10);
+    assert.match(app.playerNotice, /still being prepared/, 'says why while it waits');
+    await sleep(80);
+    assert.strictEqual(wave.probes.length, 3, 'polled until ready');
+    assert.strictEqual(wave.loads.length, 3, 'exactly one reload once ready');
+    assert.strictEqual(wave.loads[2].url, '/api/audio/one');
+    assert.strictEqual(app.playerNotice, '', 'the notice clears when the preview plays');
+    await sleep(40);
+    assert.strictEqual(wave.probes.length, 3, 'polling stopped');
+    // polling stops when the file is switched, and when the waveform is rebuilt
+    for (const stop of [a => { a.currentFileId = 'two'; }, a => { a.waveform = null; }]) {
+        ({ app, wave } = await started({ loadResults: ['ok', 'fail', 'ok'], audioProbe: async () => preparing }));
+        app.previewPollIntervalMs = 5;
+        decodeError(wave); await sleep(20);
+        const seen = wave.probes.length;
+        assert.ok(seen >= 2, 'it was polling');
+        stop(app); await sleep(40);
+        assert.ok(wave.probes.length <= seen + 1, 'polling stopped after the switch');
+        assert.strictEqual(wave.loads.length, 2, 'and never reloads');
+    }
+    // a 503 without Retry-After (preview could not be made) is final: never polled
+    ({ app, wave } = await started({ loadResults: ['ok', 'fail'], audioProbe: async () => ({ ok: false, status: 503, headers: { get: () => null }, json: async () => ({ detail: 'could not be made' }) }) }));
+    app.previewPollIntervalMs = 5;
+    decodeError(wave); await sleep(60);
+    assert.strictEqual(wave.probes.length, 1, 'no polling without Retry-After');
+    assert.strictEqual(app.playerNotice, 'Audio playback error: could not be made');
+    // the same error reported twice starts one probe loop, not two
+    ({ app, wave } = await started({ canPlay: '', audioProbe: () => new Promise(() => {}) }));
+    wave.media.error = { code: 3 };
+    wave.handlers.error(undefined); wave.handlers.error(undefined); await sleep(20);
+    assert.strictEqual(wave.probes.length, 1, 'one probe for the error and its twin');
+    // an OK reply that arrives after the file was switched, or the waveform rebuilt, reloads nothing
+    let releaseOk;
+    const lateOk = () => new Promise(resolve => { releaseOk = () => resolve({ ok: true, status: 206 }); });
+    for (const stop of [a => { a.currentFileId = 'two'; }, a => { a.waveform = null; }]) {
+        ({ app, wave } = await started({ loadResults: ['ok', 'fail'], audioProbe: lateOk }));
+        decodeError(wave); await sleep(20);
+        stop(app); releaseOk(); await sleep(20);
+        assert.strictEqual(wave.loads.length, 2, 'a late OK reply for a stale waveform reloads nothing');
+    }
+    // while a reload is still in flight (source not settled) an OK reply does not start another
+    ({ app, wave } = await started({ loadResults: ['ok', 'fail'], audioProbe: lateOk }));
+    decodeError(wave); await sleep(20);
+    app._audioSource.settled = false; releaseOk(); await sleep(20);
+    assert.strictEqual(wave.loads.length, 2, 'no second reload on top of one in flight');
+    // polling is bounded
+    ({ app, wave } = await started({ loadResults: ['ok', 'fail'], audioProbe: async () => preparing }));
+    app.previewPollIntervalMs = 5; app.previewPollMaxMs = 30;
+    decodeError(wave); await sleep(120);
+    const boundedProbes = wave.probes.length;
+    await sleep(50);
+    assert.strictEqual(wave.probes.length, boundedProbes, 'gives up after the total bound');
+    assert.ok(boundedProbes < 15);
+    // a non-JSON error body still says something useful
+    ({ app, wave } = await started({ loadResults: ['ok', 'fail'], audioProbe: async () => ({ ok: false, status: 502, json: async () => { throw new Error('html'); } }) }));
+    decodeError(wave); await sleep(20);
+    assert.match(app.playerNotice, /HTTP 502/);
+    // a reply that arrives after the file was switched or the waveform rebuilt shows nothing
+    let releaseProbe;
+    const slowProbe = () => new Promise(resolve => { releaseProbe = () => resolve({ ok: false, status: 503, json: async () => ({ detail: 'late' }) }); });
+    ({ app, wave } = await started({ loadResults: ['ok', 'fail'], audioProbe: slowProbe }));
+    decodeError(wave); await sleep(20);
+    app.currentFileId = 'two'; app.playerNotice = '';
+    releaseProbe(); await sleep(20);
+    assert.strictEqual(app.playerNotice, '', 'file switched: stale reply dropped');
+    ({ app, wave } = await started({ loadResults: ['ok', 'fail'], audioProbe: slowProbe }));
+    decodeError(wave); await sleep(20);
+    app.waveform = null; app.playerNotice = '';
+    releaseProbe(); await sleep(20);
+    assert.strictEqual(app.playerNotice, '', 'waveform rebuilt: stale reply dropped');
+    // an error straight on the preview URL (the browser cannot play the WAV at all) is probed too
+    ({ app, wave } = await started({ canPlay: '', audioProbe: async () => ({ ok: false, status: 410, json: async () => ({ detail: 'gone for good' }) }) }));
+    decodeError(wave); await sleep(20);
+    assert.strictEqual(app.playerNotice, 'Audio playback error: gone for good');
 
     // ---- stale replies are dropped: waveform replaced or file switched ----
     ({ app, wave } = await started());
