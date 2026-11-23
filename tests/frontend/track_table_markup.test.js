@@ -17,7 +17,7 @@ const section = html.slice(from, to);
 const expressions = [...section.matchAll(/\s(?:x-[\w:.-]+|@[\w:.-]+|:[\w-]+)="([^"]*)"/g)].map(match => match[1]);
 // x-for variables (track, idx, dt, dtIdx) and JS words
 const loopAndKeywords = new Set(['true', 'false', 'null', 'undefined', 'Math', 'Number', 'event', '$event', 'this', 'in',
-    'track', 'idx', 'dt', 'dtIdx', 't', 'fmt', 'console']);
+    'track', 'idx', 'dt', 'dtIdx', 't', 'fmt', 'console', 'fallbackAudio']);
 const app = vinylApp();
 const unknown = new Set();
 for (const expression of expressions) {

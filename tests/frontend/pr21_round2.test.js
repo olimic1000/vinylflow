@@ -116,13 +116,14 @@ function fakeWaveform({ rejectLeavesPlaying = false } = {}) {
     try { await app.init(); } catch (err) { /* the rest of init is not under test */ }
     delete global.document; delete global.window;
     assert.strictEqual(typeof listeners.keydown, 'function', 'init registers a keydown listener');
+    for (const name of ['keyup', 'pointerdown', 'pointerup', 'focusin']) assert.strictEqual(typeof listeners[name], 'function', `init registers ${name}`);
     const event = { code: 'Space' };
     listeners.keydown(event);
     assert.strictEqual(routed, event, 'the keydown handler routes to onGlobalKeydown');
 
     // ---- 4/5. markup ----
     assert.ok(!/Amber buttons: white on #E5A100/.test(html), 'stale amber-button comment is gone');
-    assert.ok(html.includes(':disabled="!waveform || (track.ignored && !(isPlaying && playheadIdx === idx))"'),
+    assert.ok(html.includes(':disabled="!playerReady || (track.ignored && !(isPlaying && playheadIdx === idx))"'),
         'the playing row keeps its Pause enabled even when ignored');
 
     finished = true;

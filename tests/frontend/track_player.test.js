@@ -178,8 +178,6 @@ process.on('exit', () => { if (!finished) { console.error('track_player: async p
     waveform.setTime(5);
     app.onRegionClicked({ id: 'track-1' }, { button: 2, clientX: 600, target: {} }); assert.strictEqual(waveform.getCurrentTime(), 5, 'right click');
     app.onRegionClicked({ id: 'track-1' }, { button: 0, ctrlKey: true, clientX: 600, target: {} }); assert.strictEqual(waveform.getCurrentTime(), 5, 'ctrl click');
-    app._regionDownX = 300;
-    app.onRegionClicked({ id: 'track-1' }, { button: 0, clientX: 600, target: {} }); assert.strictEqual(waveform.getCurrentTime(), 5, 'end of a drag');
     app.onRegionClicked({ id: 'expected-1' }, { button: 0, clientX: 600, target: {} }); assert.strictEqual(waveform.getCurrentTime(), 5, 'ghost marker');
     app.onRegionClicked({ id: 'track-1' }, { button: 0, clientX: 50, target: {} }); assert.strictEqual(waveform.getCurrentTime(), 0, 'clamped to the start');
 

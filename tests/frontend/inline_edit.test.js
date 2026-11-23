@@ -27,7 +27,9 @@ const ends = app => app.detectedTracks.map(t => [t.start, t.end]);
 // ---- Start field: moves the cut, keeps the neighbours' gaps, marks the hand edit ----
 let app = mkApp([track(1, 10, 100), track(2, 100, 200)]);
 app.updateTrackStart(1, '104');
-assert.deepStrictEqual(ends(app), [[10, 100], [104, 200]], 'a gap is left alone (the old code dragged the previous end along)');
+// These cuts touch, so the previous end follows (a stretch in no file otherwise); a real gap
+// stays a gap, see touching_cuts.test.js.
+assert.deepStrictEqual(ends(app), [[10, 104], [104, 200]], 'touching cuts move together');
 assert.strictEqual(app.detectedTracks[1].duration, 96);
 assert.strictEqual(app.boundariesEdited, true);
 assert.strictEqual(app.waveformRegions.regions[1].start, 104, 'the region follows the field');
@@ -40,7 +42,11 @@ app = mkApp([track(1, 10, 100), track(2, 100, 200)]);
 app.updateTrackEnd(0, '120');
 assert.deepStrictEqual(ends(app), [[10, 120], [120, 200]], 'the next track starts where this one ends when they overlap');
 app.updateTrackEnd(0, '90');
-assert.deepStrictEqual(ends(app), [[10, 90], [120, 200]], 'shortening leaves a gap');
+assert.deepStrictEqual(ends(app), [[10, 90], [90, 200]], 'touching cuts move together when shortening');
+// A real gap that already existed stays a gap
+app = mkApp([track(1, 10, 100), track(2, 105, 200)]);
+app.updateTrackEnd(0, '90');
+assert.deepStrictEqual(ends(app), [[10, 90], [105, 200]], 'shortening leaves an existing gap');
 
 // ---- limits: every track keeps MIN_TRACK_LENGTH (1 s); nonsense changes nothing ----
 app = mkApp([track(1, 10, 100), track(2, 100, 200)]);

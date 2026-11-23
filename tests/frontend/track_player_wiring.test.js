@@ -1,8 +1,8 @@
 // The real initWaveform wires the player: WaveSurfer's play/pause/finish/timeupdate/interaction events
 // drive the transport state, and the media element's events drive the buffering flag.  track_player.test.js
 // tests the handlers; this one fails when the wiring itself is deleted.  WaveSurfer, its regions plugin and
-// the media element are fakes whose events are emitted by hand; the peaks fetch fails on purpose so
-// initWaveform stops right after the wiring.
+// the media element are fakes whose events are emitted by hand; the build succeeds (a failed one now tears the
+// waveform down) but the fake never fires 'ready'.
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
@@ -10,7 +10,7 @@ const src = fs.readFileSync(path.join(__dirname, '..', '..', 'backend', 'static'
 const vinylApp = new Function(src + ';return vinylApp;')();
 
 global.window = global.window || {};
-global.fetch = async () => ({ ok: false, status: 500, json: async () => ({ detail: 'stop here' }) });
+global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ peaks: [0, 1], duration: 100 }) });
 
 function emitter() {
     const handlers = {};
@@ -28,6 +28,7 @@ const media = Object.assign(emitter(), {
 const waveform = Object.assign(emitter(), {
     registerPlugin: () => Object.assign(emitter(), { getRegions: () => [] }),
     getMediaElement: () => media,
+    load: async () => {},
     destroy() { this.emit('destroy'); },
 });
 global.WaveSurfer = { create: () => waveform, Regions: { create: () => ({}) } };
