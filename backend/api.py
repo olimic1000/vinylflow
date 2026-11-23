@@ -23,6 +23,7 @@ import logging
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 from backend.security import SameOriginMiddleware
 from pydantic import BaseModel, Field
 
@@ -1481,7 +1482,9 @@ async def get_audio_file(file_id: str, precise: bool = False, wait: bool = True)
     # (e.g. "Björk – Debut") — a hand-built header crashes on them.
     try:
         # One stat, off the event loop; the response then neither stats again nor blocks.
-        stat_result = await asyncio.to_thread(os.stat, file_path)
+        # Starlette's worker pool (the one FileResponse reads with), not asyncio's default
+        # executor: on-demand MP3 encodes hold those threads for their whole run.
+        stat_result = await run_in_threadpool(os.stat, file_path)
     except FileNotFoundError:
         raise HTTPException(status_code=410, detail="The audio file is no longer available.")
     return _CappedRangeFileResponse(

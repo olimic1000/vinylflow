@@ -640,3 +640,29 @@ def test_the_stat_runs_off_the_event_loop(tmp_path, monkeypatch):
         assert threads and loop_thread not in threads[-1:], "the endpoint's stat must run in a worker thread"
     finally:
         session_store.remove(session_id)
+
+
+def test_precise_audio_still_answers_while_the_default_executor_is_full(tmp_path, monkeypatch):
+    # On-demand MP3 encodes each hold a thread of asyncio's default executor for their whole run
+    # (asyncio.to_thread(run_ffmpeg, ...)). A few of them must not stall WAV playback and seeking.
+    import concurrent.futures
+    import threading
+    session_id = _session(tmp_path, monkeypatch)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=1))
+        release = threading.Event()
+        blocker = loop.run_in_executor(None, release.wait)   # the only default worker is busy
+        try:
+            return await asyncio.wait_for(_get(session_id, params={"precise": "true"}), 5)
+        finally:
+            release.set()
+            await blocker
+
+    try:
+        response = _on_loop(scenario)
+        assert response.status_code == 200
+        assert response.content == SOURCE_BYTES
+    finally:
+        session_store.remove(session_id)
