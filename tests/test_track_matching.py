@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from track_matching import coverage, match_tracklists, normalize_title
+from track_matching import match_tracklists, normalize_title
 
 
 class T:
@@ -60,12 +60,11 @@ def test_normalize_feat():
 def test_match_exact_with_lengths():
     m = match_tracklists(["One", "Two"], [T("One", "3:00"), T("Two", "4:05")])
     assert [(x.target_index, x.donor_index, x.length) for x in m] == [(0, 0, "3:00"), (1, 1, "4:05")]
-    assert coverage(m) == 2
 
 
 def test_match_remaster_and_feat_suffixes():
     m = match_tracklists(["Heroes", "Fame"], [T("Heroes (Remastered 2017)", "6:07"), T("Fame feat. X", "3:30")])
-    assert len(m) == 2 and coverage(m) == 2
+    assert len(m) == 2 and all(x.length for x in m)
 
 
 def test_match_diacritics():
@@ -106,7 +105,7 @@ def test_partial_lengths_only_counted_when_parseable():
     donor = [T("One", "3:00"), T("Two", ""), T("Three", "n/a")]
     m = match_tracklists(["One", "Two", "Three"], donor)
     assert len(m) == 3
-    assert coverage(m) == 1
+    assert sum(1 for x in m if x.length) == 1
     assert [x.length for x in m] == ["3:00", None, None]
 
 
@@ -167,11 +166,6 @@ def test_pair_from_the_full_key_pass_is_not_reconsidered():
     m = match_tracklists(["Glass River (Remastered)", "Glass River"], donor)
     # The bare title claims the bare donor in pass 0; the remastered one takes what is left.
     assert {x.target_index: x.length for x in m} == {0: "1:00", 1: "2:00"}
-
-
-def test_ratio_is_always_one():
-    m = match_tracklists(["Glass River (Remastered)"], [T("Glass River", "2:00")])
-    assert [x.ratio for x in m] == [1.0]
 
 
 def test_qualifier_pass_matches_remaster_tags_both_ways():
@@ -310,3 +304,100 @@ def test_normalization_is_linear_time_on_huge_titles():
         normalize_title(title)
     match_tracklists(["a (b) " * 8000], [T("a (b) " * 8000, "1:00")])
     assert time.perf_counter() - started < 2.0
+
+
+# --- repeated titles pair k-th with k-th, only when both lists repeat them equally often ---------
+
+def test_repeated_title_does_not_cross_when_donor_has_an_extra_leading_track():
+    # Review example: the first Interlude must not take the donor's 1:45 one.
+    donor = [T("Interlude", "0:20"), T("A", "3:00"), T("B", "3:00"), T("Interlude", "1:45"), T("C", "3:00")]
+    m = match_tracklists(["A", "B", "Interlude", "Interlude", "C"], donor)
+    got = {x.target_index: x.length for x in m}
+    assert got[2] == "0:20" and got[3] == "1:45"
+
+
+def test_unequal_repeat_counts_match_none_of_them_but_other_titles_still_match():
+    donor = [T("Untitled", "1:00"), T("Untitled", "2:00"), T("Untitled", "3:00"), T("Untitled", "4:00"), T("Real", "5:00")]
+    m = match_tracklists(["Untitled", "Untitled", "Untitled", "Real"], donor)
+    assert _pairs(m) == {3: 4}
+
+
+def test_repeat_in_only_one_list_is_ambiguous_and_skipped():
+    assert match_tracklists(["Intro"], [T("Intro", "0:10"), T("Intro", "0:20")]) == []
+    assert match_tracklists(["Intro", "Intro"], [T("Intro", "0:10")]) == []
+
+
+def test_repeat_count_ignores_tracks_claimed_by_the_full_key_pass():
+    # The plain "Song" pair is made in pass 0; the remaining remastered pair is then unique in pass 1.
+    donor = [T("Song", "1:00"), T("Song (2011 Remaster)", "2:00")]
+    m = match_tracklists(["Song", "Song (Remastered)"], donor)
+    assert {x.target_index: x.length for x in m} == {0: "1:00", 1: "2:00"}
+
+
+# --- mono and stereo are neutral only against an untagged title ---------------------------------
+
+@pytest.mark.parametrize("target,donor", [
+    ("Helter Skelter (Mono)", "Helter Skelter (Stereo)"),
+    ("Helter Skelter (Stereo)", "Helter Skelter (Mono)"),
+    ("Helter Skelter (Mono Version)", "Helter Skelter (Stereo Version)"),
+    ("Helter Skelter - Stereo Version", "Helter Skelter (Mono)"),
+])
+def test_opposite_channel_tags_never_match(target, donor):
+    assert match_tracklists([target], [T(donor, "4:29")]) == []
+
+
+@pytest.mark.parametrize("target,donor", [
+    ("Helter Skelter (Mono)", "Helter Skelter"),
+    ("Helter Skelter", "Helter Skelter (Stereo)"),
+    ("Helter Skelter (Mono)", "Helter Skelter (Mono Version)"),
+    ("Helter Skelter (Stereo)", "Helter Skelter - Stereo"),
+])
+def test_channel_tag_matches_untagged_or_same_tag(target, donor):
+    assert _pairs(match_tracklists([target], [T(donor, "4:29")])) == {0: 0}
+
+
+# --- review round 2: mixes are not channel tags; twins; pass interplay -----------------------------
+
+@pytest.mark.parametrize("target,donor", [
+    ("Song (Mono Mix)", "Song"),
+    ("Song (Stereo Mix)", "Song"),
+    ("Song", "Song (Stereo Mix)"),
+])
+def test_mono_or_stereo_mix_is_an_identity_qualifier_not_a_channel_tag(target, donor):
+    assert match_tracklists([target], [T(donor, "3:00")]) == []
+
+
+def test_mono_mix_still_pairs_with_the_same_mix():
+    assert _pairs(match_tracklists(["Song (Mono Mix)"], [T("Song (Mono Mix)", "3:00")])) == {0: 0}
+
+
+def test_channel_incompatible_twin_voids_the_whole_repeated_group():
+    donor = [T("Song (Mono) (Remastered)", "3:00"), T("Song (Stereo)", "3:01")]
+    assert match_tracklists(["Song", "Song (Mono)"], donor) == []
+
+
+def test_full_key_pairs_may_not_be_crossed_by_the_remainder():
+    # (a) t0<->d0 and t2<->d1 are full-key pairs; the remainder t1<->d2 would cross t2<->d1
+    donor = [T("Untitled", "1:00"), T("Untitled", "2:00"), T("Untitled (2011)", "3:00")]
+    m = match_tracklists(["Untitled", "Untitled (Remastered)", "Untitled"], donor)
+    assert _pairs(m) == {0: 0, 2: 1}
+
+
+def test_identity_group_with_different_counts_is_skipped_in_every_pass():
+    # (b) three bare "Untitled" targets (incl. the remastered one) against four: nothing pairs
+    donor = [T("Untitled", "1:00"), T("Untitled", "2:00"), T("Untitled", "3:00"), T("Untitled (Remastered)", "4:00")]
+    m = match_tracklists(["Untitled", "Untitled", "Untitled (Remastered)"], donor)
+    assert m == []
+
+
+def test_remainder_pairs_in_list_order_when_nothing_crosses():
+    donor = [T("Untitled (2011)", "1:00"), T("Untitled", "2:00")]
+    m = match_tracklists(["Untitled (Remastered)", "Untitled"], donor)
+    assert _pairs(m) == {0: 0, 1: 1}
+
+
+def test_full_key_pass_needs_equal_full_key_counts():
+    # "S (Mono)" is 2 vs 1 and "S" 1 vs 2: pass 0 pairs neither; the remainder pairs in order
+    donor = [T("S (Mono)", "1:00"), T("S", "2:00"), T("S", "3:00")]
+    m = match_tracklists(["S (Mono)", "S (Mono)", "S"], donor)
+    assert _pairs(m) == {0: 0, 1: 1, 2: 2}

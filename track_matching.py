@@ -24,14 +24,15 @@ from typing import List, Optional, Sequence
 # "Extended", "Part 2"), so they must agree exactly.
 
 # Qualifiers (squashed text) that do not change which recording a title names: remaster tags,
-# a bare year, album/LP version, stereo/mono, a single-track "original".
+# a bare year, album/LP version, a single-track "original".  Stereo/mono tags are neutral too, but
+# only against an untagged title (see ``_ParsedTitle.channel``), so they are not listed here.
 _NEUTRAL_QUALIFIER_RE = re.compile(
     r"(?:\d{4} )?(?:digital(?:ly)? )?remaster(?:ed)?(?: (?:version|edition))?(?: \d{4})?"
     r"|\d{4}"
     r"|(?:album|lp) version"
-    r"|(?:stereo|mono)(?: version)?"
     r"|original"
 )
+_CHANNEL_TAGS = frozenset({"mono", "stereo"})
 _FEAT_WORDS = frozenset({"feat", "ft", "featuring"})
 # Unbracketed clause starters.  "ft" is deliberately absent ("Six Ft. Deep") and "feat" needs
 # its dot ("No Mean Feat"): an unstripped credit is a safe missed match, a stripped title word
@@ -191,6 +192,7 @@ class _ParsedTitle:
     base: tuple  # canonical base tokens
     identity_qualifiers: frozenset  # canonical qualifiers that name the recording
     all_qualifiers: tuple  # every non-feat qualifier in order, neutral ones included
+    channel: str = ""  # "mono" / "stereo" when tagged: compatible with no tag, never the opposite tag
 
 
 def _canonical_qualifier(words: Sequence[str]) -> str:
@@ -211,6 +213,7 @@ def _parse_title(title: Optional[str]) -> _ParsedTitle:
         base_words = base_words[1:]
     base = _canonical_tokens(base_words, False)
     identity, everything = set(), []
+    channel = ""
 
     def add_qualifier(canonical: str, neutral: bool):
         everything.append(canonical)
@@ -225,12 +228,19 @@ def _parse_title(title: Optional[str]) -> _ParsedTitle:
         words = _squash(qualifier_text).split()
         if not words or words[0] in _FEAT_WORDS:
             continue  # empty, or only a featured-artist credit
-        add_qualifier(_canonical_qualifier(words), bool(_NEUTRAL_QUALIFIER_RE.fullmatch(" ".join(words))))
+        canonical = _canonical_qualifier(words)
+        # Decided from the raw words: "(Mono Mix)" / "(Stereo Mix)" may be a different mix, so they
+        # stay identity qualifiers (a safe miss); only "mono"/"stereo" [+ "version"] are channel tags
+        if words[0] in _CHANNEL_TAGS and words[1:] in ([], ["version"]):
+            channel = words[0]
+            add_qualifier(canonical, True)
+        else:
+            add_qualifier(canonical, bool(_NEUTRAL_QUALIFIER_RE.fullmatch(" ".join(words))))
     if not base:
         # Nothing but qualifiers (or credits): compare the whole text as the base.
         whole = _canonical_tokens(_squash(text).split(), False)
         return _ParsedTitle(tuple(whole), frozenset(), ())
-    return _ParsedTitle(tuple(base), frozenset(identity), tuple(everything))
+    return _ParsedTitle(tuple(base), frozenset(identity), tuple(everything), channel)
 
 
 def full_title_key(title: Optional[str]) -> str:
@@ -280,58 +290,70 @@ def _field(track, *names):
 class TrackMatch:
     target_index: int
     donor_index: int
-    ratio: float  # always 1.0 (exact matching only); kept for compatibility
     length: Optional[str]  # normalized "m:ss"; None when the donor track has no parseable length
 
 
 def match_tracklists(target_titles: Sequence[str], donor_tracks: Sequence) -> List[TrackMatch]:
-    """One-to-one match of target titles to donor tracks by exact comparable title, two passes.
+    """One-to-one match of target titles to donor tracks by exact comparable title.
 
-    (0) ``full_title_key`` equal: every qualifier kept, so "(Stereo)" / "(Mono)" or "(Remastered)"
-    pair with their own kind even when the donor lists them in another order.  (1) the canonical
-    key with identity-neutral qualifiers (remaster tags, a bare year, album version, stereo/mono)
-    stripped, for the targets and donors pass 0 left unclaimed.  There is no fuzzy pass (see the
-    module comment).  Each track is used at most once; equal candidates prefer the donor index
-    nearest the target's own index.  Targets without a match are absent; every match has
-    ``ratio`` 1.0.
+    Tracks are first grouped by *identity key* (base plus identity-bearing qualifiers; remaster
+    tags, a bare year, album version and mono/stereo tags are neutral).  A group whose size differs
+    between the two lists is skipped entirely: a title repeated ("Interlude" twice, several
+    "Untitled") is only paired when both lists repeat it equally often, so a vinyl that left one
+    out never gets another track's length.  Unique keys (1 against 1) are the common case of this.
+
+    Inside an equal-sized group, two passes in list order:
+    (0) equal ``full_title_key`` (every qualifier kept, so "(Stereo)" / "(Remastered)" pair with
+    their own kind in any order), the k-th target with the k-th donor, only when both have the
+    same number of that full key; (1) the remainder, k-th with k-th, which is refused (the whole
+    remainder stays unmatched) if any pair would cross a pass-0 pair of the group (order must be
+    preserved) or join opposite mono/stereo tags (mono/stereo is neutral only against an untagged
+    title).  There is no fuzzy pass (see the module comment).  Targets without a match are absent.
     """
     donors = [_parse_title(_field(t, "title") or "") for t in donor_tracks]
     targets = [_parse_title(t) for t in target_titles]
-    claimed_donors = set()
+
+    def identity_key(parsed):
+        return parsed.base, parsed.identity_qualifiers
+
+    def full_key(parsed):
+        return parsed.base + tuple(sorted(parsed.all_qualifiers))
+
+    def group_by(indexes, parsed_list, key_of):
+        groups = {}
+        for index in indexes:
+            if parsed_list[index].base:
+                groups.setdefault(key_of(parsed_list[index]), []).append(index)
+        return groups
+
     matched_targets = {}  # target index -> donor index
-
-    def run_pass(same):
-        for i in range(len(target_titles)):
-            if i in matched_targets or not targets[i].base:
-                continue
-            best = None
-            for j in range(len(donor_tracks)):
-                if j in claimed_donors or not same(targets[i], donors[j]):
-                    continue
-                key = (-abs(j - i), -j)
-                if best is None or key > best[0]:
-                    best = (key, j)
-            if best is not None:
-                claimed_donors.add(best[1])
-                matched_targets[i] = best[1]
-
-    def same_full_key(a, b):
-        return a.base + tuple(sorted(a.all_qualifiers)) == b.base + tuple(sorted(b.all_qualifiers))
-
-    def same_identity(a, b):
-        return a.base == b.base and a.identity_qualifiers == b.identity_qualifiers
-
-    run_pass(same_full_key)
-    run_pass(same_identity)
+    donor_groups = group_by(range(len(donors)), donors, identity_key)
+    for key, target_indexes in group_by(range(len(targets)), targets, identity_key).items():
+        donor_indexes = donor_groups.get(key, [])
+        if len(target_indexes) != len(donor_indexes):
+            continue
+        pairs = {}  # this group's pairs: target index -> donor index
+        donors_by_full_key = group_by(donor_indexes, donors, full_key)
+        for full, full_targets in group_by(target_indexes, targets, full_key).items():
+            full_donors = donors_by_full_key.get(full, [])
+            if len(full_targets) == len(full_donors):
+                pairs.update(zip(full_targets, full_donors))
+        rest_targets = [i for i in target_indexes if i not in pairs]
+        claimed_donors = set(pairs.values())
+        rest_donors = [j for j in donor_indexes if j not in claimed_donors]
+        rest = list(zip(rest_targets, rest_donors))
+        compatible = all(
+            not (targets[i].channel and donors[j].channel and targets[i].channel != donors[j].channel)
+            for i, j in rest
+        )
+        crossing = any((i - i2) * (j - j2) < 0 for i, j in rest for i2, j2 in pairs.items())
+        if compatible and not crossing:
+            pairs.update(rest)
+        matched_targets.update(pairs)
 
     matches: List[TrackMatch] = []
     for i in sorted(matched_targets):
         j = matched_targets[i]
         secs = parse_duration(_field(donor_tracks[j], "duration_str", "duration"))
-        matches.append(TrackMatch(i, j, 1.0, format_duration(secs) if secs else None))
+        matches.append(TrackMatch(i, j, format_duration(secs) if secs else None))
     return matches
-
-
-def coverage(matches: Sequence[TrackMatch]) -> int:
-    """Number of matches that carry a parseable length."""
-    return sum(1 for m in matches if m.length)

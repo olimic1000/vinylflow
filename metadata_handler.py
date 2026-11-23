@@ -6,6 +6,7 @@ Manages release searches, track mapping, and file tagging for FLAC, MP3, and AIF
 """
 
 import re
+import copy
 import threading
 import time
 from collections import OrderedDict
@@ -26,7 +27,7 @@ from mutagen.aiff import AIFF
 from PIL import Image
 from config import DEFAULT_TRACK_NUMBERING
 from album_description import DIGITIZED_COMMENT, AlbumDescriptions
-from track_matching import match_tracklists
+from track_matching import match_tracklists, parse_duration
 
 from release_credits import (
     VARIOUS_ARTISTS,
@@ -331,12 +332,20 @@ class MetadataHandler:
         self._rate_limit_lock = threading.Lock()
         self._release_cache: "OrderedDict[int, DiscogsRelease]" = OrderedDict()
         self._release_cache_lock = threading.Lock()
-        self._donor_cache: dict = {}
+        self._donor_cache: "OrderedDict[int, dict]" = OrderedDict()
         self._donor_cache_lock = threading.Lock()
         self._donor_inflight: dict = {}  # release id -> Event set when its running lookup ends
         self.album_descriptions = AlbumDescriptions()
 
     RELEASE_CACHE_SIZE = 128
+    DONOR_CACHE_SIZE = RELEASE_CACHE_SIZE  # finished length-donor reports kept (LRU)
+    DONOR_WAIT_TIMEOUT_S = 120  # longest a second lookup waits for the running one before running its own
+    DONOR_WAIT_SLICE_S = 1.0  # a waiter re-checks the cache this often (a stuck lookup's Event may never fire)
+    # A donor length "disagrees" with the release's own when it differs by more than the larger of
+    # this many seconds and this fraction of the release's length (a different mix or edit, or one
+    # of the two lengths is wrong).  Such donors are demoted, never dropped.
+    DISAGREE_MIN_S = 10
+    DISAGREE_FRACTION = 0.05
     DONOR_VERSION_PAGES = 3  # max master-version pages read per search
 
     def reinitialize(self, discogs_token: str, user_agent: str):
@@ -502,8 +511,9 @@ class MetadataHandler:
         m = re.match(r"\s*(\d{4})", str(value or ""))
         return int(m.group(1)) if m else None
 
-    def _master_versions(self, master_id: int) -> List[dict]:
-        """Raw ``.data`` dicts of a master's versions (a few rate-limited pages).
+    def _master_versions(self, master_id: int):
+        """``(versions, total)``: raw ``.data`` dicts of a master's versions (a few rate-limited
+        pages) and the master's total version count (``None`` when Discogs did not say).
 
         Only ``.data`` is read from the library objects: attribute access could
         trigger a lazy fetch per version.  ``versions_url`` is derived from the
@@ -520,53 +530,92 @@ class MetadataHandler:
             if page_no > 1:
                 self._rate_limit()
             out.extend(v.data for v in versions.page(page_no))
-        return out
+        total = getattr(versions, "count", None)  # read from the pagination info already loaded
+        return out, (int(total) if total else None)
 
-    def find_length_donors(
+    def _remember_donor_report(self, key: int, report: dict) -> None:
+        """Store a finished report, evicting the least recently used beyond the cap."""
+        with self._donor_cache_lock:
+            self._donor_cache[key] = copy.deepcopy(report)  # callers get their own copies, never this one
+            self._donor_cache.move_to_end(key)
+            while len(self._donor_cache) > self.DONOR_CACHE_SIZE:
+                self._donor_cache.popitem(last=False)
+
+    def find_length_donors(self, release_id: int, **kwargs) -> List[dict]:
+        """The ``donors`` of :meth:`find_length_donor_report`."""
+        return self.find_length_donor_report(release_id, **kwargs)["donors"]
+
+    def find_length_donor_report(
         self,
         release_id: int,
         max_fetches: int = 12,
         want: int = 3,
         on_progress=None,
-    ) -> List[dict]:
+    ) -> dict:
         """Find other pressings of the same master whose tracklists carry lengths.
 
         Walks the master's versions (same major format as the release first,
         then the rest; the release itself is skipped), fetching each
         candidate's tracklist through the cached ``get_release_by_id`` --
         at most ``max_fetches`` real fetches (cache hits are free) -- and stops
-        early once ``want`` donors cover every track.  Results are cached per
-        release id.  ``on_progress(checked, budget, found)`` is called from the
-        calling thread.
+        early once ``want`` donors cover every missing length without disagreeing with the
+        release's own.  Reports are cached per release id (LRU).  ``on_progress(checked, budget,
+        found)`` is called from the calling thread.
 
-        Returns dicts: release_id, label, year, country, format, matched (lengths
-        it can supply), missing (tracks of this release without a length),
-        lengths ({"<target index>": "m:ss"}, only for tracks missing one), most
-        fills first.  A donor that fills nothing is dropped.  Raises
-        ``ReleaseNotFound`` for a 404 on the release itself, and other
-        exceptions on Discogs errors (listing versions, or every donor fetch
-        failing).  A lookup in which some fetch failed is not cached.
+        Returns ``{"donors": [...], "checked": versions examined, "versions": other versions
+        the master has (None if unknown)}``; ``checked < versions`` means the budget ran out.
+        A donor dict has release_id, label, year, country, format, matched (lengths it can
+        supply), missing (tracks of this release without a length), lengths ({"<target index>":
+        "m:ss"}, only for tracks missing one), and ``compared`` / ``disagree``: of the tracks both
+        the release and the donor give a length for, how many were compared and how many differ
+        by more than ``DISAGREE_MIN_S`` / ``DISAGREE_FRACTION`` (a different mix or edit, or one
+        wrong length); ``compared_indexes`` / ``disagree_indexes`` list those tracks (keyed like
+        ``lengths``) so a UI showing only some sides can recount.  Donors that agree come first, then most fills; a disagreeing donor is
+        demoted, not dropped, because the release's own length may be the wrong one.  A donor that
+        fills nothing is dropped.  Raises ``ReleaseNotFound`` for a 404 on the release itself, and
+        other exceptions on Discogs errors (listing versions, or every donor fetch failing).  A
+        lookup in which some fetch failed is not cached.
         """
         key = int(release_id)
+        deadline = None
+        waited_on = None  # the owner Event the deadline belongs to
         while True:
             with self._donor_cache_lock:
                 cached = self._donor_cache.get(key)
                 if cached is not None:
-                    return [dict(d) for d in cached]
+                    self._donor_cache.move_to_end(key)
+                    return copy.deepcopy(cached)
                 running = self._donor_inflight.get(key)
-                if running is None:
-                    self._donor_inflight[key] = threading.Event()
+                if running is not None and running is not waited_on:
+                    # A new owner (first wait, or another waiter took over from a stuck one) gets
+                    # the full timeout: otherwise every waiter that timed out on the stuck owner
+                    # would take over in turn and start its own lookup.
+                    waited_on = running
+                    deadline = time.monotonic() + self.DONOR_WAIT_TIMEOUT_S
+                remaining = None if running is None else deadline - time.monotonic()
+                if running is None or remaining <= 0:
+                    # Nobody is looking up this release, or the running lookup is stuck (a hung
+                    # network call): this caller becomes the owner.  Registering its own Event means
+                    # later callers wait on this lookup instead of each waiting out the timeout.
+                    own_event = threading.Event()
+                    self._donor_inflight[key] = own_event
                     break
             # Another thread is already looking up this release: wait, then read its cached result
-            # (or, if it failed and cached nothing, run our own lookup on the next pass).
-            running.wait()
+            # (or, if it failed and cached nothing, run our own lookup on the next pass).  Waiting
+            # is in short slices so a result cached by someone else is picked up even if the
+            # Event we hold never fires.
+            running.wait(timeout=min(self.DONOR_WAIT_SLICE_S, remaining))
         try:
             return self._find_length_donors_uncached(key, max_fetches, want, on_progress)
         finally:
             with self._donor_cache_lock:
-                self._donor_inflight.pop(key).set()
+                # Only our own entry: a stuck owner we replaced may finish much later and must not
+                # remove (or release the waiters of) the lookup that took over from it
+                if self._donor_inflight.get(key) is own_event:
+                    del self._donor_inflight[key]
+            own_event.set()
 
-    def _find_length_donors_uncached(self, key, max_fetches, want, on_progress) -> List[dict]:
+    def _find_length_donors_uncached(self, key, max_fetches, want, on_progress) -> dict:
         try:
             release = self._load_release(key)
         except Exception as e:
@@ -578,9 +627,9 @@ class MetadataHandler:
         total = len(release.tracks)
         master_id = getattr(release, "master_id", None)
         if not master_id or total == 0 or not missing:
-            with self._donor_cache_lock:
-                self._donor_cache[key] = []
-            return []
+            report = {"donors": [], "checked": 0, "versions": None}
+            self._remember_donor_report(key, report)
+            return copy.deepcopy(report)
 
         def notify(checked, found):
             if on_progress:
@@ -603,16 +652,18 @@ class MetadataHandler:
             y = self._year_of(v.get("released") or v.get("year"))
             return abs(y - my_year) if (y and my_year) else 9999
 
-        candidates = [
-            v for v in self._master_versions(int(master_id))
-            if v.get("id") is not None and int(v["id"]) != key
-        ]
+        listed_versions, listed_total = self._master_versions(int(master_id))
+        candidates = [v for v in listed_versions if v.get("id") is not None and int(v["id"]) != key]
         candidates.sort(key=lambda v: (not same_format(v), year_gap(v)))
+        # The release is always one of its master's versions, listed or not (only some pages are
+        # read), so the others are Discogs' total minus one
+        other_versions = max(listed_total - 1, len(candidates)) if listed_total else len(candidates)
 
         targets = [t.title for t in release.tracks]
         missing_set = set(missing)
         donors = []
         fetches = 0
+        examined = 0
         failed_fetches = 0
         for v in candidates:
             vid = int(v["id"])
@@ -628,6 +679,7 @@ class MetadataHandler:
             if donor is None:
                 failed_fetches += 1
                 continue
+            examined += 1  # versions actually read; a failed fetch examined nothing
             matches = match_tracklists(targets, donor.tracks)
             lengths = {
                 str(m.target_index): m.length
@@ -635,6 +687,15 @@ class MetadataHandler:
             }
             if not lengths:
                 continue
+            compared_indexes, disagree_indexes = [], []
+            for m in matches:
+                own_seconds = release.tracks[m.target_index].duration_seconds
+                if not m.length or not own_seconds:
+                    continue
+                compared_indexes.append(m.target_index)
+                allowed = max(self.DISAGREE_MIN_S, self.DISAGREE_FRACTION * own_seconds)
+                if abs(parse_duration(m.length) - own_seconds) > allowed:
+                    disagree_indexes.append(m.target_index)
             donors.append(
                 {
                     "release_id": vid,
@@ -646,11 +707,17 @@ class MetadataHandler:
                     "matched": len(lengths),
                     "missing": len(missing),
                     "lengths": lengths,
+                    "compared": len(compared_indexes),
+                    "disagree": len(disagree_indexes),
+                    # Which tracks (indexes, keyed like `lengths`) were compared / disagreed: the UI
+                    # recounts them for the chosen sides, the totals above cover the whole release
+                    "compared_indexes": compared_indexes,
+                    "disagree_indexes": disagree_indexes,
                     "_same": same_format(v),
                     "_gap": year_gap(v),
                 }
             )
-            if sum(1 for d in donors if d["matched"] == len(missing)) >= want:
+            if sum(1 for d in donors if d["matched"] == len(missing) and not d["disagree"]) >= want:
                 break
             if not is_cached:
                 notify(fetches, len(donors))
@@ -659,14 +726,14 @@ class MetadataHandler:
             # Every Discogs fetch failed: that is an outage, not "no pressing has the lengths"
             raise RuntimeError("Discogs could not be reached for any other pressing")
 
-        donors.sort(key=lambda d: (-d["matched"], not d["_same"], d["_gap"]))
+        donors.sort(key=lambda d: (bool(d["disagree"]), -d["matched"], not d["_same"], d["_gap"]))
         result = [{k: v for k, v in d.items() if not k.startswith("_")} for d in donors]
         notify(fetches, len(result))
+        report = {"donors": result, "checked": examined, "versions": other_versions}
         if not failed_fetches:
             # An incomplete lookup (a fetch failed) is not remembered: a retry may find more
-            with self._donor_cache_lock:
-                self._donor_cache[key] = result
-        return [dict(d) for d in result]
+            self._remember_donor_report(key, report)
+        return copy.deepcopy(report)
 
     def download_cover_art(self, url: str, output_path: Path, max_size=1400) -> bool:
         """
