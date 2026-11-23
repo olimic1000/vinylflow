@@ -7,7 +7,10 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 pillow>=10.0.0
 numpy>=1.24.0
-fastapi>=0.104.0
+# HTTP Range in Starlette's FileResponse arrived in Starlette 0.39.0, and FastAPI 0.115.3 is the first
+# release that requires Starlette >= 0.40 (the waveform streams the recording with preload='metadata'
+# and seeks by Range)
+fastapi>=0.115.3
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
 websockets>=12.0
