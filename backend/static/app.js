@@ -44,8 +44,9 @@ const REGION_CLAMP_TOLERANCE_S = 0.01;
 const SECONDS_PER_MINUTE = 60;
 // Cuts closer than this are "touching": the next track follows when the previous one's end moves (seconds)
 const TOUCHING_CUTS_S = 0.05;
-// "3.45" typed as a length: seconds by our parser, but almost always meant as m:ss
-const MINUTES_DOT_SECONDS_PATTERN = /^\d{1,2}\.\d{2}$/;
+// "3.45" typed as a length: seconds by our parser, but almost always meant as m:ss.
+// "3.5" too (3:05? 3:30? 3:50?), while "45.5" stays a valid length in seconds
+const MINUTES_DOT_SECONDS_PATTERN = /^(\d{1,2}\.\d{2}|\d\.\d)$/;
 // Detected-minus-Discogs length: within DELTA_GOOD_S is good, within DELTA_WARN_S a warning, else bad (seconds)
 const DELTA_GOOD_S = 3;
 const DELTA_WARN_S = 10;
@@ -2628,7 +2629,7 @@ function vinylApp() {
             if (MINUTES_DOT_SECONDS_PATTERN.test(typedText)) {
                 const [minutes, seconds] = typedText.split('.');
                 showLength();
-                if (Number(seconds) < SECONDS_PER_MINUTE) {
+                if (seconds.length === 2 && Number(seconds) < SECONDS_PER_MINUTE) {
                     const suggestion = `${parseInt(minutes, 10)}:${seconds}`;
                     // The toast outlives the click: by then rows may have been deleted or the recording
                     // switched or locked, so the action finds its track again and re-checks the file
@@ -2648,7 +2649,7 @@ function vinylApp() {
                         },
                     });
                 } else {
-                    // "3.75" cannot be m:ss either: refuse without offering a "3:75" that would fail
+                    // "3.75" cannot be m:ss either, and "3.5" is ambiguous: refuse without offering a fix
                     this.notify('Type a length like 3:45 (minutes:seconds).', { type: 'warning', timeout: 4000 });
                 }
                 return false;

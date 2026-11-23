@@ -428,6 +428,17 @@ assert.strictEqual(vinylApp().playerVolume, 1, 'no localStorage at all');
     app.setTrackLength(0, '3.59', { value: '' });
     assert.strictEqual(app.toasts.at(-1).action.label, 'Use 3:59', 'seconds below 60 still get the offer');
 
+    // ---- "3.5" (one decimal) is refused too, with no guess at 3:05 / 3:30 / 3:50; "45.5" s stays valid ----
+    app = dragApp([track(1, 10, 235), track(2, 235, 470)]);
+    const short = { value: '3.5' };
+    assert.strictEqual(app.setTrackLength(0, '3.5', short), false);
+    assert.strictEqual(short.value, '3:45');
+    assert.deepStrictEqual(app.detectedTracks.map(t => [t.start, t.end]), [[10, 235], [235, 470]], '3.5 changes nothing');
+    assert.strictEqual(app.toasts.at(-1).message, 'Type a length like 3:45 (minutes:seconds).');
+    assert.ok(!app.toasts.at(-1).action, 'no action for an ambiguous one-decimal length');
+    assert.notStrictEqual(app.setTrackLength(0, '45.5', { value: '' }), false, '45.5 is a length in seconds');
+    assert.strictEqual(app.detectedTracks[0].end, 55.5);
+
     finished = true;
     console.log('pr99_review ok');
 })().catch(error => { console.error(error); process.exit(1); });

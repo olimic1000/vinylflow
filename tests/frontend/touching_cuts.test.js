@@ -95,8 +95,8 @@ a = app([trk(1, 10, 100), trk(2, 100, 470)]);
 assert.ok(a.setTrackLength(0, '225'));
 assert.strictEqual(a.detectedTracks[0].end, 235);
 a = app([trk(1, 10, 100), trk(2, 100, 470)]);
-assert.ok(a.setTrackLength(0, '9.5'));
-assert.strictEqual(a.detectedTracks[0].end, 19.5);
+assert.ok(a.setTrackLength(0, '19.5'));   // decimal seconds ("9.5" is refused as a likely m.s slip)
+assert.strictEqual(a.detectedTracks[0].end, 29.5);
 a = app([trk(1, 10, 100), trk(2, 100, 470)]);
 assert.ok(a.setTrackLength(0, '225.5'));
 console.log('touching cuts ok');
