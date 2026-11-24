@@ -82,6 +82,60 @@ const DISCOGS_WEB_LINK = new RegExp(
 const DISCOGS_API_LINK = new RegExp(
     `^(?:https?://)?api\\.discogs\\.com/(release|master)s/(${DISCOGS_ID})(?:[/?#]\\S*)?$`, 'i');
 
+// Wheel/pinch zoom speed: zoom factor = exp(-deltaY * rate); one 100 px wheel notch ~ x1.35
+const WHEEL_ZOOM_RATE = 0.003;
+// Zoom limits in pixels per second (the lower limit is "fit to width", computed per recording)
+const MAX_ZOOM_PX_PER_SEC = 500;
+// Dragging a track wider than the view keeps its leading edge this far (fraction of the view) in from the screen edge
+const DRAG_EDGE_MARGIN = 0.15;
+// The scrollbar thumb is only redrawn when it moved by more than this fraction of the recording
+const WAVE_VIEW_EPSILON = 1e-4;
+// The drawn scrollbar thumb never gets narrower than this (index.html's CSS uses the same 24px)
+const WAVE_THUMB_MIN_PX = 24;
+// The waveform counts as zoomed in (scrollbar shown) when it is wider than the view by more than
+// this many pixels: WaveSurfer sizes the wrapper with Math.ceil, so "fit" can be 1 px too wide
+const WAVE_SCROLLABLE_MIN_OVERFLOW_PX = 1;
+// A wheel step that would change the zoom by less than this fraction is dropped (a relative test:
+// fit-to-width of a 90-minute recording is 0.17 px/s, so an absolute one swallowed slow pinches)
+const WHEEL_ZOOM_MIN_RELATIVE_STEP = 1e-6;
+// The initial zoom of a short recording stops here (px/s); longer ones open fitted to the width
+const MAX_INITIAL_ZOOM_PX_PER_SEC = 200;
+
+/**
+ * Pixels per second that make the whole recording exactly fill the view: the zoom-out floor.
+ * 0 when the view has no width yet (or the duration is unknown): WaveSurfer's zoom(0) then fills
+ * its parent, so the waveform is fitted as soon as the view gets a width.
+ */
+function fitToWidthZoom(viewWidth, duration) {
+    return duration > 0 && viewWidth > 0 ? viewWidth / duration : 0;
+}
+
+/**
+ * Scrollbar thumb as fractions: its width is the visible span, its position runs 0..1 over the
+ * distance the thumb can travel (start / (1 - span)), so the thumb reaches both bar ends even
+ * where a minimum pixel width makes it wider than the true span.
+ */
+function waveThumbFractions(view) {
+    const span = Math.max(0, Math.min(1, view.end - view.start));
+    const position = span >= 1 ? 0 : Math.max(0, Math.min(1, view.start / (1 - span)));
+    return { span, position };
+}
+
+/** The same thumb in pixels for a bar `barWidth` wide (what drawing and dragging both use). */
+function waveThumbGeometry(view, barWidth) {
+    const { span, position } = waveThumbFractions(view);
+    const width = Math.min(barWidth, Math.max(WAVE_THUMB_MIN_PX, span * barWidth));
+    return { width, left: position * (barWidth - width) };
+}
+
+/** Inverse of waveThumbGeometry: where the view starts (fraction) for a thumb at `left` px. */
+function waveStartForThumbLeft(left, view, barWidth) {
+    const { span } = waveThumbFractions(view);
+    const travel = barWidth - waveThumbGeometry(view, barWidth).width;
+    if (travel <= 0 || span >= 1) return 0;
+    return Math.max(0, Math.min(1, left / travel)) * (1 - span);
+}
+
 /**
  * A Discogs release reference typed or pasted by the user: "2874426", "r2874426",
  * "[r2874426]", "m123" (master), or a link that is the whole input: discogs.com/release/<id>
@@ -207,6 +261,7 @@ function vinylApp() {
         playerNotice: '',       // inline error when playback cannot start
         playerInfo: '',         // muted note: the waveform plays the MP3 preview, not the WAV
         _audioSource: null,     // {waveform, fileId, precise, peaks, duration, fellBack, settled} of the loaded audio
+        _waveScroller: null,    // WaveSurfer's scrolling element, for the scrollbar (markRaw)
         _restoreZoom: null,     // zoom to re-apply when a preview-fallback reload becomes ready
         playerBuffering: false,
         _pendingSeek: null,     // a seek made before the media element knew its length
@@ -214,6 +269,7 @@ function vinylApp() {
         playerVolume: readStoredPlayerVolume(),   // 0-1, shared by the waveform and the fallback player
         fallbackAudioUrl: '',   // plain <audio> source while the waveform could not be built
         _spaceClaimedByPlayer: false,   // the last Space keydown toggled playback: cancel its keyup too
+        _regionDragGuard: null, // document-level region-drag release guard, installed once (markRaw)
         // How the focused element got its focus.  Changes on every pointerdown and is read by no
         // template, so it lives in a markRaw holder: no reactive writes, no re-render.
         _pointerFocus: markRaw({ pending: false, byPointer: false, lastFocusIn: null, lastFocused: null }),
@@ -223,6 +279,8 @@ function vinylApp() {
         previewPollMaxMs: PREVIEW_POLL_MAX_MS,
         waveformRegions: null,
         currentZoom: 50,
+        waveScrollable: false,            // wider than the view by more than a pixel: the scrollbar shows
+        waveView: { start: 0, end: 1 },   // visible part of the waveform (fractions of the recording), for the scrollbar
 
         // Context Menu for waveform splits
         contextMenu: {
@@ -3129,7 +3187,8 @@ function vinylApp() {
                     height: 'auto',
                     normalize: false,   // peaks arrive pre-scaled (scalePeaksToRecording)
                     barWidth: 2,
-                    barGap: 1
+                    barGap: 1,
+                    hideScrollbar: true   // our own always-visible scrollbar sits under the waveform
                 }));
                 built = this.waveform;
 
@@ -3192,6 +3251,9 @@ function vinylApp() {
                 }
 
                 this.waveformRegions = markRaw(this.waveform.registerPlugin(WaveSurfer.Regions.create()));
+                this.tameRegionDragScroll(this.waveform, this.waveformRegions);
+                this.guardRegionDragRelease(this.waveformRegions);
+                this.bindWaveScrollbar(this.waveform);
 
                 const peaksResponse = await fetch(`/api/waveform-peaks/${fileId}`);
                 if (!isCurrentBuild()) return;
@@ -3215,10 +3277,13 @@ function vinylApp() {
                     this.playDuration = duration;
                     if (this.playTime > 0) this.seekTo(this.playTime);
                     const container = document.getElementById('waveform');
+                    // offsetWidth can still be 0 when 'ready' fires (layout not settled; the scroller inside is
+                    // 0 wide too). Then the zoom is 0, which WaveSurfer reads as "fill the parent" (= fit),
+                    // and the zoom buttons work from the live fit (effectiveZoom) once the view has a width.
                     const containerWidth = container ? container.offsetWidth : 1000;
 
-                    const calculatedZoom = containerWidth / duration;
-                    this.currentZoom = this._restoreZoom || Math.max(1, Math.min(calculatedZoom, 200));
+                    const calculatedZoom = fitToWidthZoom(containerWidth, duration);
+                    this.currentZoom = this._restoreZoom || Math.min(calculatedZoom, MAX_INITIAL_ZOOM_PX_PER_SEC);
                     this._restoreZoom = null;
                     this.waveform.zoom(this.currentZoom);
 
@@ -3377,7 +3442,7 @@ function vinylApp() {
             this.isPlaying = false;
             this.playerInfo = PREVIEW_AUDIO_NOTICE;
             this.waveformLoading = true;
-            this._restoreZoom = this.currentZoom;
+            this._restoreZoom = this.effectiveZoom();
             if (this.playTime > 0) this._pendingSeek = this.playTime;
             const stale = () => waveform !== this.waveform || fileId !== this.currentFileId;
             Promise.resolve(waveform.load(this.audioUrl(fileId, false), source.peaks, source.duration)).then(() => {
@@ -3784,6 +3849,7 @@ function vinylApp() {
             // A play() started on the WAV can reject after the preview fallback took over (and
             // restarted playback itself); that says nothing about the preview.
             const generation = this._audioSource?.generation;
+            this.followPlayhead(true);
             try {
                 const started = waveform.play();
                 if (started && typeof started.then === 'function') {
@@ -3861,6 +3927,7 @@ function vinylApp() {
         seekTo(time) {
             if (!this.waveform || !Number.isFinite(time)) return;
             time = Math.max(0, Math.min(time, this.waveform.getDuration()));
+            this.followPlayhead(true);   // a seek (click, row play, audition) brings the view back to the playhead
             const media = this.waveform.getMediaElement?.();
             this._pendingSeek = media?.readyState === 0 ? time : null;
             this.waveform.setTime(time);
@@ -4065,16 +4132,211 @@ function vinylApp() {
             this.seekTo(relativeX * this.waveform.getDuration());
         },
 
+        /**
+         * WaveSurfer scrolls a dragged region into view on every pointer move: its start when
+         * that is off-screen, else its end.  A region wider than the view always has one of them
+         * off-screen, so a whole-region drag while zoomed in flipped the view between the two.
+         * Wider regions now follow their leading edge instead: the edge the drag moves towards
+         * (start when dragging left, end when dragging right, fixed for the whole drag) is kept
+         * DRAG_EDGE_MARGIN of the view in from the screen edge, so what lies ahead of the track
+         * (e.g. the previous track it is being moved up to) scrolls into sight.
+         *
+         * Depends on the vendored WaveSurfer 7.8.10 (backend/static/vendor/): the regions plugin
+         * calls its own `adjustScroll(region)` while dragging, and `getWrapper().parentElement`
+         * is the element that scrolls. Re-check both when updating the vendored version.
+         */
+        tameRegionDragScroll(waveform, regions) {
+            const follow = regions.adjustScroll?.bind(regions);
+            if (!follow) return;
+            const drags = new WeakMap();   // region -> { start, dir } for the drag in progress
+            // Where the region was when the pointer went down, so the first move knows its direction
+            regions.on?.('region-created', region => region.element?.addEventListener('pointerdown',
+                () => drags.set(region, { start: region.start, dir: 0 })));
+            regions.on?.('region-updated', region => drags.delete(region));   // drag ended
+            regions.adjustScroll = region => {
+                const view = waveform.getWrapper?.()?.parentElement;
+                const width = region?.element?.getBoundingClientRect?.().width || 0;
+                if (!view || width <= view.clientWidth) { follow(region); return; }
+                const drag = drags.get(region) || { start: region.start, dir: 0 };
+                if (!drag.dir && region.start !== drag.start) drag.dir = region.start < drag.start ? -1 : 1;
+                drags.set(region, drag);
+                if (!drag.dir) return;
+                const pxPerSec = view.scrollWidth / (waveform.getDuration?.() || 1);
+                const margin = view.clientWidth * DRAG_EDGE_MARGIN;
+                view.scrollLeft = drag.dir < 0
+                    ? region.start * pxPerSec - margin
+                    : region.end * pxPerSec - (view.clientWidth - margin);
+            };
+        },
+
+        /**
+         * The regions plugin ends a drag only on a document pointerup/pointercancel and its
+         * pointermove never checks `buttons`; a second pointerdown on the same element also
+         * overwrites the remover of the first drag's listeners. If a pointerup is lost (macOS
+         * Ctrl+click opening our context menu, a fast double-click) the region stays glued to
+         * the pointer. This ends such a drag with a synthetic document pointerup: when a
+         * press arrives while one is still active, or a move arrives with no button held.
+         * Document listeners are installed once per app, however often the waveform reloads.
+         */
+        guardRegionDragRelease(regions) {
+            if (!this._regionDragGuard) {
+                const guard = this._regionDragGuard = markRaw({ active: false });
+                guard.endDrag = event => {
+                    guard.active = false;
+                    const init = { bubbles: true, clientX: event.clientX, clientY: event.clientY };
+                    document.dispatchEvent(typeof PointerEvent === 'function'
+                        ? new PointerEvent('pointerup', init) : new MouseEvent('pointerup', init));
+                };
+                document.addEventListener('pointermove', event => {
+                    if (guard.active && event.buttons === 0) guard.endDrag(event);
+                }, true);
+                // Real or synthetic releases both clear the flag
+                for (const type of ['pointerup', 'pointercancel']) {
+                    document.addEventListener(type, () => { guard.active = false; }, true);
+                }
+            }
+            const guard = this._regionDragGuard;
+            // Capture phase: runs before the plugin's own (and the resize handles') listeners
+            regions.on?.('region-created', region => region.element?.addEventListener('pointerdown', event => {
+                if (event.button !== 0) return;
+                if (guard.active) guard.endDrag(event);
+                guard.active = true;
+            }, true));
+        },
+
+        /**
+         * Track WaveSurfer's scroll position for the custom scrollbar (its scroll element wraps
+         * the waveform wrapper) and zoom on Cmd/Ctrl + wheel. Everything bound here belongs to
+         * this waveform and is removed when it is destroyed.
+         */
+        bindWaveScrollbar(waveform) {
+            const scroller = waveform.getWrapper?.()?.parentElement;
+            if (!scroller) return;
+            this._waveScroller = markRaw(scroller);
+            const update = () => {
+                if (waveform !== this.waveform) return;
+                this.waveScrollable = scroller.scrollWidth - scroller.clientWidth > WAVE_SCROLLABLE_MIN_OVERFLOW_PX;
+                const total = scroller.scrollWidth || 1;
+                const start = Math.max(0, scroller.scrollLeft / total);
+                const end = Math.min(1, (scroller.scrollLeft + scroller.clientWidth) / total);
+                if (Math.abs(start - this.waveView.start) > WAVE_VIEW_EPSILON || Math.abs(end - this.waveView.end) > WAVE_VIEW_EPSILON) {
+                    this.waveView = { start, end };
+                }
+            };
+            scroller.addEventListener('scroll', update, { passive: true });
+            for (const ev of ['zoom', 'redraw', 'ready']) waveform.on(ev, update);
+            // ⌘/Ctrl + wheel, and trackpad pinch (browsers send it as Ctrl + wheel), zoom the
+            // waveform around the pointer; plain wheel keeps scrolling the page.
+            const container = document.getElementById('waveform');
+            const wheel = event => {
+                if (waveform !== this.waveform || !(event.ctrlKey || event.metaKey)) return;
+                event.preventDefault();
+                this.wheelZoom(event, scroller);
+            };
+            container?.addEventListener('wheel', wheel, { passive: false });
+            waveform.on('destroy', () => {
+                scroller.removeEventListener('scroll', update);
+                container?.removeEventListener('wheel', wheel);
+            });
+        },
+
+        /** Zoom by a wheel/pinch delta, keeping the moment under the pointer in place. */
+        wheelZoom(event, scroller) {
+            const duration = this.waveform?.getDuration();
+            if (!duration || !scroller.clientWidth) return;
+            const lines = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1;   // lines/pages -> px
+            const dy = Math.max(-200, Math.min(200, event.deltaY * lines));
+            const fit = fitToWidthZoom(scroller.clientWidth, duration);   // zoomed all the way out
+            const shown = scroller.scrollWidth / duration;          // current pixels per second
+            const next = Math.max(fit, Math.min(MAX_ZOOM_PX_PER_SEC, shown * Math.exp(-dy * WHEEL_ZOOM_RATE)));
+            if (Math.abs(next - shown) < shown * WHEEL_ZOOM_MIN_RELATIVE_STEP) return;
+            // At a clamp bound the rendered width is rounded up to whole pixels, so `shown` is never exactly
+            // the bound: within one pixel of the bound counts as already there (else every further wheel
+            // event at the limit would re-render and stop following the playhead)
+            const atBound = next === fit || next === MAX_ZOOM_PX_PER_SEC;
+            if (atBound && Math.abs(next - shown) * duration <= 1) return;
+            this.followPlayhead(false);   // the user is looking elsewhere now: playback must not pull the view back
+            const x = event.clientX - scroller.getBoundingClientRect().left;
+            const time = (scroller.scrollLeft + x) / shown;
+            this.currentZoom = next;
+            this.waveform.zoom(next);
+            scroller.scrollLeft = time * (scroller.scrollWidth / duration) - x;
+        },
+
+        /** Scrollbar: drag the thumb, or press the track to centre the view there. */
+        waveScrollbarDown(event) {
+            const bar = event.currentTarget, scroller = this._waveScroller;
+            if (!scroller || event.button > 0) return;
+            const rect = bar.getBoundingClientRect();
+            const view = this.waveView;
+            const thumb = waveThumbGeometry(view, rect.width);
+            const pointerX = event.clientX - rect.left;
+            const scrollToThumbLeft = left => {
+                scroller.scrollLeft = waveStartForThumbLeft(left, view, rect.width) * scroller.scrollWidth;
+            };
+            // Decided on the drawn thumb (which has a minimum width), not on the true visible span
+            const onThumb = pointerX >= thumb.left && pointerX <= thumb.left + thumb.width;
+            // Where in the thumb the pointer holds it, in pixels (a track press grabs the thumb's middle)
+            const grabPx = onThumb ? pointerX - thumb.left : thumb.width / 2;
+            if (!onThumb) scrollToThumbLeft(pointerX - grabPx);
+            this.followPlayhead(false);   // scrolling by hand: playback must not pull the view back
+            bar.classList.add('dragging');
+            try { bar.setPointerCapture(event.pointerId); } catch { /* keep dragging without capture */ }
+            const move = e => scrollToThumbLeft(e.clientX - rect.left - grabPx);
+            const up = () => {
+                bar.classList.remove('dragging');
+                bar.removeEventListener('pointermove', move);
+                bar.removeEventListener('pointerup', up);
+                bar.removeEventListener('pointercancel', up);
+                bar.removeEventListener('lostpointercapture', up);   // bar hidden or replaced mid-drag
+            };
+            bar.addEventListener('pointermove', move);
+            bar.addEventListener('pointerup', up);
+            bar.addEventListener('pointercancel', up);
+            bar.addEventListener('lostpointercapture', up);
+            event.preventDefault();
+        },
+
         zoomIn() {
             if (this.waveform) {
-                this.currentZoom = Math.min(this.currentZoom * 1.5, 500);
+                this.currentZoom = Math.min(this.effectiveZoom() * 1.5, MAX_ZOOM_PX_PER_SEC);
                 this.waveform.zoom(this.currentZoom);
             }
         },
 
+        /**
+         * The zoom the waveform is really at: `currentZoom`, but never below fit-to-width (WaveSurfer
+         * cannot draw narrower than the view). `currentZoom` is 0 when 'ready' measured a 0-wide view,
+         * and then the first zoom-in must start from the live fit. Still 0 while the view has no width.
+         */
+        effectiveZoom() {
+            return Math.max(this.currentZoom, this.fitZoom());
+        },
+
+        /** Custom properties the thumb's CSS positions it with (see waveThumbGeometry for the shared formula) */
+        waveThumbStyle() {
+            const { span, position } = waveThumbFractions(this.waveView);
+            return { '--thumb-span': span, '--thumb-position': position };
+        },
+
+        /** The zoom-out floor for the current waveform: the whole recording across the view. */
+        fitZoom() {
+            const viewWidth = this._waveScroller?.clientWidth || document.getElementById('waveform')?.offsetWidth;
+            return fitToWidthZoom(viewWidth, this.waveform?.getDuration?.());
+        },
+
+        /**
+         * Whether playback scrolls the view to keep the playhead in sight (WaveSurfer's autoScroll).
+         * Set on the options object itself: the renderer shares it, and setOptions() would re-render.
+         * Per waveform: a rebuilt waveform starts following again.
+         */
+        followPlayhead(follow) {
+            if (this.waveform?.options) this.waveform.options.autoScroll = follow;
+        },
+
         zoomOut() {
             if (this.waveform) {
-                this.currentZoom = Math.max(this.currentZoom / 1.5, 1);
+                this.currentZoom = Math.max(this.effectiveZoom() / 1.5, this.fitZoom());
                 this.waveform.zoom(this.currentZoom);
             }
         },
@@ -4086,6 +4348,9 @@ function vinylApp() {
                 this.waveform = null;
                 this.waveformRegions = null;
             }
+            this._waveScroller = null;
+            this.waveScrollable = false;
+            this.waveView = { start: 0, end: 1 };
             this.isPlaying = false;
             this.playTime = 0;
             this.playDuration = 0;

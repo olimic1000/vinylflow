@@ -196,6 +196,22 @@
             overflow-y: hidden;
         }
 
+        /* Waveform scrollbar (shown when zoomed in). Thumb contrast on the track: 4.3:1 (WCAG 1.4.11 asks 3:1) */
+        .wave-scrollbar {
+            position: relative; height: 14px; margin-top: 4px;
+            background-color: #E7E5E0; border-radius: 7px; cursor: pointer; touch-action: none;
+        }
+        .wave-scrollbar-thumb {
+            position: absolute; top: 2px; bottom: 2px;
+            /* Same geometry as waveThumbGeometry() in app.js (24 = WAVE_THUMB_MIN_PX): the thumb is at
+               least 24px wide and travels the bar's width minus its own, so it never sticks out */
+            width: max(24px, calc(var(--thumb-span, 1) * 100%));
+            left: calc((100% - max(24px, calc(var(--thumb-span, 1) * 100%))) * var(--thumb-position, 0));
+            background-color: #6B6B67; border-radius: 5px; cursor: grab;
+        }
+        .wave-scrollbar-thumb:hover { background-color: #4F4F4B; }
+        .wave-scrollbar.dragging .wave-scrollbar-thumb { background-color: #3D3D3D; cursor: grabbing; }
+
         /* Larger waveform on desktop screens */
         @media (min-width: 768px) {
             #waveform {
@@ -1037,9 +1053,16 @@
                     </div>
                 </div>
             </div>
-            <!-- The loading overlay sits over the (fixed-height) waveform area, so it never shifts the layout -->
+            <!-- The loading overlay sits over the (fixed-height) waveform area, so showing it never moves the layout (the
+                 scrollbar below the waveform does add its own ~18 px when it appears on zooming in) -->
             <div class="relative mb-6" x-show="!fallbackAudioUrl">
                 <div id="waveform" class="w-full"></div>
+                <!-- Always-visible scrollbar for a zoomed waveform (WaveSurfer's own one is hidden:
+                     on macOS it only shows while scrolling). Drag the thumb or press the track to jump. -->
+                <div x-show="waveScrollable" x-cloak class="wave-scrollbar" data-testid="wave-scrollbar" aria-hidden="true"
+                     @pointerdown="waveScrollbarDown($event)" title="Drag to move through the recording">
+                    <div class="wave-scrollbar-thumb" :style="waveThumbStyle()"></div>
+                </div>
                 <div x-show="waveformLoading" x-cloak role="status" data-testid="waveform-loading"
                      class="absolute inset-0 z-10 flex items-center justify-center gap-3 text-lg text-secondary"
                      style="background-color: rgba(250, 249, 246, 0.85);">
@@ -1055,7 +1078,7 @@
                 </div>
                 <p x-show="playerNotice" x-cloak role="alert" class="mb-2 text-sm text-primary" x-text="playerNotice"></p>
                 <p x-show="playerInfo" x-cloak class="mb-2 text-sm text-secondary" x-text="playerInfo"></p>
-                <p x-show="!fallbackAudioUrl" class="text-sm text-muted">💡 Tip: Drag the colored regions to adjust track boundaries, or right-click to add splits.<span x-show="expectedBoundaries.length > 0" x-cloak> Dashed red lines mark where the Discogs lengths expect each break.</span></p>
+                <p x-show="!fallbackAudioUrl" class="text-sm text-muted">💡 Tip: Drag the colored regions to adjust track boundaries, or right-click to add splits. Zoom with ⌘ + scroll wheel (Ctrl on Windows and Linux) or by pinching on a trackpad.<span x-show="expectedBoundaries.length > 0" x-cloak> Dashed red lines mark where the Discogs lengths expect each break.</span></p>
             </div>
         </div>
 

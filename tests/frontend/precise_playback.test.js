@@ -44,7 +44,7 @@ function harness({ canPlay = 'maybe', peaks = [0.1, 0.2, 0.05], loadResults = []
     };
     const container = { offsetWidth: 1000, added: [], addEventListener(name) { this.added.push(name); } };
     wave.container = container;
-    global.document = { getElementById: () => container };
+    global.document = { getElementById: () => container, addEventListener() {}, removeEventListener() {}, dispatchEvent() {} };
     global.WaveSurfer = { create: options => { wave.options = options; return wave; }, Regions: { create: () => ({}) } };
     // audioProbe(url, options) answers the status probe the failure notice makes on the preview URL
     global.fetch = fetchOverride || (async (url, options) => {

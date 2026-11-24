@@ -81,6 +81,8 @@ function fakeWaveSurfer(media) {
 }
 function install(media, waveform) {
     global.window = global.window || {};
+    // initWaveform's region-drag guard registers document listeners; none of them fire here
+    global.document = { getElementById: () => null, addEventListener() {}, removeEventListener() {}, dispatchEvent() {} };
     global.WaveSurfer = { create: () => waveform, Regions: { create: () => ({}) } };
 }
 function mkApp(fileId = 'f1') {
@@ -265,7 +267,7 @@ assert.strictEqual(vinylApp().playerVolume, 1, 'no localStorage at all');
     // ---- the 100 ms timer after 'ready' belongs to its own build ----
     {
         const container = { offsetWidth: 1000, addEventListener() {} };
-        global.document = { getElementById: () => container };
+        global.document = { getElementById: () => container, addEventListener() {}, removeEventListener() {}, dispatchEvent() {} };
         const timers = [];
         const realSetTimeout = global.setTimeout;
         global.setTimeout = (fn) => { timers.push(fn); return 0; };
@@ -320,7 +322,7 @@ assert.strictEqual(vinylApp().playerVolume, 1, 'no localStorage at all');
     // ---- after a failed build the hidden container is shown again before WaveSurfer measures it ----
     {
         const container = { offsetParent: null };
-        global.document = { getElementById: () => container };
+        global.document = { getElementById: () => container, addEventListener() {}, removeEventListener() {}, dispatchEvent() {} };
         const mediaHidden = fakeMedia(), waveformHidden = fakeWaveSurfer(mediaHidden);
         let measuredVisible = null;
         global.WaveSurfer = { create: () => { measuredVisible = container.offsetParent !== null; return waveformHidden; }, Regions: { create: () => ({}) } };

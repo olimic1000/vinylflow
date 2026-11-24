@@ -8,6 +8,8 @@ const vinylApp = new Function(src + ';return vinylApp;')();
 
 const DETAIL = 'side.wav changed on disk since it was imported. Import it again to split the new recording.';
 global.window = global.window || {};
+// initWaveform's region-drag guard registers document listeners; none of them fire here
+global.document = { getElementById: () => null, addEventListener() {}, removeEventListener() {}, dispatchEvent() {} };
 global.fetch = async () => ({ ok: false, status: 409, json: async () => ({ detail: DETAIL }) });
 global.WaveSurfer = {
     create: () => ({ on() {}, registerPlugin: () => ({}), destroy() {} }),
