@@ -401,3 +401,41 @@ def test_full_key_pass_needs_equal_full_key_counts():
     donor = [T("S (Mono)", "1:00"), T("S", "2:00"), T("S", "3:00")]
     m = match_tracklists(["S (Mono)", "S (Mono)", "S"], donor)
     assert _pairs(m) == {0: 0, 1: 1, 2: 2}
+
+
+# --- an untagged title next to a tagged one of the same list is the opposite channel --------------
+
+def _lengths_by_target(target_titles, donor_titles_and_lengths):
+    donors = [T(title, length) for title, length in donor_titles_and_lengths]
+    return {m.target_index: m.length for m in match_tracklists(target_titles, donors)}
+
+
+def test_untagged_title_next_to_mono_is_stereo_so_mono_gets_the_untagged_donor_length():
+    # The donor's untagged "Song" sits beside "(Stereo)", so it is the mono one: it belongs to
+    # the target's "(Mono)".  Before, the untagged pair formed first and the target's "Song" got
+    # the mono 3:00.
+    assert _lengths_by_target(["Song (Mono)", "Song"], [("Song", "3:00"), ("Song (Stereo)", "3:30")]) == {0: "3:00", 1: "3:30"}
+
+
+def test_mirrored_case_untagged_target_is_the_mono_partner_of_stereo():
+    assert _lengths_by_target(["Song", "Song (Stereo)"], [("Song (Mono)", "3:00"), ("Song", "3:30")]) == {0: "3:00", 1: "3:30"}
+
+
+def test_a_lone_untagged_target_against_a_mono_stereo_pair_stays_unmatched():
+    # Today's behaviour (kept): the group sizes differ (1 against 2), so nothing is paired.
+    assert _lengths_by_target(["Song"], [("Song", "3:00"), ("Song (Stereo)", "3:30")]) == {}
+
+
+def test_implied_opposite_channels_are_refused_even_for_equal_untagged_titles():
+    # target: Song = stereo (beside Mono); donor: Song = mono (beside Stereo).  Nothing may pair.
+    assert _lengths_by_target(["Song", "Song (Mono)"], [("Song", "3:00"), ("Song (Stereo)", "3:30")]) == {}
+
+
+def test_a_crowded_title_implies_nothing_for_the_untagged_one():
+    # "Song" beside two tags (or two tagged copies) has no implied channel: today's pairing stays
+    assert _lengths_by_target(["Song (Mono)", "Song (Stereo)", "Song"],
+                              [("Song (Mono)", "3:00"), ("Song (Stereo)", "3:30"), ("Song", "4:00")]) == {0: "3:00", 1: "3:30", 2: "4:00"}
+
+
+def test_list_without_any_channel_tag_still_pairs_untagged_titles():
+    assert _lengths_by_target(["Song"], [("Song", "3:00")]) == {0: "3:00"}

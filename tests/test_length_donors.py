@@ -1,4 +1,4 @@
-"""MetadataHandler.find_length_donors and GET /api/release/{id}/length-donors (fakes only)."""
+"""MetadataHandler.find_length_donor_report and GET /api/release/{id}/length-donors (fakes only)."""
 
 from __future__ import annotations
 
@@ -128,7 +128,7 @@ def scenario(extra_versions=(), extra_releases=None):
 def test_no_master_returns_empty_without_version_fetch():
     c = FakeClient({1: raw_release(1, NONE)}, [])
     h = make(c)
-    assert h.find_length_donors(1) == []
+    assert h.find_length_donor_report(1)["donors"] == []
     assert c.log == []
 
 
@@ -138,7 +138,7 @@ def test_basic_donor_skips_self_and_formats_result():
         {2: raw_release(2, FULL + [("Bonus", "9:00")])},
     )
     h = make(c)
-    out = h.find_length_donors(1)
+    out = h.find_length_donor_report(1)["donors"]
     assert c.release_calls == [1, 2]  # 1 once (target), never as its own donor
     assert out == [
         {
@@ -165,7 +165,7 @@ def test_same_format_first_and_sorting_by_coverage():
         {2: raw_release(2, FULL), 3: raw_release(3, FULL), 4: raw_release(4, partial)},
     )
     h = make(c)
-    out = h.find_length_donors(1, want=10)
+    out = h.find_length_donor_report(1, want=10)["donors"]
     assert c.release_calls[:2] == [1, 3]  # vinyl candidate fetched before the CDs
     assert [d["release_id"] for d in out] == [3, 2, 4]
     assert out[-1]["matched"] == 1
@@ -176,7 +176,7 @@ def test_budget_respected_and_rate_limited_per_fetch():
     c = scenario([ver(i) for i in range(2, 12)], rels)
     h = make(c)
     progress = []
-    out = h.find_length_donors(1, max_fetches=4, on_progress=lambda *a: progress.append(a))
+    out = h.find_length_donor_report(1, max_fetches=4, on_progress=lambda *a: progress.append(a))["donors"]
     assert out == []
     donor_fetches = [r for r in c.release_calls if r != 1]
     assert len(donor_fetches) == 4
@@ -189,7 +189,7 @@ def test_stops_early_after_want_full_donors():
     rels = {i: raw_release(i, FULL) for i in range(2, 10)}
     c = scenario([ver(i) for i in range(2, 10)], rels)
     h = make(c)
-    out = h.find_length_donors(1, want=3)
+    out = h.find_length_donor_report(1, want=3)["donors"]
     assert len(out) == 3
     assert len([r for r in c.release_calls if r != 1]) == 3
 
@@ -197,16 +197,16 @@ def test_stops_early_after_want_full_donors():
 def test_cache_means_no_new_fetches_second_time():
     c = scenario([ver(2)], {2: raw_release(2, FULL)})
     h = make(c)
-    first = h.find_length_donors(1)
+    first = h.find_length_donor_report(1)["donors"]
     calls, rates, log = list(c.release_calls), h.rate_calls, list(c.log)
-    again = h.find_length_donors(1)
+    again = h.find_length_donor_report(1)["donors"]
     assert again == first
     assert (c.release_calls, h.rate_calls, c.log) == (calls, rates, log)
 
 
 def test_donors_without_lengths_are_dropped():
     c = scenario([ver(2)], {2: raw_release(2, NONE)})
-    assert make(c).find_length_donors(1) == []
+    assert make(c).find_length_donor_report(1)["donors"] == []
 
 
 class FakeHTTPError(Exception):
@@ -221,7 +221,7 @@ def test_missing_release_raises_release_not_found():
     h = make(FakeClient({}, []))
     h.client.release = lambda rid: (_ for _ in ()).throw(FakeHTTPError(404))
     with pytest.raises(ReleaseNotFound):
-        h.find_length_donors(5)
+        h.find_length_donor_report(5)["donors"]
 
 
 def test_discogs_error_on_target_is_not_reported_as_not_found():
@@ -229,7 +229,7 @@ def test_discogs_error_on_target_is_not_reported_as_not_found():
     h = make(FakeClient({}, []))
     h.client.release = lambda rid: (_ for _ in ()).throw(RuntimeError("boom"))
     with pytest.raises(Exception) as caught:
-        h.find_length_donors(5)
+        h.find_length_donor_report(5)["donors"]
     assert not isinstance(caught.value, ReleaseNotFound)
 
 
@@ -250,11 +250,11 @@ def failing_client(client, failing_ids):
 def test_failed_donor_fetch_is_not_cached_as_no_donors():
     c = failing_client(scenario([ver(2), ver(3)], {2: raw_release(2, FULL), 3: raw_release(3, FULL)}), {2})
     h = make(c)
-    first = h.find_length_donors(1)
+    first = h.find_length_donor_report(1)["donors"]
     assert [d["release_id"] for d in first] == [3]
     assert h._donor_cache == {}  # incomplete lookup: nothing remembered
     c.release = FakeClient(c.releases, c.versions).release  # Discogs is back
-    h.find_length_donors(1, want=10)
+    h.find_length_donor_report(1, want=10)["donors"]
     assert 2 in c.release_calls and c.release_calls.count(2) == 1
     assert {d["release_id"] for d in h._donor_cache[1]["donors"]} == {2, 3}
 
@@ -263,7 +263,7 @@ def test_all_donor_fetches_failing_raises_and_caches_nothing():
     c = failing_client(scenario([ver(2), ver(3)], {}), {2, 3})
     h = make(c)
     with pytest.raises(Exception) as caught:
-        h.find_length_donors(1)
+        h.find_length_donor_report(1)["donors"]
     assert not isinstance(caught.value, ReleaseNotFound)
     assert h._donor_cache == {}
 
@@ -280,7 +280,7 @@ def test_concurrent_lookups_for_one_release_share_one_run():
     c.master = slow_master
     h = make(c)
     results = []
-    threads = [threading.Thread(target=lambda: results.append(h.find_length_donors(1))) for _ in range(2)]
+    threads = [threading.Thread(target=lambda: results.append(h.find_length_donor_report(1)["donors"])) for _ in range(2)]
     threads[0].start()
     import time
     time.sleep(0.2)  # the first caller is now inside the version listing
@@ -298,10 +298,10 @@ def test_second_caller_runs_its_own_lookup_when_the_first_failed():
     c = failing_client(scenario([ver(2)], {2: raw_release(2, FULL)}), {2})
     h = make(c)
     with pytest.raises(Exception):
-        h.find_length_donors(1)
+        h.find_length_donor_report(1)["donors"]
     assert h._donor_inflight == {}  # the guard is released on failure
     c.release = FakeClient(c.releases, c.versions).release
-    assert [d["release_id"] for d in h.find_length_donors(1)] == [2]
+    assert [d["release_id"] for d in h.find_length_donor_report(1)["donors"]] == [2]
 
 
 def test_donor_that_fills_nothing_is_dropped_and_ranking_counts_fills():
@@ -312,7 +312,7 @@ def test_donor_that_fills_nothing_is_dropped_and_ranking_counts_fills():
     two_fills = [("One", "3:10"), ("Two", "4:00"), ("Three", "5:00")]
     releases.update({2: raw_release(2, only_known), 3: raw_release(3, one_fill), 4: raw_release(4, two_fills)})
     c = FakeClient(releases, [ver(1), ver(2), ver(3), ver(4)])
-    out = make(c).find_length_donors(1, want=10)
+    out = make(c).find_length_donor_report(1, want=10)["donors"]
     assert [d["release_id"] for d in out] == [4, 3]
     assert out[0]["lengths"] == {"1": "4:00", "2": "5:00"}  # no length for the track that already has one
     assert (out[0]["matched"], out[0]["missing"]) == (2, 2)
@@ -404,7 +404,7 @@ def test_disagreement_threshold_is_ten_seconds_on_a_short_track():
         2: [("One", "3:09"), ("Two", "4:00"), ("Three", "5:00")],  # 9 s off a 3:00 track: agrees
         3: [("One", "3:11"), ("Two", "4:00"), ("Three", "5:00")],  # 11 s off: disagrees
     })
-    out = {d["release_id"]: d for d in make(c).find_length_donors(1, want=10)}
+    out = {d["release_id"]: d for d in make(c).find_length_donor_report(1, want=10)["donors"]}
     assert (out[2]["compared"], out[2]["disagree"]) == (1, 0)
     assert (out[3]["compared"], out[3]["disagree"]) == (1, 1)
 
@@ -415,7 +415,7 @@ def test_disagreement_threshold_is_five_percent_on_a_long_track():
         2: [("One", "20:59"), ("Two", "4:00")],
         3: [("One", "21:01"), ("Two", "4:00")],
     }, own)
-    out = {d["release_id"]: d for d in make(c).find_length_donors(1, want=10)}
+    out = {d["release_id"]: d for d in make(c).find_length_donor_report(1, want=10)["donors"]}
     assert out[2]["disagree"] == 0 and out[3]["disagree"] == 1
 
 
@@ -424,14 +424,14 @@ def test_disagreeing_donor_is_demoted_not_dropped_and_listed_after_agreeing_ones
         2: [("One", "3:30"), ("Two", "4:00"), ("Three", "5:00")],  # fills most but disagrees
         3: [("One", "3:00"), ("Two", "4:00")],  # fills less, agrees
     })
-    out = make(c).find_length_donors(1, want=10)
+    out = make(c).find_length_donor_report(1, want=10)["donors"]
     assert [d["release_id"] for d in out] == [3, 2]
     assert out[1]["disagree"] == 1 and out[1]["lengths"] == {"1": "4:00", "2": "5:00"}
 
 
 def test_release_without_own_lengths_compares_nothing():
     c = scenario([ver(2)], {2: raw_release(2, FULL)})
-    (donor,) = make(c).find_length_donors(1)
+    (donor,) = make(c).find_length_donor_report(1)["donors"]
     assert (donor["compared"], donor["disagree"]) == (0, 0)
 
 
@@ -439,7 +439,7 @@ def test_disagreeing_donors_do_not_trigger_the_early_stop():
     own = [("One", "3:00"), ("Two", ""), ("Three", "")]
     bad = [("One", "5:00"), ("Two", "4:00"), ("Three", "5:00")]
     c = partial_scenario({2: bad, 3: bad, 4: bad, 5: [("One", "3:00"), ("Two", "4:00"), ("Three", "5:00")]}, own)
-    out = make(c).find_length_donors(1, want=1)
+    out = make(c).find_length_donor_report(1, want=1)["donors"]
     assert out[0]["release_id"] == 5 and len(out) == 4
 
 
@@ -492,7 +492,7 @@ def test_waiting_caller_runs_its_own_lookup_after_the_timeout():
     h.DONOR_WAIT_TIMEOUT_S = 0.2
     h.DONOR_WAIT_SLICE_S = 0.05
     h._donor_inflight[1] = threading.Event()  # a lookup that never finishes
-    out = _call_in_thread(lambda: h.find_length_donors(1))
+    out = _call_in_thread(lambda: h.find_length_donor_report(1)["donors"])
     assert [d["release_id"] for d in out] == [2]
 
 
@@ -504,7 +504,7 @@ def test_waiter_picks_up_a_result_cached_while_the_event_never_fires():
     h._donor_inflight[1] = threading.Event()
     threading.Timer(0.2, lambda: h._remember_donor_report(
         1, {"donors": [{"release_id": 5}], "checked": 1, "versions": 1})).start()
-    out = _call_in_thread(lambda: h.find_length_donors(1))
+    out = _call_in_thread(lambda: h.find_length_donor_report(1)["donors"])
     assert out == [{"release_id": 5}]
     assert c.release_calls == []  # it did not run a lookup of its own
 
@@ -512,23 +512,23 @@ def test_waiter_picks_up_a_result_cached_while_the_event_never_fires():
 def test_returned_results_are_copies_on_every_path():
     # Early-return path (nothing missing): the cache's own list must not be handed out
     h = make(FakeClient({1: raw_release(1, FULL, master_id=77)}, []))
-    h.find_length_donors(1).append("junk")
-    assert h.find_length_donors(1) == []
+    h.find_length_donor_report(1)["donors"].append("junk")
+    assert h.find_length_donor_report(1)["donors"] == []
     # Normal path: donors, their lengths and index lists are copies too, fresh and cached
     c = scenario([ver(2)], {2: raw_release(2, FULL)})
     h = make(c)
     for _ in range(2):  # first call computes, second reads the cache
-        out = h.find_length_donors(1)
+        out = h.find_length_donor_report(1)["donors"]
         out[0]["lengths"]["0"] = "99:99"
         out[0]["compared_indexes"].append(42)
         out.append("junk")
-    again = h.find_length_donors(1)
+    again = h.find_length_donor_report(1)["donors"]
     assert len(again) == 1 and again[0]["lengths"]["0"] == "3:00" and again[0]["compared_indexes"] == []
 
 
 def test_disagreement_is_exactly_ten_seconds_not_inclusive():
     c = partial_scenario({2: [("One", "3:10"), ("Two", "4:00")], 3: [("One", "2:50"), ("Two", "4:00")]})
-    out = {d["release_id"]: d for d in make(c).find_length_donors(1, want=10)}
+    out = {d["release_id"]: d for d in make(c).find_length_donor_report(1, want=10)["donors"]}
     assert out[2]["disagree"] == 0 and out[3]["disagree"] == 0  # exactly 10 s off agrees
 
 
@@ -538,7 +538,7 @@ def test_cache_hit_refreshes_recency_so_eviction_is_lru_not_fifo():
     report = {"donors": [], "checked": 0, "versions": None}
     h._remember_donor_report(1, report)
     h._remember_donor_report(2, report)
-    h.find_length_donors(1)  # reads 1: now 2 is the least recently used
+    h.find_length_donor_report(1)["donors"]  # reads 1: now 2 is the least recently used
     h._remember_donor_report(3, report)
     assert list(h._donor_cache) == [1, 3]
 
@@ -546,7 +546,7 @@ def test_cache_hit_refreshes_recency_so_eviction_is_lru_not_fifo():
 def test_disagreement_is_reported_per_track_index_for_side_scoped_recounts():
     own = [("One", "3:00"), ("Two", ""), ("Three", "9:00")]
     c = partial_scenario({2: [("One", "3:00"), ("Two", "4:00"), ("Three", "5:00")]}, own)
-    (donor,) = make(c).find_length_donors(1)
+    (donor,) = make(c).find_length_donor_report(1)["donors"]
     assert (donor["compared"], donor["disagree"]) == (2, 1)
     assert donor["compared_indexes"] == [0, 2] and donor["disagree_indexes"] == [2]
 
@@ -615,11 +615,11 @@ def test_timed_out_waiter_takes_over_and_later_callers_wait_on_the_new_owner():
     h._donor_inflight[1] = stuck  # the original owner, hung on the network
     results = {}
     h.DONOR_WAIT_TIMEOUT_S = 0.2
-    taker = _start(lambda: h.find_length_donors(1), results, "taker")
+    taker = _start(lambda: h.find_length_donor_report(1)["donors"], results, "taker")
     assert entered.wait(5), "the waiter never took over"
     assert h._donor_inflight[1] is not stuck, "the taker-over registers its own Event"
     h.DONOR_WAIT_TIMEOUT_S = 60
-    third = _start(lambda: h.find_length_donors(1), results, "third")
+    third = _start(lambda: h.find_length_donor_report(1)["donors"], results, "third")
     gate.set()  # the new owner fails: the third caller must be woken by ITS Event, not wait on the stuck one
     taker.join(5)
     third.join(5)
@@ -638,11 +638,11 @@ def test_old_owner_finishing_late_does_not_remove_the_new_owners_entry():
     h = make(c)
     h.DONOR_WAIT_SLICE_S = 0.05
     results = {}
-    old = _start(lambda: h.find_length_donors(1), results, "old")
+    old = _start(lambda: h.find_length_donor_report(1)["donors"], results, "old")
     assert old_in.wait(5)
     old_event = h._donor_inflight[1]
     h.DONOR_WAIT_TIMEOUT_S = 0.2
-    new = _start(lambda: h.find_length_donors(1), results, "new")
+    new = _start(lambda: h.find_length_donor_report(1)["donors"], results, "new")
     assert new_in.wait(5), "the waiter never took over"
     new_event = h._donor_inflight[1]
     old_gate.set()
@@ -692,7 +692,7 @@ def test_waiters_timing_out_together_start_one_lookup_not_one_each():
     h.DONOR_WAIT_TIMEOUT_S = 1.0
     h._donor_inflight[1] = threading.Event()  # the original owner, hung on the network
     results = {}
-    threads = [_start(lambda: h.find_length_donors(1), results, n) for n in range(4)]
+    threads = [_start(lambda: h.find_length_donor_report(1)["donors"], results, n) for n in range(4)]
     assert entered.wait(5), "no waiter took over from the stuck owner"
     # A few slices: with one deadline per waiter the others would take over within one slice;
     # the new owner itself is only due for replacement a full second later

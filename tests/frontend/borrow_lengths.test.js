@@ -381,6 +381,29 @@ const lastToast = app => app.toasts[app.toasts.length - 1];
     assert.strictEqual(app.trackMappingReversed, true);
     assert.strictEqual(app.trackCountMismatch, mismatchBefore);
 
+    // A mapping change made AFTER the borrow is never overwritten by the pre-borrow mapping: when Undo
+    // does change the sides, the mapping follows them the usual way (reset to the targets) instead
+    const eightTracks = () => [0, 1, 2, 3, 4, 5, 6, 7].map(n => ({ number: n + 1, start: n * 100, end: n * 100 + 99, duration: 99 }));
+    for (const [name, edit] of Object.entries({
+        'a row\'s Discogs dropdown': a => { a.customMapping[0] = 2; a.markEdited(); },
+        'the reverse button': a => a.reverseMapping(),
+    })) {
+        app = pickLp();
+        app.detectedTracks = eightTracks();
+        app.resetMappingToTargets();
+        app.reverseMapping();
+        lpDonors(app);
+        app.applyDonor(lpDonor());
+        edit(app);
+        const editedMapping = [...app.customMapping];
+        clickUndo(app);
+        assert.deepStrictEqual([...app.selectedSides], ['A', 'B'], name + ': the sides still come back');
+        assert.deepStrictEqual([...app.customMapping], [0, 1, 2, 3, 4, 5, 6, 7], name + ': reset to the restored sides');
+        assert.strictEqual(app.trackMappingReversed, false, name);
+        assert.notDeepStrictEqual([...app.customMapping], [7, 6, 5, 4, 3, 2, 1, 0], name + ': not the pre-borrow mapping');
+        assert.notDeepStrictEqual([...app.customMapping], editedMapping, name);
+    }
+
     // An explicit "Full album" click (equal to the default) is the user's choice: a borrow leaves it alone
     app = pickLp();
     assert.strictEqual(app.sidesTouched, false, 'a picked release starts untouched');

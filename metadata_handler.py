@@ -541,10 +541,6 @@ class MetadataHandler:
             while len(self._donor_cache) > self.DONOR_CACHE_SIZE:
                 self._donor_cache.popitem(last=False)
 
-    def find_length_donors(self, release_id: int, **kwargs) -> List[dict]:
-        """The ``donors`` of :meth:`find_length_donor_report`."""
-        return self.find_length_donor_report(release_id, **kwargs)["donors"]
-
     def find_length_donor_report(
         self,
         release_id: int,
