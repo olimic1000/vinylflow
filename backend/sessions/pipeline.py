@@ -136,8 +136,9 @@ def run(
                 track,
                 temp_output,
                 spec.output_format,
-                restoration_level=spec.restoration_level,
-                hum_freq=spec.hum_freq,
+                rumble=spec.rumble_filter,
+                declick=spec.declick,
+                bit_depth=spec.bit_depth,
             )
 
             tag_extras = {"comment": comment} if comment else {}  # only when found: default call unchanged

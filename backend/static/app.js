@@ -170,6 +170,7 @@ function vinylApp() {
         // UI State
         dragging: false,
         showSettings: false,
+        settingsSnapshot: null,   // config as saved, taken when Settings opens; Cancel / Escape / click-away restore it
         uploadProgress: 0,
         uploadFinalizing: false,
         uploadNotice: '',
@@ -295,8 +296,13 @@ function vinylApp() {
         outputFormat: 'flac',
         availableFormats: [],
 
-        // Audio restoration
-        restorationLevel: 0,   // 0=disabled, 1=enabled
+        // Audio processing panel. The defaults persist via saveExportDefault and are sent with each export.
+        rumbleFilter: false,   // 15 Hz high-pass
+        declick: 'off',        // 'off' | 'light' | 'medium' | 'strong'
+        declickLevels: [
+            { id: 'off', label: 'Off' }, { id: 'light', label: 'Light' },
+            { id: 'medium', label: 'Medium' }, { id: 'strong', label: 'Strong' }
+        ],
 
         // Toasts (see notify) and queue files removed but not yet deleted server-side
         toasts: [],
@@ -312,6 +318,9 @@ function vinylApp() {
             min_track_length: 30,
             flac_compression: 8,
             output_dir: '',
+            rumble_filter: false,
+            declick: 'off',
+            bit_depth: 'source',    // FLAC/AIFF depth: 'source' (match the recording) or '24'
             hide_support_ask: false,
             album_description: false   // Wikipedia lead paragraph in the Comment tag (off by default)
         },
@@ -531,6 +540,9 @@ function vinylApp() {
                 const response = await fetch('/api/config');
                 const data = await response.json();
                 this.config = data;
+                // Settings may already be open (the reply was slow): Cancel must restore this, not the defaults.
+                if (this.settingsSnapshot) this.settingsSnapshot = { ...data };
+                this.syncPanelFromConfig(data);
             } catch (error) {
                 console.error('Failed to load config:', error);
             }
@@ -591,6 +603,83 @@ function vinylApp() {
             }
         },
 
+        /** Open the Settings modal; its fields edit `config` in place, so remember what was saved. */
+        openSettings() {
+            this.settingsSnapshot = { ...this.config };
+            this.showSettings = true;
+        },
+
+        /**
+         * Close Settings without saving (Cancel, Escape, click-away). The modal edits `config`
+         * directly and exports read it (album_description, the panel's mirror), so an unsaved
+         * change must not outlive the modal: put the saved copy back. Called from window-level
+         * handlers too, hence the guard when it is already closed.
+         */
+        closeSettings() {
+            if (!this.showSettings) return;
+            if (this.settingsSnapshot) this.config = this.settingsSnapshot;
+            this.settingsSnapshot = null;
+            this.showSettings = false;
+        },
+
+        /** Unknown / missing declick strengths read as 'off' */
+        normDeclick(value) {
+            return this.declickLevels.some(level => level.id === value) ? value : 'off';
+        },
+
+        /** Mirror the server's audio-processing defaults into the Export card's panel. */
+        syncPanelFromConfig(data) {
+            this.rumbleFilter = !!data.rumble_filter;
+            this.declick = this.normDeclick(data.declick);
+        },
+
+        /**
+         * Save one audio-processing default right away (PUT /api/config with just that field)
+         * and mirror the reply into `config`, so the Settings dialog shows the same value.
+         * Also keeps the Settings snapshot current, so Cancel never undoes a panel change.
+         */
+        async saveExportDefault(update) {
+            try {
+                const response = await fetch('/api/config', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(update)
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                this.mirrorPanelToConfig(data.rumble_filter, data.declick);
+            } catch (error) {
+                console.error('Failed to save export default:', error);
+                // Settings must show (and a later Save must re-send) what the panel shows, not the old default.
+                this.mirrorPanelToConfig(this.rumbleFilter, this.declick);
+                // The panel keeps what was chosen, so this export still uses it.
+                this.notify("Couldn't save this as your default. This export still uses it.", { type: 'warning' });
+            }
+        },
+
+        /** Write the panel's two values into `config` and the open Settings snapshot, if any. */
+        mirrorPanelToConfig(rumbleFilter, declick) {
+            for (const target of [this.config, this.settingsSnapshot]) {
+                if (!target) continue;
+                target.rumble_filter = rumbleFilter;
+                target.declick = declick;
+            }
+        },
+
+        /** Toggle the rumble filter and remember it as the default */
+        toggleRumble() {
+            this.rumbleFilter = !this.rumbleFilter;
+            this.saveExportDefault({ rumble_filter: this.rumbleFilter });
+        },
+
+        /** Set the click & pop removal strength and remember it as the default */
+        setDeclick(level) {
+            level = this.normDeclick(level);
+            if (level === this.declick) return;
+            this.declick = level;
+            this.saveExportDefault({ declick: level });
+        },
+
         /**
          * Save configuration to API
          */
@@ -601,8 +690,12 @@ function vinylApp() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(this.config)
                 });
+                // A refusal (e.g. 422 for a cleared field) has no settings in its body: keep the dialog open.
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
                 this.config = data;
+                this.syncPanelFromConfig(data);
+                this.settingsSnapshot = null;   // saved: nothing to roll back
                 this.showSettings = false;
                 this.loadAlbumDescription();   // the setting may have just been switched on or off
                 this.notify('Settings saved.', { type: 'success' });
@@ -624,6 +717,7 @@ function vinylApp() {
          */
         async hideSupportAsk() {
             this.config.hide_support_ask = true;
+            if (this.settingsSnapshot) this.settingsSnapshot.hide_support_ask = true;   // Cancel must not bring it back
             try {
                 await fetch('/api/config', {
                     method: 'PUT',
@@ -4152,7 +4246,8 @@ function vinylApp() {
                         reversed: this.trackMappingReversed,
                         track_boundaries: trackBoundaries,
                         output_format: this.outputFormat,
-                        restoration_level: this.restorationLevel
+                        rumble_filter: this.rumbleFilter,
+                        declick: this.declick
                         // album_description is left out: the server uses the saved setting, so a box
                         // ticked in Settings and then cancelled never turns the lookups on
                     })

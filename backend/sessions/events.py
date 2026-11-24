@@ -15,8 +15,9 @@ class OutputSpec:
     output_format: str
     output_dir: Path
     flac_compression: int = 5
-    restoration_level: int = 0
-    hum_freq: int = 50
+    rumble_filter: bool = False
+    declick: str = "off"  # off | light | medium | strong
+    bit_depth: str = "source"  # source | 24 (FLAC/AIFF)
     track_numbering: str = "sequential_disc_per_lp"
     album_description: bool = False  # Wikipedia lead paragraph in the Comment tag
 

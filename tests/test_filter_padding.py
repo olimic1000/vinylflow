@@ -7,7 +7,9 @@ import wave
 import numpy as np
 import pytest
 
-from audio_processor import AudioProcessor, padded_window, run_ffmpeg, trim_filter
+from audio_processor import (
+    LEGACY_RESTORE, AudioProcessor, build_export_filters, padded_window, run_ffmpeg, trim_filter,
+)
 from track_boundaries import Track
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
@@ -92,7 +94,7 @@ def _export(src, out, start, end, **kw):
 
 def _bare_cut_export(src, out, start, end):
     """The previous behaviour: the clean-up filters see the bare cut."""
-    chain = AudioProcessor()._build_restoration_filters(1)
+    chain = build_export_filters(*LEGACY_RESTORE)
     run_ffmpeg(["-y", "-ss", str(start), "-t", str(end - start), "-i", str(src), "-af", chain,
                 "-c:a", "flac", str(out)], capture_output=True, check=True)
     return _decode(out)
@@ -102,7 +104,7 @@ def _bare_cut_export(src, out, start, end):
 def test_cleanup_edges_match_unfiltered(tones, tmp_path):
     start, end = 3.0, 9.0
     raw = _export(tones, tmp_path / "raw.flac", start, end)
-    new = _export(tones, tmp_path / "new.flac", start, end, restoration_level=1)
+    new = _export(tones, tmp_path / "new.flac", start, end, rumble=True, declick="light")
     old = _bare_cut_export(tones, tmp_path / "old.flac", start, end)
     k = int(0.2 * SR)
 
@@ -131,7 +133,7 @@ _MID = (4.123456, 8.654321)
 ])
 def test_exact_length(tones, tmp_path, fmt, span):
     start, end = span
-    got = _export(tones, tmp_path / f"o.{fmt}", start, end, output_format=fmt, restoration_level=1)
+    got = _export(tones, tmp_path / f"o.{fmt}", start, end, output_format=fmt, rumble=True, declick="light")
     assert len(got) == round(end * SR) - round(start * SR)
 
 

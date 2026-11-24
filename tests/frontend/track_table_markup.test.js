@@ -17,7 +17,7 @@ const section = html.slice(from, to);
 const expressions = [...section.matchAll(/\s(?:x-[\w:.-]+|@[\w:.-]+|:[\w-]+)="([^"]*)"/g)].map(match => match[1]);
 // x-for variables (track, idx, dt, dtIdx) and JS words
 const loopAndKeywords = new Set(['true', 'false', 'null', 'undefined', 'Math', 'Number', 'event', '$event', 'this', 'in',
-    'track', 'idx', 'dt', 'dtIdx', 't', 'fmt', 'console', 'fallbackAudio']);
+    'track', 'idx', 'dt', 'dtIdx', 't', 'fmt', 'level', 'console', 'fallbackAudio']);
 const app = vinylApp();
 const unknown = new Set();
 for (const expression of expressions) {
@@ -111,7 +111,7 @@ assert.ok(/updateTrackEnd\(idx, \$event\.target\.value, \$event\.target\)/.test(
 
 // ---- the controls the brief asks for are there; leftovers of the old cards are not ----
 for (const needle of ['setTrackLength(', 'auditionCut(idx, \'start\')', 'auditionCut(idx, \'end\')', 'toggleTrackPlay(idx)', 'toggleTrackIgnored(track)',
-    'deleteTrack(track.number)', 'reverseMapping()', 'snapToDiscogs()', 'showTrackCountMismatch', 'processFile()', 'availableFormats', 'restorationLevel',
+    'deleteTrack(track.number)', 'reverseMapping()', 'snapToDiscogs()', 'showTrackCountMismatch', 'processFile()', 'availableFormats', 'toggleRumble()', 'setDeclick(level.id)',
     'setMapping(idx']) {
     assert.ok(section.includes(needle), needle);
 }

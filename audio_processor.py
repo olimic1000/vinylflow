@@ -151,6 +151,106 @@ def seek_args(seek_s: float, read_dur: float) -> List[str]:
     return ["-ss", f"{seek_s:.9f}", "-t", f"{read_dur:.9f}"]
 
 
+# --- Export filter chain -----------------------------------------------------
+
+# highpass=f=15: removes inaudible turntable motor rumble (below 15 Hz) without touching bass.
+RUMBLE_FILTER = "highpass=f=15"
+
+# Click & pop removal strengths -> adeclick settings. Chosen by measurement
+# (tests/test_declick_strength.py: synthetic music + hiss + drum-like transients +
+# 120 known clicks, 0.03-0.6 amplitude). Findings: the burst-fusion parameter ``b``
+# and the AR window ``w`` (ms) drive transient damage far more than ``t``; a short
+# window (w=30) keeps drum hits intact while a lower threshold ``t`` finds fainter
+# clicks, but t<=1.2 becomes ~20x slower (false positives), so Strong stops at 1.5.
+#   light  (t=2.5, b=3, w=30)       ~88% removed, damage 0.020
+#   medium (t=1.8, b=3, w=30)       ~96% removed, damage 0.043, as fast as light
+#   strong (t=1.5, b=3, w=30)       ~98% removed, damage 0.063, ~5x slower than light
+# LEGACY_LIGHT (documentation only, not used): the original Clean Up setting was
+# "adeclick=t=3:b=3" (86% removed, damage 0.073).  It removed fewer clicks *and*
+# damaged transients more than medium, so Light was retuned to a shorter AR window:
+#   candidate            removed  damage
+#   t=3:b=3 (old)         0.858   0.073
+#   t=3:b=3:w=30          0.850   0.012
+#   t=3:b=2:w=30          0.758   0.007
+#   t=3:b=3:w=40          0.858   0.032
+#   t=2.5:b=3:w=30        0.883   0.020   <- chosen
+#   t=2.2:b=3:w=30        0.908   0.028
+# Exports made with "light" therefore sound slightly different from before.
+DECLICK_PRESETS = {
+    "light": "adeclick=t=2.5:b=3:w=30",
+    "medium": "adeclick=t=1.8:b=3:w=30",
+    "strong": "adeclick=t=1.5:b=3:w=30",
+}
+DECLICK_LEVELS = ("off",) + tuple(DECLICK_PRESETS)
+
+# Legacy ``restoration_level`` 1 (rumble + clicks) -> (rumble, declick).
+LEGACY_RESTORE = (True, "light")
+
+# Output depth setting: "source" keeps a 16-bit recording at 16 bits, "24" always writes 24.
+BIT_DEPTH_SETTINGS = ("source", "24")
+
+# Processed audio runs in double precision (planar), so filters never round to 16 bits.
+PROCESSING_FORMAT = "aformat=sample_fmts=dblp"
+
+DITHER_TO_16 = "aresample=osf=s16:dither_method=triangular"
+
+
+def target_bit_depth(setting: str, source_depth: Optional[int]) -> int:
+    """Resolve the ``bit_depth`` setting ("source" | "24") to 16 or 24.
+
+    Only a source known to be 16 bits or fewer exports at 16; an unknown depth
+    exports at 24 so a 24-bit source can never be truncated.
+    """
+    if setting == "24":
+        return 24
+    return 16 if source_depth is not None and source_depth <= 16 else 24
+
+
+def split_export_filters(
+    rumble: bool,
+    declick: str = "off",
+    dither_to_16: bool = False,
+) -> Optional[Tuple[str, Optional[str]]]:
+    """``(main_chain, dither)`` pieces of the export chain, or None when there is
+    no processing.  ``main_chain`` is a double-precision conversion, then rumble ->
+    declick; ``dither`` is the trailing 16-bit conversion (None unless ``dither_to_16``).
+    Kept apart so padded cuts can trim between the two.
+
+    The ``aformat`` comes first because ``highpass`` accepts 16-bit integer samples: with
+    rumble alone ffmpeg would stay in s16, making the dither a plain repack and leaving
+    the low 8 bits of a 24-bit export empty (``adeclick`` already forces doubles)."""
+    filters = [RUMBLE_FILTER] if rumble else []
+    if declick and declick != "off":
+        if declick not in DECLICK_PRESETS:
+            raise ValueError(f"unknown declick strength: {declick!r}")
+        filters.append(DECLICK_PRESETS[declick])
+    if not filters:
+        return None
+    filters.insert(0, PROCESSING_FORMAT)
+    return ",".join(filters), (DITHER_TO_16 if dither_to_16 else None)
+
+
+def build_export_filters(
+    rumble: bool,
+    declick: str = "off",
+    dither_to_16: bool = False,
+) -> Optional[str]:
+    """Build the ffmpeg ``-af`` chain used for export.
+
+    Order: double-precision conversion -> rumble filter -> click/pop removal (``declick`` = off|light|medium|strong).
+    When processing runs and ``dither_to_16`` is set, the chain ends with a
+    triangular-dithered 16-bit conversion.  Returns None when there is no
+    processing (the chain is never just a dither, so unprocessed 16->16 stays
+    bit-exact).  No loudnorm: it levelled every track to the same loudness and
+    resampled the output to 192 kHz.
+    """
+    parts = split_export_filters(rumble, declick, dither_to_16)
+    if parts is None:
+        return None
+    main, dither = parts
+    return f"{main},{dither}" if dither else main
+
+
 # Supported input formats
 SUPPORTED_INPUT_EXTENSIONS = {".wav", ".aiff", ".aif"}
 
@@ -168,10 +268,21 @@ OUTPUT_FORMATS = {
     },
     "aiff": {
         "extension": ".aiff",
-        "codec_args": ["-c:a", "pcm_s16be"],
+        "codec_args": [],  # the codec is pcm_s16be or pcm_s24be by depth, see depth_codec_args
         "label": "AIFF (Lossless)",
     },
 }
+
+
+def depth_codec_args(output_format: str, bit_depth: int) -> List[str]:
+    """Extra codec args pinning the output sample depth (FLAC/AIFF only)."""
+    if output_format == "flac":
+        if bit_depth == 24:
+            return ["-sample_fmt", "s32", "-bits_per_raw_sample", "24"]
+        return ["-sample_fmt", "s16"]
+    if output_format == "aiff":
+        return ["-c:a", "pcm_s24be" if bit_depth == 24 else "pcm_s16be"]
+    return []
 
 
 class AudioProcessor:
@@ -445,26 +556,6 @@ class AudioProcessor:
 
         return self.refine_tracks(db, best_tracks), best_info
 
-    def _build_restoration_filters(self, restoration_level: int, hum_freq: int = 0) -> Optional[str]:
-        """Build an ffmpeg -af filter chain for audio restoration.
-
-        Args:
-            restoration_level: 0=disabled, 1=enabled
-            hum_freq: Optional hum notch frequency in Hz (0=off, 50=EU, 60=US)
-
-        Returns:
-            Filter chain string, or None if restoration is disabled
-        """
-        if restoration_level != 1:
-            return None
-
-        # highpass=f=15: removes inaudible turntable motor rumble (below 15 Hz) without touching bass
-        # adeclick=t=3:b=3: conservative click/pop removal (threshold 3 vs default 2, less likely to catch drum transients)
-        # No loudnorm: it levelled every track to the same loudness (losing the
-        # album's balance) and resampled the output to 192 kHz.
-        filters = ["highpass=f=15", "adeclick=t=3:b=3"]
-        return ", ".join(filters)
-
     def extract_track(
         self,
         input_file: Path,
@@ -472,8 +563,9 @@ class AudioProcessor:
         output_file: Path,
         output_format: str = "flac",
         verbose: bool = False,
-        restoration_level: int = 0,
-        hum_freq: int = 50,
+        rumble: bool = False,
+        declick: str = "off",
+        bit_depth: str = "source",
     ) -> bool:
         """
         Extract a single track and convert to the specified format.
@@ -484,8 +576,9 @@ class AudioProcessor:
             output_file: Output file path
             output_format: One of 'flac', 'mp3', 'aiff'
             verbose: Print detailed output
-            restoration_level: 0=none, 1=light clean, 2=full restore
-            hum_freq: Electrical hum frequency in Hz (50 or 60) for full restore
+            rumble: apply the 15 Hz rumble high-pass
+            declick: click/pop removal strength (off|light|medium|strong)
+            bit_depth: "source" (16-bit sources stay 16-bit) or "24"; FLAC/AIFF only
 
         Returns:
             True if successful
@@ -495,17 +588,25 @@ class AudioProcessor:
 
         format_config = OUTPUT_FORMATS.get(output_format, OUTPUT_FORMATS["flac"])
 
+        depth = 16
+        if output_format in ("flac", "aiff"):
+            source_depth = self.get_source_bit_depth(input_file) if bit_depth == "source" else None
+            depth = target_bit_depth(bit_depth, source_depth)
+        # Dither only when processing runs; an unprocessed 16 -> 16 cut stays bit-exact.
+        parts = split_export_filters(
+            rumble,
+            declick,
+            dither_to_16=(depth == 16 and output_format in ("flac", "aiff")),
+        )
+        # Filtered cuts are read with pre/post-roll and trimmed sample-exactly
+        # after the filters (dither last); unfiltered cuts stay untouched.
+        window = self.padded_cut(input_file, track.start, track.end) if parts else None
         # -ss/-t before -i: input-side seek, so ffmpeg jumps straight to the
         # track instead of decoding everything before it. Sample-accurate for
         # PCM WAV/AIFF input.
-        af_chain = self._build_restoration_filters(restoration_level, hum_freq)
-        # Filtered cuts are read with pre/post-roll and trimmed sample-exactly
-        # after the filters; unfiltered cuts stay untouched.
-        window = self.padded_cut(input_file, track.start, track.end) if af_chain else None
         if window:
             seek_s, read_dur, trim_start, trim_end = window
             args = seek_args(seek_s, read_dur) + ["-i", str(input_file)]
-            af_chain = f"{af_chain}, {trim_filter(trim_start, trim_end)}"
         else:
             args = [
                 "-ss",
@@ -517,22 +618,19 @@ class AudioProcessor:
             ]
 
         # Add codec-specific args
-        codec_args = format_config["codec_args"]
-        if output_format == "aiff":
-            # Only a source known to be <= 16-bit stays 16-bit; wider or
-            # unknown depths use 24-bit so nothing is truncated.
-            depth = self.get_source_bit_depth(input_file)
-            if depth is None or depth > 16:
-                codec_args = ["-c:a", "pcm_s24be"]
-        args.extend(codec_args)
+        args.extend(format_config["codec_args"])
+        args.extend(depth_codec_args(output_format, depth))
 
         # Add FLAC compression level if applicable
         if output_format == "flac":
             args.extend(["-compression_level", str(self.flac_compression)])
 
-        # Add audio restoration filter chain if requested
-        if af_chain:
-            args.extend(["-af", af_chain])
+        # Add the filter chain if processing is on
+        if parts:
+            main, dither = parts
+            if window:
+                main = f"{main},{trim_filter(trim_start, trim_end)}"
+            args.extend(["-af", f"{main},{dither}" if dither else main])
 
         args.extend([
             "-y",  # Overwrite output file
