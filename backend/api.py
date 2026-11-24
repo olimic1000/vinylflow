@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 from stat import S_ISREG
 from subprocess import CalledProcessError
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Literal, Optional
 import asyncio
 import json
 from datetime import datetime, timedelta
@@ -37,7 +37,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import import_folder
 from config import TRACK_NUMBERING_SCHEMES, Config
 from audio_processor import (
-    AudioProcessor, ENVELOPE_FRAME_S, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg,
+    AudioProcessor, ENVELOPE_FRAME_S, LEGACY_RESTORE, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS,
+    run_ffmpeg,
 )
 from track_boundaries import (
     MIN_ALIGNED_TRACK_S,
@@ -330,6 +331,11 @@ class TrackBoundary(BaseModel):
     duration: float
 
 
+# Same values as audio_processor.DECLICK_LEVELS; a Literal makes FastAPI answer 422 for anything else.
+DeclickLevel = Literal["off", "light", "medium", "strong"]
+BitDepthSetting = Literal["source", "24"]
+
+
 class ProcessRequest(BaseModel):
     file_id: str
     release_id: int
@@ -337,9 +343,19 @@ class ProcessRequest(BaseModel):
     reversed: bool = False
     track_boundaries: Optional[List[TrackBoundary]] = None
     output_format: str = "flac"  # 'flac', 'mp3', or 'aiff'
-    restoration_level: int = 0   # 0=none, 1=light clean, 2=full restore
-    hum_freq: int = 50           # Electrical hum frequency in Hz (50=EU, 60=US)
+    rumble_filter: Optional[bool] = None   # 15 Hz high-pass
+    declick: Optional[DeclickLevel] = None  # click & pop removal strength
+    restoration_level: int = 0   # an old open page still sends this: 1 = rumble + light (used only when neither field above is sent)
     album_description: Optional[bool] = None  # Wikipedia lead paragraph in the Comment tag; the request can only turn the saved setting off
+
+
+def _resolve_cleanup(request: ProcessRequest) -> tuple:
+    """``(rumble, declick)`` for a request: each new field if sent, else what the old
+    ``restoration_level`` means (1 = rumble + Light) for that half."""
+    legacy_rumble, legacy_declick = LEGACY_RESTORE if request.restoration_level == 1 else (False, "off")
+    rumble = legacy_rumble if request.rumble_filter is None else request.rumble_filter
+    declick = legacy_declick if request.declick is None else request.declick
+    return bool(rumble), declick
 
 
 class ConfigUpdate(BaseModel):
@@ -348,6 +364,9 @@ class ConfigUpdate(BaseModel):
     min_track_length: Optional[float] = None
     output_dir: Optional[str] = None
     track_numbering: Optional[str] = None
+    rumble_filter: Optional[bool] = None
+    declick: Optional[DeclickLevel] = None
+    bit_depth: Optional[BitDepthSetting] = None
     hide_support_ask: Optional[bool] = None
     album_description: Optional[bool] = None
 
@@ -1662,12 +1681,14 @@ async def process_file_background(request: ProcessRequest):
     if session is None:
         return
 
+    rumble, declick = _resolve_cleanup(request)
     spec = OutputSpec(
         output_format=request.output_format,
         output_dir=Path(config.default_output_dir),
         flac_compression=config.default_flac_compression,
-        restoration_level=request.restoration_level,
-        hum_freq=request.hum_freq,
+        rumble_filter=rumble,
+        declick=declick,
+        bit_depth=config.bit_depth,
         track_numbering=config.track_numbering,
         album_description=_wants_album_description(request),
     )
@@ -1790,6 +1811,9 @@ async def get_config():
         "flac_compression": audio_processor.flac_compression,
         "output_dir": config.default_output_dir,
         "track_numbering": config.track_numbering,
+        "rumble_filter": config.rumble_filter,
+        "declick": config.declick,
+        "bit_depth": config.bit_depth,
         "album_description": config.album_description,
         "import_dir": str(_import_dir()) if _import_dir() else None,  # read-only
         "hide_support_ask": config.hide_support_ask,
@@ -1813,6 +1837,15 @@ async def update_config(updates: ConfigUpdate):
         if updates.track_numbering in TRACK_NUMBERING_SCHEMES:
             config.track_numbering = updates.track_numbering
             config.save_track_numbering(updates.track_numbering)
+    if updates.rumble_filter is not None:
+        config.rumble_filter = updates.rumble_filter
+        config.save_rumble_filter(updates.rumble_filter)
+    if updates.declick is not None:
+        config.declick = updates.declick
+        config.save_declick(updates.declick)
+    if updates.bit_depth is not None:
+        config.bit_depth = updates.bit_depth
+        config.save_bit_depth(updates.bit_depth)
     if updates.hide_support_ask is not None:
         config.hide_support_ask = updates.hide_support_ask
         config.save_hide_support_ask(updates.hide_support_ask)

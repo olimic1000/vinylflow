@@ -1,4 +1,4 @@
-"""Restore cleans up clicks and rumble but must leave volume and sample rate alone."""
+"""Rumble + click removal must leave volume and sample rate alone."""
 
 import re
 import shutil
@@ -38,7 +38,7 @@ def test_restore_keeps_volume(tmp_path):
     _tone(src)
     processor = AudioProcessor()
     assert processor.extract_track(src, Track(1, 1.0, 5.0), plain)
-    assert processor.extract_track(src, Track(1, 1.0, 5.0), restored, restoration_level=1)
+    assert processor.extract_track(src, Track(1, 1.0, 5.0), restored, rumble=True, declick="light")
     assert abs(_mean_volume(restored) - _mean_volume(plain)) < 0.5
 
 
@@ -52,5 +52,24 @@ def test_restore_keeps_source_sample_rate(tmp_path, fmt, rate):
     src = tmp_path / "source.wav"
     out = tmp_path / f"out.{fmt}"
     _tone(src, rate)
-    assert AudioProcessor().extract_track(src, Track(1, 1.0, 5.0), out, output_format=fmt, restoration_level=1)
+    assert AudioProcessor().extract_track(src, Track(1, 1.0, 5.0), out, output_format=fmt, rumble=True, declick="light")
     assert _rate(out) == rate
+
+
+@needs_ffmpeg
+def test_each_option_alone_keeps_volume(tmp_path):
+    """Rumble filter alone and every click-removal strength alone leave the level untouched."""
+    src = tmp_path / "source.wav"
+    _tone(src)
+    processor = AudioProcessor()
+    plain = tmp_path / "plain.flac"
+    assert processor.extract_track(src, Track(1, 1.0, 5.0), plain)
+    for name, options in (
+        ("rumble", {"rumble": True}),
+        ("light", {"declick": "light"}),
+        ("medium", {"declick": "medium"}),
+        ("strong", {"declick": "strong"}),
+    ):
+        out = tmp_path / f"{name}.flac"
+        assert processor.extract_track(src, Track(1, 1.0, 5.0), out, **options)
+        assert abs(_mean_volume(out) - _mean_volume(plain)) < 0.5, name

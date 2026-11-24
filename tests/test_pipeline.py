@@ -62,11 +62,13 @@ class FakeMetadata:
 class FakeAudio:
     def __init__(self) -> None:
         self.extract_calls: list[tuple[Path, str]] = []
+        self.extract_kwargs: list[dict] = []
 
     def extract_track(self, source, track, output, output_format, **kwargs):
         # Touch the file so the rename in pipeline.run succeeds.
         Path(output).write_bytes(b"fake-audio")
         self.extract_calls.append((Path(output), track.vinyl_number))
+        self.extract_kwargs.append(kwargs)
 
 
 @dataclass
@@ -130,6 +132,16 @@ def test_happy_path(session: Session, spec: OutputSpec):
     assert extract_outputs == ["A1", "A2"]
     tag_formats = [c[2] for c in metadata.tag_calls]
     assert tag_formats == ["flac", "flac"]
+
+
+def test_audio_processing_options_reach_every_extraction(session, tmp_path):
+    spec = OutputSpec(
+        output_format="flac", output_dir=tmp_path / "out",
+        rumble_filter=True, declick="strong", bit_depth="24",
+    )
+    audio = FakeAudio()
+    pipeline.run(session, spec, 99, audio, FakeMetadata(release=FakeRelease(id=99)), lambda event: None)
+    assert audio.extract_kwargs == [{"rumble": True, "declick": "strong", "bit_depth": "24"}] * 2
 
 
 def test_skips_cover_download_when_release_has_no_cover(session, spec):

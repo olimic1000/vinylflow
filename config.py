@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 
+from audio_processor import BIT_DEPTH_SETTINGS, DECLICK_LEVELS
+
 # Change this constant to flip the default for new installs.
 # "sequential_disc_per_lp" — A+B share disc 1, C+D share disc 2, etc. TRACKNUMBER
 #                            is sequential across both sides of each LP, with track
@@ -96,6 +98,16 @@ class Config:
 
         # Track numbering scheme
         self.track_numbering = self._resolve_track_numbering(json_settings)
+
+        # Audio processing: rumble filter + click/pop removal strength (both off by default)
+        self.rumble_filter = self._as_bool(
+            json_settings.get("RUMBLE_FILTER", os.getenv("RUMBLE_FILTER")), False
+        )
+        declick = str(json_settings.get("DECLICK") or os.getenv("DECLICK") or "off").lower()
+        self.declick = declick if declick in DECLICK_LEVELS else "off"
+        # FLAC/AIFF sample depth: "source" keeps a 16-bit recording at 16 bits, "24" always writes 24
+        bit_depth = str(json_settings.get("BIT_DEPTH") or os.getenv("BIT_DEPTH", "source"))
+        self.bit_depth = bit_depth if bit_depth in BIT_DEPTH_SETTINGS else "source"
 
         # The "support VinylFlow" note shown after an export, until the user turns it off
         self.hide_support_ask = json_settings.get('HIDE_SUPPORT_ASK') is True
@@ -229,6 +241,15 @@ class Config:
 
     def save_track_numbering(self, scheme: str) -> bool:
         return self._write_settings({'TRACK_NUMBERING': scheme})
+
+    def save_rumble_filter(self, enabled: bool) -> bool:
+        return self._write_settings({'RUMBLE_FILTER': bool(enabled)})
+
+    def save_declick(self, level: str) -> bool:
+        return self._write_settings({'DECLICK': level})
+
+    def save_bit_depth(self, bit_depth: str) -> bool:
+        return self._write_settings({'BIT_DEPTH': bit_depth})
 
     def save_hide_support_ask(self, hidden: bool) -> bool:
         return self._write_settings({'HIDE_SUPPORT_ASK': bool(hidden)})

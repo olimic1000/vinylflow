@@ -218,6 +218,9 @@
         /* Volume slider: dark blue accent (>= 3:1 on the card) and a visible keyboard focus ring */
         .volume-slider { accent-color: #1d4ed8; }
         .volume-slider:focus-visible { outline: 3px solid #1E1E1E; outline-offset: 2px; }
+        /* Audio processing panel: a dark focus ring (>= 3:1 on the card and on the amber selected segment) */
+        .panel-toggle:focus-visible { outline: 2px solid #1E1E1E; outline-offset: 2px; }
+        .panel-segment:focus-visible { outline: 3px solid #1E1E1E; outline-offset: -3px; }
         .track-btn:focus-visible, .track-field:focus-visible, .play-btn:focus-visible {
             outline: 2px solid #1E1E1E;
             outline-offset: 2px;
@@ -349,7 +352,7 @@
                     <h1 class="text-3xl font-bold text-white">
                     VinylFlow
                     </h1>
-                    <button @click="showSettings = !showSettings" class="px-4 py-2 bg-white bg-opacity-10 hover:bg-opacity-20 text-white rounded-lg transition">
+                    <button @click="showSettings ? closeSettings() : openSettings()" class="px-4 py-2 bg-white bg-opacity-10 hover:bg-opacity-20 text-white rounded-lg transition">
                         ⚙️ Settings
                     </button>
                 </div>
@@ -451,8 +454,9 @@
         </div>
 
         <!-- Settings Modal -->
-        <div x-show="showSettings" x-cloak @keydown.escape.window="showSettings = false" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div @click.away="showSettings = false" class="bg-card rounded-lg p-6 max-w-md w-full mx-4">
+        <div x-show="showSettings" x-cloak @keydown.escape.window="closeSettings()" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <!-- Taller than a laptop window: scroll inside, Save/Cancel pinned to the bottom -->
+            <div @click.away="closeSettings()" class="bg-card rounded-lg p-6 pb-0 max-w-md w-full mx-4 overflow-y-auto" style="max-height: 90vh;">
                 <h2 class="text-2xl font-bold text-primary mb-4">Settings</h2>
                 <div class="space-y-4">
                     <div>
@@ -480,6 +484,30 @@
                         <p class="text-xs mt-1" style="color: #8A8A86;" x-show="config.track_numbering === 'sequential_disc_per_lp'">DISCNUMBER per physical record, TRACKNUMBER sequential across both sides (with track and disc totals) + VINYLPOSITION tag. Single LPs appear as 1 disc. Correct sort order in Jellyfin, Roon, Plex.</p>
                     </div>
                     <div>
+                        <label class="block text-sm font-medium text-secondary mb-1" for="settings-bit-depth">FLAC/AIFF bit depth</label>
+                        <select id="settings-bit-depth" x-model="config.bit_depth" class="w-full px-3 py-2 border focus-primary rounded-md" style="border-color: #8A8A86;">
+                            <option value="source">Match source (recommended)</option>
+                            <option value="24">24-bit</option>
+                        </select>
+                        <p class="text-xs mt-1" style="color: #5E5E5A;">A 16-bit recording stays 16-bit. 24-bit keeps full precision after processing but makes files larger, and some older players only support 16-bit. A 24-bit recording always stays 24-bit.</p>
+                    </div>
+                    <div>
+                        <label class="flex items-center gap-2 text-sm font-medium text-secondary cursor-pointer">
+                            <input type="checkbox" x-model="config.rumble_filter" class="w-4 h-4 rounded" style="accent-color: #E5A100;">
+                            Rumble filter by default
+                        </label>
+                        <p class="text-xs mt-1" style="color: #5E5E5A;">Removes inaudible turntable rumble below 15 Hz.</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-secondary mb-1" for="settings-declick">Click &amp; pop removal by default</label>
+                        <select id="settings-declick" x-model="config.declick" class="w-full px-3 py-2 border focus-primary rounded-md" style="border-color: #8A8A86;">
+                            <template x-for="level in declickLevels" :key="level.id">
+                                <option :value="level.id" :selected="config.declick === level.id" x-text="level.label"></option>
+                            </template>
+                        </select>
+                        <p class="text-xs mt-1" style="color: #5E5E5A;">Same setting as the Audio processing panel. Stronger settings catch fainter clicks but take longer to process.</p>
+                    </div>
+                    <div>
                         <label class="flex items-center gap-2 text-sm font-medium text-secondary cursor-pointer">
                             <input type="checkbox" x-model="config.album_description" class="w-4 h-4 rounded" style="accent-color: #E5A100;">
                             Add album description from Wikipedia
@@ -503,7 +531,7 @@
                                         style="border-color: #8A8A86;"
                                     >
                                     <button
-                                        @click="submitSetup(); showSettings = false"
+                                        @click="submitSetup(); closeSettings()"
                                         :disabled="!setupToken || setupLoading"
                                         class="px-4 py-2 btn-primary rounded-md text-sm"
                                     >
@@ -517,9 +545,9 @@
                         </div>
                     </div>
 
-                    <div class="flex gap-2">
+                    <div class="flex gap-2 sticky bottom-0 bg-card py-4 border-t" style="border-color: #F0EFEB;">
                         <button @click="saveConfig()" class="flex-1 px-4 py-2 btn-primary rounded-lg">Save</button>
-                        <button @click="showSettings = false" class="flex-1 px-4 py-2 text-primary rounded-lg hover:bg-page" style="background-color: #F0EFEB;">Cancel</button>
+                        <button @click="closeSettings()" class="flex-1 px-4 py-2 text-primary rounded-lg hover:bg-page" style="background-color: #F0EFEB;">Cancel</button>
                     </div>
                 </div>
             </div>
@@ -1196,15 +1224,35 @@
                             </div>
                         </div>
 
-                        <!-- Audio Restoration -->
-                        <div class="mb-4 p-4 bg-page rounded-lg">
-                            <button type="button" @click="restorationLevel = restorationLevel === 1 ? 0 : 1"
-                                    class="cursor-pointer px-4 py-2 rounded-lg border-2 transition text-sm font-medium"
-                                    :style="restorationLevel === 1 ? 'border-color: #E5A100; color: #E5A100; font-weight: 600;' : 'border-color: #8A8A86;'"
-                                    :class="restorationLevel !== 1 ? 'hover:bg-card' : ''">
-                                Clean Up Clicks &amp; Rumble
-                            </button>
-                            <p class="mt-2 text-xs text-muted">Removes inaudible turntable rumble and reduces clicks and pops. Volume is left as recorded.</p>
+                        <!-- Audio processing: each choice is saved as the default straight away (see saveExportDefault) -->
+                        <div class="mb-4 p-4 bg-page rounded-lg" data-testid="audio-panel">
+                            <h4 class="text-sm font-medium text-secondary">Audio processing</h4>
+                            <p class="mt-1 text-xs" style="color: #5E5E5A;">Optional clean-up. Each choice is remembered as your default; volume is left as recorded.</p>
+
+                            <!-- Rumble filter -->
+                            <div class="mt-4">
+                                <button type="button" @click="toggleRumble()" :aria-pressed="rumbleFilter"
+                                        class="panel-toggle cursor-pointer px-4 py-2 rounded-lg border-2 transition text-sm font-medium"
+                                        :style="rumbleFilter ? 'background-color: #E5A100; border-color: #E5A100; color: #1A1A1A; font-weight: 600;' : 'border-color: #8A8A86;'"
+                                        :class="!rumbleFilter ? 'hover:bg-card' : ''">
+                                    <span x-text="rumbleFilter ? '✓ Rumble filter: on' : 'Rumble filter: off'"></span>
+                                </button>
+                                <p class="mt-2 text-xs" style="color: #5E5E5A;">Removes inaudible turntable rumble below 15 Hz.</p>
+                            </div>
+
+                            <!-- Click & pop removal -->
+                            <div class="mt-4">
+                                <span class="block text-sm font-medium text-secondary mb-2" id="declick-label">Click &amp; pop removal</span>
+                                <div class="inline-flex rounded-lg overflow-hidden border-2" style="border-color: #8A8A86;" role="group" aria-labelledby="declick-label">
+                                    <template x-for="level in declickLevels" :key="level.id">
+                                        <button type="button" @click="setDeclick(level.id)" class="panel-segment px-4 py-1.5 text-sm"
+                                                :aria-pressed="declick === level.id"
+                                                :style="declick === level.id ? 'background-color: #E5A100; color: #1A1A1A; font-weight: 600;' : ''"
+                                                x-text="(declick === level.id ? '✓ ' : '') + level.label"></button>
+                                    </template>
+                                </div>
+                                <p class="mt-2 text-xs" style="color: #5E5E5A;">Stronger settings catch fainter clicks but take longer to process.</p>
+                            </div>
                         </div>
 
                         <!-- Process Button -->

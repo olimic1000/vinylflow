@@ -32,7 +32,8 @@ VinylFlow does it in **3 minutes**. Upload your recording, pick the album from t
 - **Guided detection** — the Discogs track lengths are aligned to the gaps between songs, so one wrong length no longer shifts later cuts; a side picker (full album, per disc, per side) sets how many tracks to place, and **Snap to Discogs** places them again on demand
 - **Discogs first** — selecting a recording searches Discogs from its file name right away; result cards show artwork, track count, whether Discogs lists track lengths, and how well the lengths fit your recording
 - **Borrow track lengths** — when the chosen sides of a release lack lengths, **Find lengths from other pressings** (Release card) looks at other releases of the same master and offers the ones whose track list matches; **Use these lengths** fills in only the missing lengths (marked "Lengths borrowed from …", with Undo) and places the tracks again; the tags still come from the release you picked
-- **Multiple output formats** — FLAC (lossless), MP3 (320kbps), or AIFF (lossless)
+- **Multiple output formats** — FLAC (lossless), MP3 (320kbps), or AIFF (lossless); FLAC and AIFF keep a 16-bit recording at 16-bit (or choose 24-bit in Settings)
+- **Audio processing** — optional rumble filter and click & pop removal (Light, Medium or Strong) in the Export card; your choices are remembered as the default and the original is never changed
 - **Multiple input formats** — WAV and AIFF recordings supported
 - **Import from a folder** — large recordings are read in place from a read-only folder instead of being uploaded through the browser; see [Import from a folder](#import-from-a-folder-no-upload)
 - **Vinyl-style numbering** — proper A1, A2, B1, B2 track notation
@@ -235,7 +236,7 @@ DEFAULT_OUTPUT_DIR=~/Music/VinylFlow
    If the release lacks lengths for the chosen sides, **Find lengths from other pressings** (Release card) checks other versions of the same master. A pressing is offered only when its track titles match exactly (no guessing); one whose lengths differ from the ones you already have is listed last, with a note. **Use these lengths** fills only the missing ones, re-detects, and can be undone.
 4. **Check the track table** — one table lists every detected track: its Discogs track (already mapped for the chosen sides; change any row by hand), start and end, a **Length** you can type (`3:45`, `3:45.5`, `1:02:03` or seconds; the end moves, and a track that began exactly where this one ended follows), the Discogs length and the difference (`+4s`, with its sign, not only a colour). Each row has ⇤ and ⇥ to hear 3 seconds either side of its cuts, ▶️ to play that track in the waveform (press again to pause), Adjust for exact start and end times, Ignore and Delete. **Reverse** flips the mapping. On a narrow window the table scrolls sideways
 5. **Play** — the waveform has one **Play / Pause** button (the Space bar does the same unless you are typing or a button has focus); click the waveform to jump there. The played part is dark blue and the current track's region is highlighted
-6. **Export** — choose FLAC, MP3, or AIFF and optional click and rumble clean-up, then **Process & Save**: tracks are split, converted, tagged, and saved with cover art
+6. **Export** — choose FLAC, MP3, or AIFF, optionally turn on the **Rumble filter** and pick a **Click & pop removal** strength in the **Audio processing** panel (each choice is saved as your default straight away; stronger click removal catches fainter clicks but takes longer), then **Process & Save**: tracks are split, converted, tagged, and saved with cover art. Settings (⚙️) holds the same two options plus **FLAC/AIFF bit depth** (**Match source** keeps a 16-bit recording at 16-bit; **24-bit** always writes 24-bit)
 
 Your files appear in the `output/` folder, organized as `Artist - Album/A1-Track Name.flac`.
 
@@ -281,6 +282,8 @@ DEFAULT_MIN_TRACK_LENGTH=30        # seconds — ignore segments shorter than th
 # FLAC compression (0-8, higher = smaller files)
 DEFAULT_FLAC_COMPRESSION=8
 ```
+
+**Audio processing defaults**: `RUMBLE_FILTER` (true/false), `DECLICK` (`off`, `light`, `medium`, `strong`) and `BIT_DEPTH` (`source` or `24`) in `config/settings.json` (or `.env`); all default to off / off / source.
 
 **Config Priority**: `config/settings.json` (UI-editable) → `.env` (manual) → environment variables (Docker)
 
