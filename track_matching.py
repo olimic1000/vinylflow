@@ -293,6 +293,31 @@ class TrackMatch:
     length: Optional[str]  # normalized "m:ss"; None when the donor track has no parseable length
 
 
+_OPPOSITE_CHANNEL = {"mono": "stereo", "stereo": "mono"}
+
+
+def _effective_channels(parsed_titles: Sequence[_ParsedTitle]) -> List[str]:
+    """Per title: its channel tag, or the channel IMPLIED by the same list.
+
+    When a list holds a base title (same identity key) exactly twice, once tagged and once not,
+    the untagged entry is the opposite channel ("Song (Mono)" next to "Song" means "Song" is the
+    stereo one).  Anything more crowded (a title tagged twice, or two untagged copies) or a title
+    nobody tags implies nothing and stays "" (no channel information): with more entries the
+    reading is a guess, and a wrong pairing moves audio cuts.
+    """
+    members = {}
+    for index, parsed in enumerate(parsed_titles):
+        members.setdefault((parsed.base, parsed.identity_qualifiers), []).append(index)
+    channels = [parsed.channel for parsed in parsed_titles]
+    for indexes in members.values():
+        if len(indexes) == 2:
+            first, second = indexes
+            for tagged, untagged in ((first, second), (second, first)):
+                if channels[tagged] and not parsed_titles[untagged].channel:
+                    channels[untagged] = _OPPOSITE_CHANNEL[channels[tagged]]
+    return channels
+
+
 def match_tracklists(target_titles: Sequence[str], donor_tracks: Sequence) -> List[TrackMatch]:
     """One-to-one match of target titles to donor tracks by exact comparable title.
 
@@ -307,11 +332,21 @@ def match_tracklists(target_titles: Sequence[str], donor_tracks: Sequence) -> Li
     their own kind in any order), the k-th target with the k-th donor, only when both have the
     same number of that full key; (1) the remainder, k-th with k-th, which is refused (the whole
     remainder stays unmatched) if any pair would cross a pass-0 pair of the group (order must be
-    preserved) or join opposite mono/stereo tags (mono/stereo is neutral only against an untagged
-    title).  There is no fuzzy pass (see the module comment).  Targets without a match are absent.
+    preserved) or join opposite mono/stereo channels (mono/stereo is neutral only against an
+    untagged title).  A channel is a tag or, for an untagged title next to a tagged one of the
+    same base in its own list, the implied opposite (``_effective_channels``): ``[Song (Mono),
+    Song]`` against ``[Song, Song (Stereo)]`` pairs Mono with the first and Song with the second.
+    Pairs of opposite channels, implied ones included, are dropped from pass 0 as well.  There is
+    no fuzzy pass (see the module comment).  Targets without a match are absent.
     """
     donors = [_parse_title(_field(t, "title") or "") for t in donor_tracks]
     targets = [_parse_title(t) for t in target_titles]
+    donor_channels = _effective_channels(donors)
+    target_channels = _effective_channels(targets)
+
+    def channels_clash(target_index, donor_index):
+        return bool(target_channels[target_index] and donor_channels[donor_index]
+                    and target_channels[target_index] != donor_channels[donor_index])
 
     def identity_key(parsed):
         return parsed.base, parsed.identity_qualifiers
@@ -337,15 +372,13 @@ def match_tracklists(target_titles: Sequence[str], donor_tracks: Sequence) -> Li
         for full, full_targets in group_by(target_indexes, targets, full_key).items():
             full_donors = donors_by_full_key.get(full, [])
             if len(full_targets) == len(full_donors):
-                pairs.update(zip(full_targets, full_donors))
+                pairs.update((i, j) for i, j in zip(full_targets, full_donors)
+                             if not channels_clash(i, j))
         rest_targets = [i for i in target_indexes if i not in pairs]
         claimed_donors = set(pairs.values())
         rest_donors = [j for j in donor_indexes if j not in claimed_donors]
         rest = list(zip(rest_targets, rest_donors))
-        compatible = all(
-            not (targets[i].channel and donors[j].channel and targets[i].channel != donors[j].channel)
-            for i, j in rest
-        )
+        compatible = not any(channels_clash(i, j) for i, j in rest)
         crossing = any((i - i2) * (j - j2) < 0 for i, j in rest for i2, j2 in pairs.items())
         if compatible and not crossing:
             pairs.update(rest)

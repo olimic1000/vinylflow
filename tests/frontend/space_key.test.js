@@ -96,8 +96,9 @@ tabFocus();
 event = press(buttonEl);
 app.onGlobalKeydown(event);
 assert.ok(!event.prevented && toggles() === 2, 'Tab afterwards hands Space back to the button');
-// init() runs twice in the page (Alpine calls it, and so does x-init), so each document listener
-// fires twice per event: the second focusin call for the same event must not undo the first.
+// init() runs twice in the page (Alpine calls it, and so does x-init); bindGlobalListeners binds the
+// document listeners once, but if an event ever reached the handler twice, the second focusin call
+// for the same event must not undo the first.
 // (Measured in Chromium: without this, Space still re-clicked Reverse.)
 const focusEvent = { type: 'focusin' };
 app.onPointerDown({ target: buttonEl }); document.activeElement = buttonEl;

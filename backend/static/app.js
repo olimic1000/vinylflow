@@ -7,7 +7,7 @@
 const MAX_TOASTS = 5;
 // Most tracks one guided detection places; must match MAX_EXPECTED_TRACKS in backend/api.py
 const MAX_GUIDED_TRACKS = 99;
-// Release fetches one lookup for other pressings may spend at most (mirrors find_length_donors' max_fetches)
+// Release fetches one lookup for other pressings may spend at most (mirrors find_length_donor_report's max_fetches)
 const DONOR_FETCH_BUDGET = 12;
 // How long an Undo toast stays (ms)
 const UNDO_TOAST_MS = 8000;
@@ -31,9 +31,13 @@ const EXPECTED_MARKER_COLOR = '#9C2418';
 // Shortest track a hand edit may leave (seconds)
 const MIN_TRACK_LENGTH = 1;
 // Focused elements that use Space themselves: the global Play/Pause shortcut leaves them alone.
-// A BUTTON is not in the set: it keeps Space only when keyboard-focused (see onGlobalKeydown).
+// A BUTTON is not in the set: it keeps Space only when keyboard-focused (see onGlobalKeydown); the same
+// holds for a SELECT and for the input types below, which are only in the set so that other inputs keep Space.
 const SPACE_OWNING_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'SUMMARY']);
-// Set once the document listeners exist (init() runs twice on the page)
+// Input types that, like a button, hand Space to the player when they were focused by the mouse
+const SPACE_POINTER_RELEASABLE_INPUT_TYPES = new Set(['checkbox', 'radio']);
+// Set once the document listeners exist: init() can run twice on the page (Alpine and x-init), and
+// bindGlobalListeners binds them only on the first call
 let globalListenersBound = false;
 // Where the player volume (0-1) is remembered between sessions
 // The server refuses an imported source that vanished (410) or changed since its import (409)
@@ -136,20 +140,46 @@ const PEAK_SCALE_FLOOR_FRACTION = 1 / 8;
 const PREVIEW_POLL_INTERVAL_MS = 3000;
 const PREVIEW_POLL_MAX_MS = 10 * 60 * 1000;
 
+// The percentile is read from a histogram of |peak| over [0, loudest] with this many bins, so it is
+// within loudest / PEAK_SCALE_HISTOGRAM_BINS (about 0.0015 % of the loudest peak) above the exact value.
+const PEAK_SCALE_HISTOGRAM_BINS = 65536;
+
 /**
  * Scale waveform peaks so the recording's 99.9th-percentile peak is full height (louder bins clip
  * at +-1). Replaces WaveSurfer's `normalize`, which scales each rendered canvas (one per screen
  * width when zoomed) to its own loudest bar and so stretches the surface noise of a gap to full
- * height. The reference is found by sorting one Float64Array copy (an album has ~1.4 M peaks), not
- * Math.max(...peaks), whose arguments would overflow the stack.
+ * height. The percentile comes from a histogram (one pass for the loudest value, one to fill the
+ * bins; each bin also remembers its loudest member), not from sorting a copy of the ~1.4 M peaks
+ * of an album (that took ~370 ms for 4 h) and not from Math.max(...peaks), whose arguments would
+ * overflow the stack.  The bin holding the percentile reports its own loudest member, so the
+ * reference is exact when that bin's members are equal and otherwise lies between the exact
+ * percentile and that plus loudest / PEAK_SCALE_HISTOGRAM_BINS.
  */
 function scalePeaksToRecording(peaks) {
     if (!peaks.length) return peaks;
-    const magnitudes = Float64Array.from(peaks, peak => Math.abs(peak));
-    magnitudes.sort();
-    const percentile = magnitudes[Math.ceil(PEAK_SCALE_PERCENTILE * magnitudes.length) - 1];
-    const reference = Math.max(percentile, magnitudes[magnitudes.length - 1] * PEAK_SCALE_FLOOR_FRACTION);
-    if (!(reference > 0)) return peaks;
+    let loudest = 0;
+    for (let index = 0; index < peaks.length; index++) {
+        const magnitude = Math.abs(peaks[index]);
+        if (magnitude > loudest) loudest = magnitude;
+    }
+    if (!(loudest > 0)) return peaks;
+    const binCounts = new Uint32Array(PEAK_SCALE_HISTOGRAM_BINS);
+    const binLoudest = new Float64Array(PEAK_SCALE_HISTOGRAM_BINS);
+    const binsPerUnit = PEAK_SCALE_HISTOGRAM_BINS / loudest;
+    for (let index = 0; index < peaks.length; index++) {
+        const magnitude = Math.abs(peaks[index]);
+        const bin = Math.min(PEAK_SCALE_HISTOGRAM_BINS - 1, Math.floor(magnitude * binsPerUnit));
+        binCounts[bin]++;
+        if (magnitude > binLoudest[bin]) binLoudest[bin] = magnitude;
+    }
+    // The bin that holds the value at this rank (1-based) of the ascending magnitudes
+    const percentileRank = Math.ceil(PEAK_SCALE_PERCENTILE * peaks.length);
+    let seen = 0;
+    let percentileBin = 0;
+    while (percentileBin < PEAK_SCALE_HISTOGRAM_BINS - 1 && seen + binCounts[percentileBin] < percentileRank) {
+        seen += binCounts[percentileBin++];
+    }
+    const reference = Math.max(binLoudest[percentileBin], loudest * PEAK_SCALE_FLOOR_FRACTION);
     return peaks.map(peak => Math.max(-1, Math.min(1, peak / reference)));
 }
 
@@ -335,8 +365,9 @@ function vinylApp() {
 
         /**
          * Document-level listeners for the Space shortcut and its pointer-focus tracking.  The page
-         * calls init() twice (Alpine runs it, and index.html also has x-init="init()"), so they are
-         * bound once per page.  The handlers stay safe if they ever run twice for one event.
+         * calls init() twice (Alpine runs it, and index.html also has x-init="init()"), so this
+         * method binds them only on the first call (module flag `globalListenersBound`).  The handlers
+         * still tolerate seeing an event twice, as a safeguard.
          */
         bindGlobalListeners() {
             if (globalListenersBound) return;
@@ -2404,6 +2435,8 @@ function vinylApp() {
             }
             const resuggestedSides = this.selectedSides;
             this.afterTargetsChanged();   // once, with the new sides
+            // The mapping the borrow left: Undo restores the pre-borrow mapping only over exactly this
+            const mappingAfterBorrow = { mapping: [...this.customMapping], reversed: this.trackMappingReversed };
 
             this.notifyUndo(`Borrowed ${filled} track length${filled === 1 ? '' : 's'} from ${this.borrowedLabel(borrowed)}.`, () => {
                 // Another release or file replaced the copy since: nothing of this change is left to undo
@@ -2421,7 +2454,12 @@ function vinylApp() {
                     // has not picked sides since, even the very ones the borrow chose
                     if (sidesChanged && !this.sidesTouched && this.sidesEqualSelection(resuggestedSides)) {
                         this.selectedSides = previous.sides;
-                        if (this.detectedTracks === previous.tracks && this.detectedTracks.length === previous.trackCount) {
+                        // A dropdown or reverse change made after the borrow is the user's: the saved mapping
+                        // is not put over it (the sides did change, so the mapping follows them instead)
+                        const mappingUntouched = this.trackMappingReversed === mappingAfterBorrow.reversed
+                            && this.customMapping.length === mappingAfterBorrow.mapping.length
+                            && this.customMapping.every((entry, row) => Number(entry) === Number(mappingAfterBorrow.mapping[row]));
+                        if (mappingUntouched && this.detectedTracks === previous.tracks && this.detectedTracks.length === previous.trackCount) {
                             this.customMapping = previous.mapping;
                             this.trackMappingReversed = previous.reversed;
                             this.trackCountMismatch = previous.mismatch;
@@ -2430,6 +2468,7 @@ function vinylApp() {
                             // A restored snapshot (another Undo) installs an equal copy, which lands here too:
                             // the mapping is then reset rather than kept, which is safe (never a wrong mapping).
                             // The length check is defence for an in-place splice; those paths drop the release today.
+                            // A mapping the user changed since the borrow is reset the same way.
                             this.resetMappingToTargets();
                         }
                     }
@@ -3905,8 +3944,8 @@ function vinylApp() {
         },
 
         onFocusIn(e) {
-            // init() runs twice (Alpine calls it, and so does x-init), so every document listener is
-            // registered twice: the second call for the same event must not undo the first.
+            // The listeners are bound once (bindGlobalListeners), so an event normally arrives once;
+            // if it ever arrives twice, the second call must not undo the first.
             if (e && this._pointerFocus.lastFocusIn === e) return;
             this._pointerFocus.lastFocusIn = e || null;
             const focused = e && e.target ? e.target : null;
@@ -3920,10 +3959,11 @@ function vinylApp() {
 
         /**
          * Space toggles playback, except while typing, in a dialog or a right-click menu, or on a
-         * control that uses Space itself.  Fields, selects and sliders always keep it.  A button keeps
-         * it only when it was focused from the keyboard: Chromium, Firefox and WebView2 also focus a
-         * button that was merely clicked (WKWebView does not), and Space would then press it again
-         * (flip Reverse, un-ignore, delete the next track).  :focus-visible cannot tell them apart:
+         * control that uses Space itself.  Text fields, textareas and sliders always keep it.  A button,
+         * checkbox, radio button or select keeps it only when it was focused from the keyboard:
+         * Chromium, Firefox and WebView2 also focus a control that was merely clicked (WKWebView does
+         * not), and Space would then press it again (flip Reverse, un-ignore, delete the next track,
+         * toggle a checkbox, open a select).  :focus-visible cannot tell them apart:
          * Chromium's heuristic turns it on at any keypress, so the focus origin is tracked from the
          * pointer events instead.  For a pointer-focused button Space plays/pauses, and preventDefault
          * on keydown stops the button's own activation (a button is clicked by the keyup of Space, and
@@ -3937,8 +3977,8 @@ function vinylApp() {
             // (plain or Shift+Tab only: Ctrl/Alt/Meta+Tab may reach a tabless WebView without moving focus)
             if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) this._pointerFocus.lastFocused = null;
             if (e.code !== 'Space' && e.key !== ' ') return;
-            // init() runs twice (see bindGlobalListeners), so this may be the second look at an event
-            // the first already handled: it is then defaultPrevented and must not reset anything
+            // An event the first handler already claimed is defaultPrevented: a second look at it must not
+            // reset anything (the listeners are bound once, so this is only a safeguard)
             if (e.defaultPrevented) return;
             // A claimed Space whose keyup never came (window switch) must not cancel a later keyup
             this._spaceClaimedByPlayer = false;
@@ -3946,13 +3986,27 @@ function vinylApp() {
             const tag = target && target.tagName ? String(target.tagName).toUpperCase() : '';
             // A range input (the volume slider) has no use for Space, so it never owns it
             const isRangeInput = tag === 'INPUT' && String(target.type).toLowerCase() === 'range';
-            if ((SPACE_OWNING_TAGS.has(tag) && !isRangeInput) || (target && target.isContentEditable)) return;
-            // A keyboard-focused button keeps Space; a pointer-focused one must never be pressed by it,
-            // whatever the modifiers and whether or not the player can play right now
-            if (tag === 'BUTTON' && !this._pointerFocus.byPointer) return;
-            const pointerFocusedButton = tag === 'BUTTON';
+            if (target && target.isContentEditable) return;
+            // A button, checkbox, radio button or select keeps Space only when keyboard-focused; a
+            // pointer-focused button must never be pressed by it, whatever the modifiers and whether or
+            // not the player can play right now.  A pointer-focused checkbox, radio button or select is
+            // claimed the same way, except while Settings, setup or a right-click menu is open: the
+            // player is out of reach there, so the control keeps its Space (a ticked box, not a dead key).
+            // (With a modifier only the keyup is cancelled; a select that opens on keydown may still open.)
+            // Text fields, number fields and textareas keep Space always.
+            const inputType = tag === 'INPUT' ? String(target.type).toLowerCase() : '';
+            const pointerReleasable = tag === 'BUTTON' || tag === 'SELECT' || SPACE_POINTER_RELEASABLE_INPUT_TYPES.has(inputType);
+            if (SPACE_OWNING_TAGS.has(tag) && !isRangeInput && !pointerReleasable) return;
+            if (pointerReleasable && !this._pointerFocus.byPointer) return;
+            // Nothing to play or out of reach (Settings, setup, a right-click menu, no waveform yet, or the
+            // plain fallback player): a clicked checkbox, radio button or select then keeps its own Space
+            // rather than Space becoming a dead key.  A button is still never pressed by it.
+            const playerOutOfReach = this.showSettings || this.setupRequired
+                || this.contextMenu.show || this.regionContextMenu.show
+                || !this.playerReady || !!this.fallbackAudioUrl;
+            if (pointerReleasable && tag !== 'BUTTON' && playerOutOfReach) return;
             const modifierHeld = e.ctrlKey || e.metaKey || e.altKey;
-            if (pointerFocusedButton) {
+            if (pointerReleasable) {
                 // With a modifier only the keyup is cancelled: preventDefault on the keydown could swallow a
                 // system shortcut (Alt+Space opens the Windows window menu), and cancelling the keyup alone
                 // stops the button's activation (measured with real input in Chromium, WebKit and Firefox)
@@ -3962,7 +4016,7 @@ function vinylApp() {
             if (modifierHeld) return;
             if (this.showSettings || this.setupRequired || !this.playerReady) return;
             if (this.contextMenu.show || this.regionContextMenu.show || this.fallbackAudioUrl) return;
-            if (!pointerFocusedButton) this._claimSpace(e);
+            if (!pointerReleasable) this._claimSpace(e);
             // A held key repeats keydown: keep the page from scrolling, but toggle only once
             if (e.repeat) return;
             this.togglePlay();
